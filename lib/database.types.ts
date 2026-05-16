@@ -146,7 +146,7 @@ export type Database = {
           double_client_id: string
           double_client_name: string | null
           id: string
-          industry_variant: string | null
+          industry: string | null
           is_active: boolean | null
           jurisdiction: Database["public"]["Enums"]["jurisdiction_code"]
           last_sync_at: string | null
@@ -171,7 +171,7 @@ export type Database = {
           double_client_id: string
           double_client_name?: string | null
           id?: string
-          industry_variant?: string | null
+          industry?: string | null
           is_active?: boolean | null
           jurisdiction: Database["public"]["Enums"]["jurisdiction_code"]
           last_sync_at?: string | null
@@ -196,7 +196,7 @@ export type Database = {
           double_client_id?: string
           double_client_name?: string | null
           id?: string
-          industry_variant?: string | null
+          industry?: string | null
           is_active?: boolean | null
           jurisdiction?: Database["public"]["Enums"]["jurisdiction_code"]
           last_sync_at?: string | null
@@ -427,6 +427,7 @@ export type Database = {
             | Database["public"]["Enums"]["expense_category"]
             | null
           id: string
+          industry: string | null
           is_parent: boolean | null
           is_required: boolean | null
           jurisdiction: Database["public"]["Enums"]["jurisdiction_code"]
@@ -447,6 +448,7 @@ export type Database = {
             | Database["public"]["Enums"]["expense_category"]
             | null
           id?: string
+          industry?: string | null
           is_parent?: boolean | null
           is_required?: boolean | null
           jurisdiction: Database["public"]["Enums"]["jurisdiction_code"]
@@ -467,6 +469,7 @@ export type Database = {
             | Database["public"]["Enums"]["expense_category"]
             | null
           id?: string
+          industry?: string | null
           is_parent?: boolean | null
           is_required?: boolean | null
           jurisdiction?: Database["public"]["Enums"]["jurisdiction_code"]

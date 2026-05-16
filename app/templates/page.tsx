@@ -2,8 +2,19 @@ import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
 import { createServerSupabase } from "@/lib/supabase";
 import { MasterCOAEditor } from "./editor";
+import { INDUSTRIES, type IndustryKey } from "@/lib/industries";
 
-export default async function MasterCOAPage() {
+export default async function MasterCOAPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ industry?: string }>;
+}) {
+  const params = await searchParams;
+  const requestedIndustry = (params.industry || "painters") as IndustryKey;
+  const validIndustry = INDUSTRIES.some((i) => i.key === requestedIndustry)
+    ? requestedIndustry
+    : "painters";
+
   const supabase = await createServerSupabase();
 
   // Check role for read-only vs editable
@@ -14,10 +25,10 @@ export default async function MasterCOAPage() {
 
   const canEdit = profile && ["admin", "lead"].includes(profile.role);
 
-  // Pre-fetch both jurisdictions for fast tab switching
+  // Pre-fetch both jurisdictions for fast tab switching, filtered to selected industry
   const [usData, caData, usageData] = await Promise.all([
-    supabase.from("master_coa").select("*").eq("jurisdiction", "US").order("sort_order"),
-    supabase.from("master_coa").select("*").eq("jurisdiction", "CA").order("sort_order"),
+    supabase.from("master_coa").select("*").eq("jurisdiction", "US").eq("industry", validIndustry).order("sort_order"),
+    supabase.from("master_coa").select("*").eq("jurisdiction", "CA").eq("industry", validIndustry).order("sort_order"),
     supabase.from("master_coa_usage").select("*"),
   ]);
 
@@ -48,6 +59,7 @@ export default async function MasterCOAPage() {
           initialUS={usAccounts}
           initialCA={caAccounts}
           canEdit={!!canEdit}
+          currentIndustry={validIndustry}
         />
       </div>
     </AppShell>

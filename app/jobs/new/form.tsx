@@ -4,10 +4,11 @@ import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import {
-  Search, ArrowRight, MapPin, CheckCircle2, Plus, Loader2, Globe2,
+  Search, ArrowRight, MapPin, CheckCircle2, Plus, Loader2, Globe2, Briefcase, Sparkles,
 } from "lucide-react";
 import type { Database } from "@/lib/database.types";
 import { CANADIAN_PROVINCES, getProvinceTax } from "@/lib/canadian-tax";
+import { INDUSTRIES, getIndustry, suggestIndustryFromName, type IndustryKey } from "@/lib/industries";
 
 type ClientLink = Database["public"]["Tables"]["client_links"]["Row"];
 
@@ -22,6 +23,8 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
   // Editable jurisdiction state (initialized from client_link when selected)
   const [country, setCountry] = useState<"US" | "CA">("US");
   const [province, setProvince] = useState<string>("");
+  const [industry, setIndustry] = useState<IndustryKey>("painters");
+  const [aiSuggestedIndustry, setAiSuggestedIndustry] = useState<IndustryKey | null>(null);
 
   useEffect(() => {
     const clientId = searchParams.get("client");
@@ -31,6 +34,11 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         setSelected(found);
         setCountry((found.jurisdiction as "US" | "CA") || "US");
         setProvince(found.state_province || "");
+        // Use stored industry if set; otherwise AI-suggest from name
+        const stored = (found as any).industry as IndustryKey | null;
+        const suggested = suggestIndustryFromName(found.client_name);
+        setIndustry(stored || suggested || "painters");
+        setAiSuggestedIndustry(suggested);
         setStep("jurisdiction");
       }
     }
@@ -49,6 +57,10 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
     setSelected(c);
     setCountry((c.jurisdiction as "US" | "CA") || "US");
     setProvince(c.state_province || "");
+    const stored = (c as any).industry as IndustryKey | null;
+    const suggested = suggestIndustryFromName(c.client_name);
+    setIndustry(stored || suggested || "painters");
+    setAiSuggestedIndustry(suggested);
     setStep("jurisdiction");
   }
 
@@ -69,16 +81,18 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
     const jurisdictionChanged = selected.jurisdiction !== country;
     const provinceChanged = (selected.state_province || "") !== province;
-    if (jurisdictionChanged || provinceChanged) {
+    const industryChanged = ((selected as any).industry || "painters") !== industry;
+    if (jurisdictionChanged || provinceChanged || industryChanged) {
       const { error: clientErr } = await supabase
         .from("client_links")
         .update({
           jurisdiction: country,
           state_province: province || null,
-        })
+          industry,
+        } as any)
         .eq("id", selected.id);
       if (clientErr) {
-        alert(`Could not update client jurisdiction: ${clientErr.message}`);
+        alert(`Could not update client: ${clientErr.message}`);
         setCreating(false);
         return;
       }
@@ -210,6 +224,48 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
               <CheckCircle2 size={18} className="text-teal" />
             </div>
           )}
+
+          {/* Industry picker */}
+          <div>
+            <label className="flex items-center gap-1.5 text-sm font-semibold text-navy mb-2">
+              <Briefcase size={14} /> Trades Industry
+            </label>
+            {aiSuggestedIndustry && (
+              <div className="text-xs text-ink-slate mb-2 flex items-center gap-1.5">
+                <Sparkles size={11} className="text-teal" />
+                AI suggested <span className="font-semibold text-navy">{getIndustry(aiSuggestedIndustry)?.label}</span>
+                {" "}based on the client name. Change if needed.
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-2">
+              {INDUSTRIES.map((ind) => {
+                const isSelected = industry === ind.key;
+                const isAiPick = aiSuggestedIndustry === ind.key;
+                return (
+                  <button
+                    key={ind.key}
+                    onClick={() => setIndustry(ind.key)}
+                    className={`relative p-3 rounded-lg border-2 text-left transition-colors ${
+                      isSelected
+                        ? "bg-teal-lighter border-teal text-teal"
+                        : "bg-white border-gray-200 hover:border-gray-300 text-navy"
+                    }`}
+                  >
+                    {isAiPick && !isSelected && (
+                      <span className="absolute -top-1 -right-1 text-[9px] font-bold bg-teal text-white px-1.5 py-0.5 rounded-full">
+                        AI pick
+                      </span>
+                    )}
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className="text-base">{ind.emoji}</span>
+                      <span className="font-semibold text-xs">{ind.label}</span>
+                    </div>
+                    <div className="text-[10px] leading-tight text-ink-light">{ind.description}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           <div>
             <label className="flex items-center gap-1.5 text-sm font-semibold text-navy mb-2">

@@ -111,12 +111,14 @@ export default async function ReviewPage({
     );
   }
 
-  // Fetch master COA leaf accounts for the job's jurisdiction (for the Map to Master dropdown)
+  // Fetch master COA leaf accounts for the job's jurisdiction + industry
   const jurisdiction = (clientLink?.jurisdiction as string) || 'US';
+  const industry = ((clientLink as any)?.industry as string) || 'painters';
   const { data: masterAccounts } = await supabase
     .from("master_coa")
     .select("account_name, parent_account_name, is_parent, section, sort_order")
     .eq("jurisdiction", jurisdiction)
+    .eq("industry", industry)
     .eq("is_parent", false)
     .order("sort_order");
 

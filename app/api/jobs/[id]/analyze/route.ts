@@ -66,11 +66,13 @@ export async function POST(
       transaction_count: txCounts.get(a.Id) ?? 0,
     }));
 
-    // 4. Load master COA for jurisdiction
+    // 4. Load master COA for the client's jurisdiction + industry
+    const industry = (clientLink as any).industry || "painters";
     const { data: masterRows } = await service
       .from("master_coa")
       .select("*")
       .eq("jurisdiction", clientLink.jurisdiction)
+      .eq("industry", industry)
       .order("sort_order");
 
     const masterCOA: MasterCOAEntry[] = (masterRows || []).map((m) => ({

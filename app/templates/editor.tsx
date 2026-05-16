@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
+import { INDUSTRIES } from "@/lib/industries";
 import {
   Plus,
   Edit2,
@@ -60,10 +61,12 @@ export function MasterCOAEditor({
   initialUS,
   initialCA,
   canEdit,
+  currentIndustry = "painters",
 }: {
   initialUS: MasterAccount[];
   initialCA: MasterAccount[];
   canEdit: boolean;
+  currentIndustry?: string;
 }) {
   const router = useRouter();
   const [jurisdiction, setJurisdiction] = useState<"US" | "CA">("US");
@@ -268,6 +271,27 @@ export function MasterCOAEditor({
 
   return (
     <div>
+      {/* Industry selector — picks which trades industry's COA to view/edit */}
+      <div className="flex items-center gap-3 mb-5 p-3 rounded-xl bg-white border border-gray-200">
+        <label className="text-xs font-bold uppercase tracking-wider text-ink-slate">
+          Industry
+        </label>
+        <select
+          value={currentIndustry}
+          onChange={(e) => router.push(`/templates?industry=${e.target.value}`)}
+          className="flex-1 max-w-xs px-3 py-2 rounded-lg border border-gray-200 focus:border-teal outline-none text-sm font-semibold text-navy bg-white"
+        >
+          {INDUSTRIES.map((ind) => (
+            <option key={ind.key} value={ind.key}>
+              {ind.emoji}  {ind.label}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-ink-light">
+          Each industry has its own master COA template — accounts customize per trade
+        </span>
+      </div>
+
       {/* Top stats */}
       <div className="grid grid-cols-4 gap-3 mb-5">
         <Stat label="Total Accounts" value={stats.total} />

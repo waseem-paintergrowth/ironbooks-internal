@@ -74,12 +74,22 @@ export default async function ReclassReviewPage({
   const userRole = userProfile?.role || "bookkeeper";
 
   // Load master COA accounts for the Map-to-Master dropdown.
-  // Filter to leaf accounts in the client's jurisdiction.
+  // Filter to leaf accounts in the client's jurisdiction + industry.
   const jurisdiction = (job as any).jurisdiction || "US";
+
+  // Fetch the client's industry (the view may not expose it)
+  const { data: clientLink } = await service
+    .from("client_links")
+    .select("industry")
+    .eq("id", (job as any).client_link_id)
+    .maybeSingle();
+  const industry = ((clientLink as any)?.industry as string) || "painters";
+
   const { data: masterAccounts } = await service
     .from("master_coa")
     .select("account_name, parent_account_name, is_parent, section, sort_order")
     .eq("jurisdiction", jurisdiction)
+    .eq("industry", industry)
     .eq("is_parent", false)
     .order("sort_order");
 
