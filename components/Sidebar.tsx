@@ -12,10 +12,14 @@ import type { Database } from "@/lib/database.types";
 
 const standardItems = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/flagged", label: "Flagged Queue", icon: Flag, showBadge: true },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/templates", label: "Master COA", icon: BookOpen },
   { href: "/history", label: "Job History", icon: Clock },
+];
+
+// Visible only to admin + lead — junior bookkeepers see their pending items on the dashboard instead
+const seniorItems = [
+  { href: "/flagged", label: "Flagged Queue", icon: Flag, showBadge: true },
 ];
 
 const advancedItems = [
@@ -82,6 +86,7 @@ export function Sidebar() {
   }
 
   const isAdmin = userRole === "admin";
+  const isSenior = userRole === "admin" || userRole === "lead";
 
   // Active state for the primary CTA — match any /jobs/* route or in-flight workflow pages
   const cleanupActive =
@@ -126,6 +131,17 @@ export function Sidebar() {
             badgeCount={item.showBadge ? flaggedCount : undefined}
           />
         ))}
+
+        {/* Senior-only items — Flagged Queue */}
+        {isSenior &&
+          seniorItems.map((item) => (
+            <NavItem
+              key={item.href}
+              item={item}
+              pathname={pathname}
+              badgeCount={item.showBadge ? flaggedCount : undefined}
+            />
+          ))}
 
         {/* ADVANCED — collapsed by default */}
         <button

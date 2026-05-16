@@ -1,14 +1,68 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
-import { createServerSupabase } from "@/lib/supabase";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import Link from "next/link";
-import { Plus, ArrowRight, MoreVertical, Zap, CheckCircle2, Flag, TrendingUp, FilePlus2, Shuffle, CreditCard, Receipt } from "lucide-react";
+import { Plus, ArrowRight, MoreVertical, Zap, CheckCircle2, Flag, TrendingUp, FilePlus2, Shuffle, CreditCard, Receipt, AlertCircle } from "lucide-react";
 
 export default async function DashboardPage() {
   const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
 
   const { data: stats } = await supabase.from("dashboard_stats").select("*").single();
   const { data: jobs } = await supabase.from("active_jobs_view").select("*").limit(10);
+
+  // Count this user's items still flagged across all 3 sources (only their own jobs).
+  // Senior bookkeepers see this too, but it's most relevant to juniors who don't have
+  // access to /flagged. Service client used so we can aggregate without RLS friction.
+  let myPendingReview = { coa: 0, reclass: 0, stripe: 0, total: 0, jobs: [] as any[] };
+  if (user) {
+    const service = createServiceSupabase();
+    const [coaR, reclassR, stripeR] = await Promise.all([
+      service
+        .from("coa_actions")
+        .select("id, job_id, coa_jobs!inner(id, bookkeeper_id, client_links(client_name))")
+        .eq("action", "flag")
+        .eq("executed", false)
+        .eq("coa_jobs.bookkeeper_id", user.id),
+      service
+        .from("reclassifications")
+        .select("id, reclass_job_id, reclass_jobs!reclass_job_id!inner(id, bookkeeper_id, client_links(client_name))")
+        .eq("decision", "flagged")
+        .eq("reclass_jobs.bookkeeper_id", user.id)
+        .limit(500),
+      service
+        .from("stripe_recon_matches")
+        .select("id, job_id, stripe_recon_jobs!inner(id, bookkeeper_id, client_links(client_name))")
+        .eq("decision", "flagged")
+        .eq("executed", false)
+        .eq("stripe_recon_jobs.bookkeeper_id", user.id),
+    ]);
+    const byJob = new Map<string, { client_name: string; source: string; count: number }>();
+    function bump(jobId: string, clientName: string, source: string) {
+      const k = `${source}::${jobId}`;
+      if (!byJob.has(k)) byJob.set(k, { client_name: clientName, source, count: 0 });
+      byJob.get(k)!.count++;
+    }
+    for (const r of coaR.data || []) {
+      const j = (r as any).coa_jobs;
+      if (j) bump(j.id, j.client_links?.client_name || "?", "COA Cleanup");
+    }
+    for (const r of reclassR.data || []) {
+      const j = (r as any).reclass_jobs;
+      if (j) bump(j.id, j.client_links?.client_name || "?", "Reclass");
+    }
+    for (const r of stripeR.data || []) {
+      const j = (r as any).stripe_recon_jobs;
+      if (j) bump(j.id, j.client_links?.client_name || "?", "Stripe Recon");
+    }
+    myPendingReview = {
+      coa: coaR.data?.length || 0,
+      reclass: reclassR.data?.length || 0,
+      stripe: stripeR.data?.length || 0,
+      total: (coaR.data?.length || 0) + (reclassR.data?.length || 0) + (stripeR.data?.length || 0),
+      jobs: Array.from(byJob.values()),
+    };
+  }
 
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -65,6 +119,59 @@ export default async function DashboardPage() {
             );
           })}
         </div>
+
+        {/* Awaiting senior review — only renders when there's something to show */}
+        {myPendingReview.total > 0 && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 mb-6 overflow-hidden">
+            <div className="px-5 py-4 border-b border-amber-200 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="rounded-lg flex items-center justify-center w-9 h-9 bg-amber-100">
+                  <AlertCircle size={18} className="text-amber-600" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-navy">Your items awaiting senior review</h2>
+                  <p className="text-xs text-ink-slate mt-0.5">
+                    {myPendingReview.total} item{myPendingReview.total === 1 ? "" : "s"} flagged on your jobs — a senior bookkeeper will resolve these.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {myPendingReview.coa > 0 && (
+                  <span className="text-xs font-semibold bg-white border border-amber-200 rounded-md px-2 py-1 text-amber-800">
+                    {myPendingReview.coa} COA
+                  </span>
+                )}
+                {myPendingReview.reclass > 0 && (
+                  <span className="text-xs font-semibold bg-white border border-amber-200 rounded-md px-2 py-1 text-amber-800">
+                    {myPendingReview.reclass} Reclass
+                  </span>
+                )}
+                {myPendingReview.stripe > 0 && (
+                  <span className="text-xs font-semibold bg-white border border-amber-200 rounded-md px-2 py-1 text-amber-800">
+                    {myPendingReview.stripe} Stripe
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="bg-white">
+              {myPendingReview.jobs.map((j, i) => (
+                <div
+                  key={i}
+                  className="px-5 py-2.5 flex items-center justify-between text-sm"
+                  style={{ borderBottom: i < myPendingReview.jobs.length - 1 ? "1px solid #F3F4F6" : "none" }}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="font-semibold text-navy">{j.client_name}</span>
+                    <span className="text-xs text-ink-slate">{j.source}</span>
+                  </div>
+                  <span className="text-xs font-semibold text-amber-700">
+                    {j.count} pending
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Workflow guide */}
         <div className="rounded-xl bg-white border border-gray-200 mb-6 overflow-hidden">
