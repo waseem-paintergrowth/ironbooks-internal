@@ -2,21 +2,26 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, FilePlus2, Flag, Users, Settings, LogOut, BookOpen, Clock, Zap, Shield, Shuffle, CreditCard } from "lucide-react";
+import {
+  Home, Sparkles, Flag, Users, Settings, LogOut, BookOpen, Clock,
+  Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight,
+} from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
 import type { Database } from "@/lib/database.types";
 
 const standardItems = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/jobs/new", label: "New COA Cleanup", icon: FilePlus2, highlight: true },
-  { href: "/rules/new", label: "Bank Rules", icon: Zap, highlight: true },
-  { href: "/reclass/new", label: "Reclassify", icon: Shuffle, highlight: true },
-  { href: "/stripe-recon/new", label: "Stripe AR Recon", icon: CreditCard, highlight: true },
   { href: "/flagged", label: "Flagged Queue", icon: Flag, showBadge: true },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/templates", label: "Master COA", icon: BookOpen },
   { href: "/history", label: "Job History", icon: Clock },
+];
+
+const advancedItems = [
+  { href: "/reclass/new", label: "Reclassify (standalone)", icon: Shuffle },
+  { href: "/rules/new", label: "Bank Rules (standalone)", icon: Zap },
+  { href: "/stripe-recon/new", label: "Stripe Recon (standalone)", icon: CreditCard },
 ];
 
 const adminItems = [
@@ -33,6 +38,13 @@ export function Sidebar() {
   const [userName, setUserName] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
   const [flaggedCount, setFlaggedCount] = useState<number>(0);
+
+  // Advanced section is collapsed by default; auto-open if user lands on one of its routes
+  const isOnAdvancedRoute = advancedItems.some((i) => pathname.startsWith(i.href));
+  const [advancedOpen, setAdvancedOpen] = useState(isOnAdvancedRoute);
+  useEffect(() => {
+    if (isOnAdvancedRoute) setAdvancedOpen(true);
+  }, [isOnAdvancedRoute]);
 
   const supabase = createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -51,7 +63,6 @@ export function Sidebar() {
           setUserName(profile.full_name);
           setUserRole(profile.role);
 
-          // Update last_login_at (fire and forget)
           supabase
             .from("users")
             .update({ last_login_at: new Date().toISOString() } as any)
@@ -72,6 +83,13 @@ export function Sidebar() {
 
   const isAdmin = userRole === "admin";
 
+  // Active state for the primary CTA — match any /jobs/* route or in-flight workflow pages
+  const cleanupActive =
+    pathname.startsWith("/jobs/") ||
+    pathname.startsWith("/reclass/") && /\/(reclass)\/[^/]+\//.test(pathname) ||
+    pathname.startsWith("/stripe-recon/") && /\/(stripe-recon)\/[^/]+\//.test(pathname) ||
+    pathname.startsWith("/rules/") && /\/(rules)\/[^/]+\//.test(pathname);
+
   return (
     <aside className="flex flex-col h-screen sticky top-0 w-60 bg-navy text-white">
       <div className="px-5 py-5 border-b border-white/10">
@@ -87,6 +105,19 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 px-3 py-4 overflow-y-auto">
+        {/* PRIMARY CTA — single button that drives the whole workflow */}
+        <Link
+          href="/jobs/new"
+          className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-bold transition-all mb-3 shadow-sm ${
+            cleanupActive
+              ? "bg-teal text-white"
+              : "bg-teal hover:bg-teal-dark text-white"
+          }`}
+        >
+          <Sparkles size={18} />
+          <span>Start Account Cleanup</span>
+        </Link>
+
         {standardItems.map((item) => (
           <NavItem
             key={item.href}
@@ -95,6 +126,22 @@ export function Sidebar() {
             badgeCount={item.showBadge ? flaggedCount : undefined}
           />
         ))}
+
+        {/* ADVANCED — collapsed by default */}
+        <button
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className="w-full flex items-center gap-2 px-3 py-2 mt-3 text-xs font-bold uppercase tracking-wider text-white/40 hover:text-white/70 transition-colors"
+        >
+          {advancedOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          Advanced
+        </button>
+        {advancedOpen && (
+          <div className="space-y-0.5">
+            {advancedItems.map((item) => (
+              <NavItem key={item.href} item={item} pathname={pathname} dim />
+            ))}
+          </div>
+        )}
 
         {isAdmin && (
           <>
@@ -140,10 +187,12 @@ function NavItem({
   item,
   pathname,
   badgeCount,
+  dim,
 }: {
   item: { href: string; label: string; icon: any; highlight?: boolean; showBadge?: boolean };
   pathname: string;
   badgeCount?: number;
+  dim?: boolean;
 }) {
   const active = pathname === item.href || pathname.startsWith(item.href + "/");
   const Icon = item.icon;
@@ -152,22 +201,19 @@ function NavItem({
   return (
     <Link
       href={item.href}
-      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all mb-0.5 ${
+      className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all mb-0.5 ${
         active
           ? "bg-teal/25 text-white border-l-[3px] border-teal pl-[9px]"
+          : dim
+          ? "text-white/45 hover:bg-white/5 hover:text-white/80"
           : "text-white/65 hover:bg-white/5 hover:text-white"
       }`}
     >
-      <Icon size={17} />
-      <span>{item.label}</span>
+      <Icon size={dim ? 14 : 17} />
+      <span className={dim ? "text-[13px]" : ""}>{item.label}</span>
       {showCount && (
         <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-500 text-white">
           {badgeCount}
-        </span>
-      )}
-      {item.highlight && !active && !showCount && (
-        <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal text-white">
-          +
         </span>
       )}
     </Link>
