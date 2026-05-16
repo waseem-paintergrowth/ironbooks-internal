@@ -10,6 +10,7 @@ import {
   RotateCcw,
   ArrowRight,
   Receipt,
+  CreditCard,
 } from "lucide-react";
 
 interface JobView {
@@ -198,6 +199,38 @@ export function ExecuteLive({ job: initialJob, userRole }: { job: JobView; userR
           </div>
         )}
       </div>
+
+      {/* Stripe AR Reconciliation handoff — for completed full_categorization jobs */}
+      {job.status === "complete" &&
+        job.workflow === "full_categorization" &&
+        !job.is_rollback &&
+        job.transactions_moved > 0 &&
+        job.client_link_id && (
+          <div className="rounded-2xl p-5 bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3 flex-1 min-w-0">
+                <div className="rounded-full flex items-center justify-center w-10 h-10 bg-white flex-shrink-0">
+                  <CreditCard className="text-purple-600" size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-bold text-base text-navy mb-1">
+                    Stripe AR Reconciliation <span className="text-xs font-normal text-ink-slate">(if applicable)</span>
+                  </h3>
+                  <p className="text-sm text-ink-slate">
+                    If this client uses Stripe, match Stripe deposits to customer invoices, calculate
+                    processing fees, and apply sales tax (Canada only).
+                  </p>
+                </div>
+              </div>
+              <Link
+                href={`/stripe-recon/new?client=${job.client_link_id}&reclass_job_id=${job.id}`}
+                className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
+              >
+                Start Stripe Recon <ArrowRight size={16} />
+              </Link>
+            </div>
+          </div>
+        )}
 
       {/* Bank Rules handoff — only for completed full_categorization jobs */}
       {job.status === "complete" &&

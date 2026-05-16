@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, FilePlus2, Flag, Users, Settings, LogOut, BookOpen, Clock, Zap, Shield, Shuffle } from "lucide-react";
+import { Home, FilePlus2, Flag, Users, Settings, LogOut, BookOpen, Clock, Zap, Shield, Shuffle, CreditCard } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
 import type { Database } from "@/lib/database.types";
@@ -12,6 +12,7 @@ const standardItems = [
   { href: "/jobs/new", label: "New COA Cleanup", icon: FilePlus2, highlight: true },
   { href: "/rules/new", label: "Bank Rules", icon: Zap, highlight: true },
   { href: "/reclass/new", label: "Reclassify", icon: Shuffle, highlight: true },
+  { href: "/stripe-recon/new", label: "Stripe AR Recon", icon: CreditCard, highlight: true },
   { href: "/flagged", label: "Flagged Queue", icon: Flag, showBadge: true },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/templates", label: "Master COA", icon: BookOpen },

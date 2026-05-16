@@ -792,6 +792,147 @@ export type Database = {
         }
         Relationships: []
       }
+      stripe_recon_jobs: {
+        Row: {
+          ai_completed_at: string | null
+          bookkeeper_id: string
+          client_link_id: string
+          created_at: string | null
+          date_range_end: string
+          date_range_start: string
+          error_message: string | null
+          execution_completed_at: string | null
+          execution_duration_seconds: number | null
+          id: string
+          jurisdiction: string
+          reclass_job_id: string | null
+          state_province: string | null
+          status: string
+          stripe_deposits_found: number | null
+          total_fees: number | null
+          total_matched_amount: number | null
+          total_tax: number | null
+          updated_at: string | null
+          warnings: Json | null
+        }
+        Insert: {
+          ai_completed_at?: string | null
+          bookkeeper_id: string
+          client_link_id: string
+          created_at?: string | null
+          date_range_end: string
+          date_range_start: string
+          error_message?: string | null
+          execution_completed_at?: string | null
+          execution_duration_seconds?: number | null
+          id?: string
+          jurisdiction: string
+          reclass_job_id?: string | null
+          state_province?: string | null
+          status?: string
+          stripe_deposits_found?: number | null
+          total_fees?: number | null
+          total_matched_amount?: number | null
+          total_tax?: number | null
+          updated_at?: string | null
+          warnings?: Json | null
+        }
+        Update: {
+          ai_completed_at?: string | null
+          bookkeeper_id?: string
+          client_link_id?: string
+          created_at?: string | null
+          date_range_end?: string
+          date_range_start?: string
+          error_message?: string | null
+          execution_completed_at?: string | null
+          execution_duration_seconds?: number | null
+          id?: string
+          jurisdiction?: string
+          reclass_job_id?: string | null
+          state_province?: string | null
+          status?: string
+          stripe_deposits_found?: number | null
+          total_fees?: number | null
+          total_matched_amount?: number | null
+          total_tax?: number | null
+          updated_at?: string | null
+          warnings?: Json | null
+        }
+        Relationships: []
+      }
+      stripe_recon_matches: {
+        Row: {
+          ai_confidence: number | null
+          ai_reasoning: string | null
+          bookkeeper_override: boolean | null
+          computed_fee: number | null
+          computed_tax: number | null
+          created_at: string | null
+          decision: "auto_approve" | "needs_review" | "flagged"
+          deposit_amount: number
+          deposit_date: string
+          deposit_memo: string | null
+          error_message: string | null
+          executed: boolean | null
+          executed_at: string | null
+          id: string
+          job_id: string
+          matched_customer_names: string[] | null
+          matched_invoices: Json | null
+          qbo_deposit_id: string
+          qbo_deposit_txn_type: string | null
+          tax_code: string | null
+          total_invoice_amount: number | null
+        }
+        Insert: {
+          ai_confidence?: number | null
+          ai_reasoning?: string | null
+          bookkeeper_override?: boolean | null
+          computed_fee?: number | null
+          computed_tax?: number | null
+          created_at?: string | null
+          decision?: "auto_approve" | "needs_review" | "flagged"
+          deposit_amount: number
+          deposit_date: string
+          deposit_memo?: string | null
+          error_message?: string | null
+          executed?: boolean | null
+          executed_at?: string | null
+          id?: string
+          job_id: string
+          matched_customer_names?: string[] | null
+          matched_invoices?: Json | null
+          qbo_deposit_id: string
+          qbo_deposit_txn_type?: string | null
+          tax_code?: string | null
+          total_invoice_amount?: number | null
+        }
+        Update: {
+          ai_confidence?: number | null
+          ai_reasoning?: string | null
+          bookkeeper_override?: boolean | null
+          computed_fee?: number | null
+          computed_tax?: number | null
+          created_at?: string | null
+          decision?: "auto_approve" | "needs_review" | "flagged"
+          deposit_amount?: number
+          deposit_date?: string
+          deposit_memo?: string | null
+          error_message?: string | null
+          executed?: boolean | null
+          executed_at?: string | null
+          id?: string
+          job_id?: string
+          matched_customer_names?: string[] | null
+          matched_invoices?: Json | null
+          qbo_deposit_id?: string
+          qbo_deposit_txn_type?: string | null
+          tax_code?: string | null
+          total_invoice_amount?: number | null
+        }
+        Relationships: []
+      }
       users: {
         Row: {
           avatar_url: string | null
