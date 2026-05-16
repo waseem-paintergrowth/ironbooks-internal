@@ -114,7 +114,7 @@ export default async function ReviewPage({
   const jurisdiction = (clientLink?.jurisdiction as string) || 'US';
   const { data: masterAccounts } = await supabase
     .from("master_coa")
-    .select("account_name, parent_account_name, is_parent, section")
+    .select("account_name, parent_account_name, is_parent, section, sort_order")
     .eq("jurisdiction", jurisdiction)
     .eq("is_parent", false)
     .order("sort_order");
