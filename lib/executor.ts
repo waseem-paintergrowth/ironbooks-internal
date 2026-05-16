@@ -10,6 +10,7 @@ import * as qbo from "./qbo";
 import * as double from "./double";
 import * as validate from "./qbo-validation";
 import { generateManualRepairPlan, type FailureContext } from "./claude-repair";
+import { fetchTransactionsForAccount, reclassifyTransactionLines } from "./qbo-reclass";
 
 type SupabaseClient = ReturnType<typeof createServiceSupabase>;
 
@@ -26,6 +27,7 @@ interface ExecutionContext {
 interface ExecutionStats {
   created: number;
   renamed: number;
+  merged: number;
   reclassified: number;
   inactivated: number;
   duration_seconds: number;
@@ -170,7 +172,7 @@ export async function executeJob(jobId: string): Promise<{
   // Each entry has the exact request body + QBO error + account snapshot.
   const pendingFailures: FailureContext[] = [];
   const stats: ExecutionStats = {
-    created: 0, renamed: 0, reclassified: 0, inactivated: 0, duration_seconds: 0,
+    created: 0, renamed: 0, merged: 0, reclassified: 0, inactivated: 0, duration_seconds: 0,
   };
 
   const { data: job, error: jobErr } = await supabase
@@ -284,6 +286,8 @@ export async function executeJob(jobId: string): Promise<{
       }
 
       // -- Rule 4: Rename would cause a name collision
+      // Merge actions intentionally target an existing name (or one about to be created
+      // by the preceding rename), so we skip collision checks for them.
       if (a.action === "rename" && a.qbo_account_id && a.new_name) {
         const current = liveById.get(a.qbo_account_id);
         const parentId = current?.ParentRef?.value || null;
@@ -627,6 +631,149 @@ export async function executeJob(jobId: string): Promise<{
       await logProgress(ctx, "stage_complete", `Renames complete`, { stage: "rename" });
     }
 
+    // STAGE 3.5: Merge
+    // For each merge action: move all transactions from the source account to the
+    // target account (which was just renamed into existence in Stage 3), then
+    // inactivate the source. Uses the same line-level reclassification engine as
+    // the Reclass module.
+    const merges = liveActions.filter((a) => a.action === "merge");
+
+    if (merges.length > 0) {
+      await logProgress(ctx, "stage_start", `Merging ${merges.length} accounts`,
+        { stage: "merge", total: merges.length });
+
+      // Re-fetch live accounts after Stage 3 so we have fresh QBO IDs for renamed targets.
+      const postRenameAccounts = await qbo.fetchAllAccounts(ctx.realmId, ctx.accessToken);
+      const postRenameByName = new Map(
+        postRenameAccounts.map((a) => [a.Name.trim().toLowerCase(), a])
+      );
+      const postRenameById = new Map(postRenameAccounts.map((a) => [a.Id, a]));
+
+      for (const action of merges) {
+        if (!action.new_name || !action.qbo_account_id) {
+          await flagAction(ctx, action, "Merge has no target account name — skipping.");
+          continue;
+        }
+
+        // Resolve the target account's QBO ID by name (case-insensitive)
+        const targetAccount = postRenameByName.get(action.new_name.trim().toLowerCase());
+        if (!targetAccount) {
+          pendingFailures.push({
+            intended_action: "rename",
+            account_id: action.qbo_account_id,
+            account_name: action.current_name || "Unknown",
+            request_body: { merge_target: action.new_name },
+            qbo_error: `Target account "${action.new_name}" not found in QBO after rename stage`,
+            account_snapshot: null,
+          });
+          await logActionResult(ctx, action.id, "manual_cleanup_required", {
+            name: action.current_name,
+            reason: `Merge target "${action.new_name}" not found — may need to be created manually`,
+          });
+          continue;
+        }
+
+        const sourceAccount = postRenameById.get(action.qbo_account_id) as any;
+        if (!sourceAccount) {
+          await flagAction(ctx, action, "Source account no longer exists in QBO.");
+          continue;
+        }
+
+        try {
+          // Fetch all transactions that reference the source account (all time)
+          const dateStart = "2000-01-01";
+          const dateEnd = new Date().toISOString().slice(0, 10);
+
+          const { lines, transactionsPulled } = await fetchTransactionsForAccount(
+            ctx.realmId, ctx.accessToken, action.qbo_account_id, dateStart, dateEnd
+          );
+
+          await logProgress(ctx, "merge_progress",
+            `Merging "${action.current_name}" → "${action.new_name}" (${lines.length} lines across ${transactionsPulled} txns)`,
+            { source: action.current_name, target: action.new_name, lines: lines.length }
+          );
+
+          // Group lines by transaction so we can batch updates per transaction
+          const linesByTx = new Map<string, typeof lines>();
+          for (const line of lines) {
+            if (!linesByTx.has(line.transaction_id)) linesByTx.set(line.transaction_id, []);
+            linesByTx.get(line.transaction_id)!.push(line);
+          }
+
+          let linesReclassed = 0;
+          for (const [txId, txLines] of linesByTx) {
+            const txType = txLines[0].transaction_type;
+            await reclassifyTransactionLines(ctx.realmId, ctx.accessToken, {
+              txType,
+              txId,
+              lineUpdates: txLines.map((l) => ({
+                line_id: l.line_id,
+                new_account_id: targetAccount.Id,
+                new_account_name: targetAccount.Name,
+              })),
+              auditMemo: `IronBooks merge: "${action.current_name}" → "${action.new_name}"`,
+            });
+            linesReclassed += txLines.length;
+          }
+
+          // Inactivate the (now-empty) source account
+          await qbo.inactivateAccount(
+            ctx.realmId, ctx.accessToken,
+            action.qbo_account_id, sourceAccount.SyncToken,
+            sourceAccount
+          );
+
+          await markActionComplete(ctx, action.id, targetAccount.Id, {
+            merged_into: action.new_name,
+            lines_moved: linesReclassed,
+          });
+          await logActionResult(ctx, action.id, "qbo_merge", {
+            from: action.current_name,
+            into: action.new_name,
+            lines_moved: linesReclassed,
+          });
+          stats.merged++;
+          stats.reclassified += linesReclassed;
+
+        } catch (e: any) {
+          pendingFailures.push({
+            intended_action: "rename",
+            account_id: action.qbo_account_id,
+            account_name: action.current_name || "Unknown",
+            request_body: {
+              merge_source: action.current_name,
+              merge_target: action.new_name,
+              target_qbo_id: targetAccount.Id,
+            },
+            qbo_error: String(e?.message || e),
+            account_snapshot: sourceAccount ? {
+              Name: sourceAccount.Name,
+              AccountType: sourceAccount.AccountType,
+              AccountSubType: sourceAccount.AccountSubType,
+              CurrentBalance: sourceAccount.CurrentBalance,
+              Active: sourceAccount.Active,
+            } : null,
+          });
+          await ctx.supabase
+            .from("coa_actions")
+            .update({
+              executed: false,
+              error_message: null,
+              flagged_reason: "Manual cleanup required: see Manual Cleanup Report.",
+            })
+            .eq("id", action.id);
+          await logActionResult(ctx, action.id, "manual_cleanup_required", {
+            name: action.current_name,
+            reason: `Merge failed — sent to AI for repair plan: ${e.message}`,
+          });
+        }
+      }
+
+      await logProgress(ctx, "stage_complete",
+        `Merges complete: ${stats.merged} merged`,
+        { stage: "merge", merged: stats.merged });
+    }
+
     // STAGE 4: Inactivate
     const deletions = liveActions.filter((a) => a.action === "delete");
 
@@ -706,9 +853,9 @@ export async function executeJob(jobId: string): Promise<{
     try {
       const bookkeeperName = await getBookkeeperName(ctx);
       await double.postCleanupComplete(ctx.doubleClientId, {
-        accountsRenamed: stats.renamed,
+        accountsRenamed: stats.renamed + stats.merged,
         accountsCreated: stats.created,
-        accountsDeleted: stats.inactivated,
+        accountsDeleted: stats.inactivated + stats.merged,
         transactionsReclassified: stats.reclassified,
         bookkeeperName,
         durationSeconds: Math.floor((Date.now() - startTime) / 1000),

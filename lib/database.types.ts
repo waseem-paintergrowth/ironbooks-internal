@@ -1102,7 +1102,7 @@ export type Database = {
         | "asset"
         | "liability"
       client_status: "onboarding" | "active" | "behind" | "paused" | "churned"
-      coa_action: "keep" | "rename" | "delete" | "flag" | "create"
+      coa_action: "keep" | "rename" | "delete" | "flag" | "create" | "merge"
       expense_category:
         | "marketing"
         | "salaries_payroll"
@@ -1274,7 +1274,7 @@ export const Constants = {
         "liability",
       ],
       client_status: ["onboarding", "active", "behind", "paused", "churned"],
-      coa_action: ["keep", "rename", "delete", "flag", "create"],
+      coa_action: ["keep", "rename", "delete", "flag", "create", "merge"],
       expense_category: [
         "marketing",
         "salaries_payroll",

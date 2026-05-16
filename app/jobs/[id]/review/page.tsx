@@ -110,6 +110,15 @@ export default async function ReviewPage({
     );
   }
 
+  // Fetch master COA leaf accounts for the job's jurisdiction (for the Map to Master dropdown)
+  const jurisdiction = (clientLink?.jurisdiction as string) || 'US';
+  const { data: masterAccounts } = await supabase
+    .from("master_coa")
+    .select("account_name, parent_account_name, is_parent, section")
+    .eq("jurisdiction", jurisdiction)
+    .eq("is_parent", false)
+    .order("sort_order");
+
   // ============ DONE — show review UI ============
   return (
     <AppShell>
@@ -122,6 +131,7 @@ export default async function ReviewPage({
           jobId={id}
           clientLink={clientLink}
           initialActions={actions || []}
+          masterAccounts={masterAccounts || []}
         />
       </div>
     </AppShell>

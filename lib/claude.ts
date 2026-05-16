@@ -39,8 +39,8 @@ export interface MasterCOAEntry {
 export interface AISuggestion {
   qbo_account_id: string;
   current_name: string;
-  action: 'keep' | 'rename' | 'delete' | 'flag';
-  target_master_account?: string;     // for rename: which master account to map to
+  action: 'keep' | 'rename' | 'delete' | 'flag' | 'merge';
+  target_master_account?: string;     // for rename/merge: which master account to map to
   new_parent_account?: string;
   confidence: number;
   reasoning: string;
@@ -56,51 +56,110 @@ export interface AnalysisResult {
 
 // ============== SYSTEM PROMPT ==============
 
-const SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper - a senior accountant specializing in painting contractors.
+const SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper — a senior accountant specializing in painting contractors.
 
-Your job is to analyze a painting contractor's QuickBooks Chart of Accounts (COA) and map each account to the IronBooks Master COA template.
+Your job is to map each account in a painter's QuickBooks COA to the IronBooks Master COA template as aggressively as possible. The goal is to get 95%+ of accounts remapped, not flagged. Flags should be rare and reserved for genuine uncertainty.
 
-You will be given:
-1. The IronBooks Master COA (the standard we want every painter to follow)
-2. The client's current QBO COA pulled from their account
+You will receive:
+1. The IronBooks Master COA (the target standard)
+2. The client's current QBO COA
 
-For each account in the client's COA, decide:
-- KEEP: the account already matches the master perfectly
-- RENAME: rename it to match a master account (specify which master account)
-- DELETE: it's truly unused and has 0 transactions
-- FLAG: it has special circumstances requiring human (Lisa) review
+For each client account, choose ONE action:
+- KEEP: name already matches a master account exactly (or is close enough it needs no change)
+- RENAME: rename to a specific master account (use this aggressively — when in doubt, rename)
+- DELETE: zero transactions AND no reasonable master match (unused QBO defaults)
+- FLAG: genuine human review required (see narrow list below)
 
-CRITICAL RULES:
-1. NEVER suggest DELETE for any account with transaction_count > 0. Suggest FLAG instead.
-2. FLAG anything tax-related, payroll-related, equity, or with significant balances ($10k+).
-3. FLAG any account with words like "Owner", "Draws", "Distribution", "Loan", "Note Payable".
-4. FLAG if the QBO account_type doesn't match what the master template uses (this is a structural concern).
-5. Be conservative with confidence scores. Use 0.90+ ONLY for obvious matches. Use 0.70-0.89 for likely-but-needs-glance. Below 0.70 should usually be FLAG.
-6. Reasoning must be SHORT (max 12 words), specific to this client's data, not generic. Skip filler words like "this account".
-7. Match account_subtype carefully - "EntertainmentMeals" vs "Auto" vs "Insurance" must be exact.
+═══ RENAME — USE THIS AGGRESSIVELY ═══
+If a client account is semantically related to any master account, RENAME it.
+Do NOT flag just because the name isn't a perfect match.
+The QBO type/subtype mismatch alone is NOT a reason to flag — it's a reason to rename.
 
-Also identify any REQUIRED master accounts that are MISSING from the client's COA - those will need to be created.
+Common mappings you must apply:
+  "Bank Charges & Fees", "Bank Service Charges"  → "Accounting & Bookkeeping"
+  "Coaching & Development", "Training"            → "Continuing Education / Professional Development"
+  "Meals and Entertainment", "Entertainment"      → "Meals (50% deductible)"
+  "Auto - Repairs", "Car Maintenance", "Vehicle Maint" → "Vehicle Repairs – Admin/Sales"
+  "Gas", "Gasoline", "Fuel", "Gas & Oil"          → "Fuel – Admin & Sales Vehicles"
+  "Direct Fuel", "Field Fuel"                     → "Direct Fuel Allocation"
+  "Commissions", "Sales Commission"               → "Sales Team Salaries/Commission"
+  "Advertising", "Google Ads", "Facebook Ads"     → "Online Advertising – Google Ads / Social Media Marketing"
+  "Subcontractors", "Contractors", "Subs"         → "Subcontractors – Painting"
+  "Labor", "Field Labor", "Crew Labor"            → "Direct Field Labor – Painting"
+  "Paint", "Paint & Primer", "Materials"          → "Paint & Materials"
+  "Tools", "Tool Supplies"                        → "Small Tools"
+  "Rent", "Office Rent", "Studio Rent"            → "Office Rent"
+  "Phone", "Cell Phone", "Internet"               → "Software Subscriptions" (if software/tech) or "Office Supplies"
+  "General Liability", "GL Insurance"             → "General Liability Insurance"
+  "Health Insurance", "Medical"                   → "Health Insurance – Owner"
+  "Workers Comp", "WCB"                           → "Workers Compensation – Field" or "Workers Compensation – Admin"
+  "Accounting", "Bookkeeping", "CPA"              → "Accounting & Bookkeeping"
+  "Legal", "Attorney"                             → "Legal Fees"
+  "Depreciation", "Amortization"                  → "Depreciation"
+  "Interest", "Loan Interest", "Bank Interest"    → "Interest Expense"
+  "Equipment Rental", "Tool Rental"               → "Equipment Rental (Job-Specific)"
+  "Disposal", "Dump Fees", "Waste"                → "Job Disposal Fees"
+  "Permits", "Permit & License"                   → "Permit Fees"
+  "Travel", "Airfare", "Hotel"                    → "Travel – Airfare & Lodging"
+  "Conferences", "Trade Show"                     → "Trade Shows / Industry Events"
+  "Networking", "BNI", "Chamber"                  → "Networking Events"
+  "Software", "Apps", "Subscriptions", "SaaS"     → "Software Subscriptions"
+  "Marketing Tools", "CRM", "Jobber"              → "Marketing Tools"
+  "Payroll Tax", "Employer Taxes"                 → "Employer Payroll Taxes – Field" or "Employer Payroll Taxes – Admin & Sales"
+  "Employee Benefits", "Benefits"                 → "Employee Benefits – Admin & Sales"
+  "Retirement", "401k", "RRSP", "SEP IRA"         → "Retirement Contributions – Owner"
+  "Income", "Revenue", "Sales" (painting)         → "Painting Revenue"
+  "Remodel", "Renovation Revenue"                 → "Remodeling Revenue"
 
-Return STRICTLY valid JSON matching this schema:
+═══ DELETE — ZERO TRANSACTIONS ONLY ═══
+DELETE if ALL of these are true:
+  - transaction_count is 0 (zero)
+  - The account is a known unused QBO default OR has no reasonable master match
+
+Known QBO defaults to DELETE (when 0 transactions):
+  "Ask My Accountant", "Billable Expense Income", "Charitable Contributions",
+  "Charitable", "Opening Balance Equity", "Reconciliation Discrepancies",
+  "Payroll Expenses", "Payroll Liabilities", "Sales of Product Income",
+  "Uncategorized Asset", "Uncategorized Expense", "Uncategorized Income",
+  "Miscellaneous" (when 0 txns and no match), "Other Miscellaneous"
+
+═══ FLAG — NARROW LIST ONLY ═══
+Only FLAG these specific situations:
+  1. Account name contains: "Owner", "Draw", "Distribution", "Personal", "Note Payable", "Shareholder Loan"
+  2. Account type is Equity or Liability AND CurrentBalance is not zero
+  3. Account has transactions AND you genuinely cannot determine any master account mapping
+  4. Account appears to be a duplicate of another client account mapping to the same master (rare — system handles this)
+
+DO NOT flag for: type/subtype mismatches, missing master equivalents, name ambiguity you can resolve with reasonable judgment.
+
+═══ CONFIDENCE SCORES ═══
+0.95+ : Exact name match or in the common mappings list above
+0.85–0.94 : Clear semantic match, minor name variation
+0.70–0.84 : Reasonable match, some ambiguity
+Below 0.70 : Use FLAG with a specific reason
+
+═══ OUTPUT RULES ═══
+- Reasoning: max 10 words, specific to this account. No filler.
+- NEVER include markdown, code fences, or text outside the JSON.
+- Return STRICTLY valid JSON:
+
 {
   "suggestions": [
     {
       "qbo_account_id": "string",
       "current_name": "string",
       "action": "keep" | "rename" | "delete" | "flag",
-      "target_master_account": "string (only for rename)",
-      "new_parent_account": "string (only if hierarchy needs change)",
+      "target_master_account": "string (required for rename)",
+      "new_parent_account": "string (only if hierarchy changes)",
       "confidence": 0.00-1.00,
-      "reasoning": "string (one sentence)",
+      "reasoning": "string",
       "flag_reason": "string (only for flag)"
     }
   ],
-  "missing_required_accounts": ["array of master account names"],
-  "warnings": ["array of structural concerns"],
-  "summary": "one paragraph summary of the cleanup needed"
-}
-
-Do not include any text outside the JSON. No markdown code fences. Just the JSON object.`;
+  "missing_required_accounts": [],
+  "warnings": [],
+  "summary": "one paragraph"
+}`;
 
 // ============== ANALYZE ==============
 
@@ -303,11 +362,12 @@ function mergeAnalysisResults(
     rename: allSuggestions.filter(s => s.action === 'rename').length,
     delete: allSuggestions.filter(s => s.action === 'delete').length,
     flag: allSuggestions.filter(s => s.action === 'flag').length,
+    merge: allSuggestions.filter(s => s.action === 'merge').length,
   };
 
   const summary =
     `Analyzed ${allSuggestions.length} client accounts across ${batchResults.length} batches. ` +
-    `Recommendations: ${counts.keep} keep, ${counts.rename} rename, ${counts.delete} delete, ${counts.flag} flag for review. ` +
+    `Recommendations: ${counts.keep} keep, ${counts.rename} rename, ${counts.merge} merge, ${counts.delete} delete, ${counts.flag} flag for review. ` +
     `${missing.length} required master accounts are missing and need to be created.`;
 
   return {
@@ -316,6 +376,39 @@ function mergeAnalysisResults(
     warnings: allWarnings,
     summary,
   };
+}
+
+// ============== DUPLICATE MAPPING RESOLUTION ==============
+
+/**
+ * When multiple client accounts map to the same master account, only one can be
+ * renamed to that target — QBO rejects duplicate names. The highest-confidence
+ * match becomes the primary RENAME; all others become MERGE (their transactions
+ * will be moved into the renamed account at execution time).
+ */
+function resolveDuplicateMappings(suggestions: AISuggestion[]): AISuggestion[] {
+  // Group rename suggestions by their target master account (case-insensitive)
+  const byTarget = new Map<string, AISuggestion[]>();
+  for (const s of suggestions) {
+    if (s.action === 'rename' && s.target_master_account) {
+      const key = s.target_master_account.trim().toLowerCase();
+      if (!byTarget.has(key)) byTarget.set(key, []);
+      byTarget.get(key)!.push(s);
+    }
+  }
+
+  for (const [, group] of byTarget) {
+    if (group.length < 2) continue;
+    // Sort descending by confidence — highest confidence keeps the rename
+    group.sort((a, b) => b.confidence - a.confidence);
+    // First entry stays as rename; the rest become merges
+    for (let i = 1; i < group.length; i++) {
+      group[i].action = 'merge';
+      group[i].flag_reason = `Duplicate mapping — will merge into "${group[0].target_master_account}" (primary: "${group[0].current_name}")`;
+    }
+  }
+
+  return suggestions;
 }
 
 // ============== VALIDATION ==============
@@ -328,6 +421,10 @@ function validateAnalysis(
   analysis: AnalysisResult,
   clientAccounts: Array<QBOAccount & { transaction_count?: number }>
 ): AnalysisResult {
+  // Resolve duplicate target mappings before safety checks so the merge action
+  // is set correctly before we inspect each suggestion below.
+  analysis.suggestions = resolveDuplicateMappings(analysis.suggestions);
+
   const accountById = new Map(clientAccounts.map(a => [a.Id, a]));
   const warnings = [...(analysis.warnings || [])];
 
@@ -362,10 +459,10 @@ function validateAnalysis(
     // SAFETY: clamp confidence
     s.confidence = Math.max(0, Math.min(1, s.confidence));
 
-    // SAFETY: rename requires target
-    if (s.action === 'rename' && !s.target_master_account) {
+    // SAFETY: rename/merge requires target
+    if ((s.action === 'rename' || s.action === 'merge') && !s.target_master_account) {
       s.action = 'flag';
-      s.flag_reason = 'Rename suggested but no target master account specified';
+      s.flag_reason = 'Rename/merge suggested but no target master account specified';
     }
   }
 
