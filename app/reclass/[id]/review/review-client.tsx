@@ -1046,15 +1046,23 @@ function extractSender(
 ): string {
   const isMeaningfulVendor = (v: string) => {
     const lower = v.toLowerCase().trim();
-    return lower && lower !== "unknown vendor" && lower !== "unknown" && lower !== "n/a";
+    if (!lower) return false;
+    if (lower === "unknown vendor" || lower === "unknown" || lower === "n/a") return false;
+    // Generic peer-payment / transfer labels — these tell the client
+    // nothing on their own. Dig into the description for the real party.
+    if (/^(venmo|zelle|paypal|cash\s*app)(\s+(payment|transfer|deposit))?$/i.test(lower)) return false;
+    if (/^(online\s+transfer|wire\s+transfer|ach\s+transfer|funds?\s+transfer|internal\s+transfer)$/i.test(lower)) return false;
+    if (/^(transfer|deposit|withdrawal|payment)$/i.test(lower)) return false;
+    return true;
   };
 
   const v = (vendorName || "").trim();
   if (isMeaningfulVendor(v)) return v;
 
-  // Fall back to description, then private note
+  // Fall back to description, then private note. If neither yields useful
+  // detail, keep the (generic) vendor name so the row isn't an empty "Unknown".
   const source = (description || privateNote || "").trim();
-  if (!source) return "Unknown";
+  if (!source) return v || "Unknown";
 
   let cleaned = source
     // Strip Interac/POS bank-feed prefixes
@@ -1063,11 +1071,18 @@ function extractSender(
     // Strip e-transfer noise words at the start of the descriptor
     .replace(/^(interac\s+)?e[\s\-]?transfer\s*(from\s+|to\s+)?/i, "")
     .replace(/^(emt|e[\s\-]?tfr)\s+(from\s+|to\s+)?/i, "")
+    // Strip peer-payment prefixes — keep the recipient/payer name that follows
+    .replace(/^(venmo|zelle|paypal|cash\s*app)\s*\*?\s*/i, "")
+    .replace(/^(online\s+transfer|wire\s+transfer|ach\s+transfer|funds?\s+transfer|money\s+transfer|prairie\s+transfer)\s+(to|from|authorized\s+on\s+\S+)?\s*/i, "")
     .replace(/^(received\s+from|sent\s+to|from|to)\s+/i, "")
     // Strip trailing reference numbers and memo qualifiers ("for X")
     .replace(/\s+(ref|reference|confirmation|memo)[\s:#]*[A-Z0-9]+.*$/i, "")
     .replace(/\s+for\s+(deposit|payment|services?|invoice|job|reno|cleanup|rent|materials?).*$/i, "")
     .replace(/\s+#?\d{4,}\b.*$/, "")
+    // Strip trailing card masks like "SXXXXXXXX1269204 CARD"
+    .replace(/\s+S[X*]+\d+\s*CARD\s*$/i, "")
+    // Strip trailing city/state tags ("Oakland CA", "POST FALLS ID")
+    .replace(/\s+[A-Z][A-Z\s]+\s+[A-Z]{2}\s*$/, "")
     .trim();
 
   if (!cleaned) return "Unknown";
@@ -1435,6 +1450,7 @@ function ClientEmailModal({
                       <th className="text-center px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]"># Txns</th>
                       <th className="text-right px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Total</th>
                       <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Date Range</th>
+                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Bank Memo / Notes</th>
                       <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">What were these for?</th>
                     </tr>
                   </thead>
@@ -1445,11 +1461,22 @@ function ClientEmailModal({
                         : `${g.firstDate} → ${g.lastDate}`;
                       return (
                         <tr key={i} style={{ background: i % 2 === 0 ? "#FFFFFF" : "#F4F9F8" }}>
-                          <td className="px-3 py-1.5 text-navy border border-gray-200 font-semibold">{g.sender}</td>
-                          <td className="px-3 py-1.5 text-center text-ink-slate border border-gray-200">{g.count}</td>
-                          <td className="px-3 py-1.5 text-right font-semibold text-navy border border-gray-200">${fmtMoney(g.total)}</td>
-                          <td className="px-3 py-1.5 text-ink-slate border border-gray-200 text-[10px]">{dateLabel}</td>
-                          <td className="px-3 py-1.5 text-ink-light italic border border-gray-200">(client fills in)</td>
+                          <td className="px-3 py-1.5 text-navy border border-gray-200 font-semibold align-top">{g.sender}</td>
+                          <td className="px-3 py-1.5 text-center text-ink-slate border border-gray-200 align-top">{g.count}</td>
+                          <td className="px-3 py-1.5 text-right font-semibold text-navy border border-gray-200 align-top">${fmtMoney(g.total)}</td>
+                          <td className="px-3 py-1.5 text-ink-slate border border-gray-200 text-[10px] align-top">{dateLabel}</td>
+                          <td className="px-3 py-1.5 border border-gray-200 align-top">
+                            {g.memos.length > 0 ? (
+                              <div className="space-y-0.5">
+                                {g.memos.map((m, idx) => (
+                                  <div key={idx} className="text-ink-slate text-[10px] leading-tight">• {m}</div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-ink-light italic text-[10px]">No memo on bank record</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-ink-light italic border border-gray-200 align-top">(client fills in)</td>
                         </tr>
                       );
                     })}
@@ -1458,7 +1485,7 @@ function ClientEmailModal({
               </div>
             </div>
             <p className="text-[11px] text-ink-light mt-1.5">
-              Sender extracted from vendor name or transaction description (catches e-transfer recipient names). 105 raw transactions from 15 unique people collapse to 15 rows — client gives one answer per sender.
+              Sender extracted from vendor name or transaction description (catches e-transfer / Venmo / Zelle recipient names). Bank Memo column surfaces what each payment was for so the client has context per sender.
             </p>
           </div>
 
