@@ -1,5 +1,3 @@
-import { Bell } from "lucide-react";
-
 export function TopBar({
   title,
   subtitle,
@@ -17,12 +15,7 @@ export function TopBar({
         </h1>
         {subtitle && <p className="text-sm mt-0.5 text-ink-slate">{subtitle}</p>}
       </div>
-      <div className="flex items-center gap-3">
-        {actions}
-        <button className="p-2 rounded-lg hover:bg-gray-50 text-ink-slate">
-          <Bell size={18} />
-        </button>
-      </div>
+      {actions && <div className="flex items-center gap-3">{actions}</div>}
     </div>
   );
 }
