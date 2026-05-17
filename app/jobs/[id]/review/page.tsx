@@ -111,16 +111,27 @@ export default async function ReviewPage({
     );
   }
 
-  // Fetch master COA leaf accounts for the job's jurisdiction + industry
+  // Fetch master COA leaf accounts for the job's jurisdiction + industry.
+  // Falls back to no-industry filter if Migration 7 hasn't run yet.
   const jurisdiction = (clientLink?.jurisdiction as string) || 'US';
   const industry = ((clientLink as any)?.industry as string) || 'painters';
-  const { data: masterAccounts } = await supabase
+
+  let { data: masterAccounts } = await supabase
     .from("master_coa")
     .select("account_name, parent_account_name, is_parent, section, sort_order")
     .eq("jurisdiction", jurisdiction)
     .eq("industry", industry)
     .eq("is_parent", false)
     .order("sort_order");
+  if ((masterAccounts || []).length === 0 && industry === "painters") {
+    const fb = await supabase
+      .from("master_coa")
+      .select("account_name, parent_account_name, is_parent, section, sort_order")
+      .eq("jurisdiction", jurisdiction)
+      .eq("is_parent", false)
+      .order("sort_order");
+    masterAccounts = fb.data;
+  }
 
   // ============ DONE — show review UI ============
   return (

@@ -25,10 +25,30 @@ export default async function MasterCOAPage({
 
   const canEdit = profile && ["admin", "lead"].includes(profile.role);
 
-  // Pre-fetch both jurisdictions for fast tab switching, filtered to selected industry
+  // Pre-fetch both jurisdictions for fast tab switching, filtered to selected industry.
+  // If Migration 7 hasn't run yet, the industry column doesn't exist or no rows are
+  // backfilled — fall back to fetching without the industry filter so painters works.
+  async function fetchByJurisdiction(jur: "US" | "CA") {
+    const filtered = await supabase
+      .from("master_coa")
+      .select("*")
+      .eq("jurisdiction", jur)
+      .eq("industry", validIndustry)
+      .order("sort_order");
+    if ((filtered.data || []).length === 0 && validIndustry === "painters") {
+      // Pre-migration fallback: industry column missing or not populated → fetch all rows
+      return supabase
+        .from("master_coa")
+        .select("*")
+        .eq("jurisdiction", jur)
+        .order("sort_order");
+    }
+    return filtered;
+  }
+
   const [usData, caData, usageData] = await Promise.all([
-    supabase.from("master_coa").select("*").eq("jurisdiction", "US").eq("industry", validIndustry).order("sort_order"),
-    supabase.from("master_coa").select("*").eq("jurisdiction", "CA").eq("industry", validIndustry).order("sort_order"),
+    fetchByJurisdiction("US"),
+    fetchByJurisdiction("CA"),
     supabase.from("master_coa_usage").select("*"),
   ]);
 

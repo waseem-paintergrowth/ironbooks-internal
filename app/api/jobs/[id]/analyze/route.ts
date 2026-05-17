@@ -67,13 +67,22 @@ export async function POST(
     }));
 
     // 4. Load master COA for the client's jurisdiction + industry
+    //    Falls back to no-industry filter if Migration 7 hasn't run yet.
     const industry = (clientLink as any).industry || "painters";
-    const { data: masterRows } = await service
+    let { data: masterRows } = await service
       .from("master_coa")
       .select("*")
       .eq("jurisdiction", clientLink.jurisdiction)
       .eq("industry", industry)
       .order("sort_order");
+    if ((masterRows || []).length === 0 && industry === "painters") {
+      const fb = await service
+        .from("master_coa")
+        .select("*")
+        .eq("jurisdiction", clientLink.jurisdiction)
+        .order("sort_order");
+      masterRows = fb.data;
+    }
 
     const masterCOA: MasterCOAEntry[] = (masterRows || []).map((m) => ({
       account_name: m.account_name,

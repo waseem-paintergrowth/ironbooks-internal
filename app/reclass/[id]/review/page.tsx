@@ -85,13 +85,22 @@ export default async function ReclassReviewPage({
     .maybeSingle();
   const industry = ((clientLink as any)?.industry as string) || "painters";
 
-  const { data: masterAccounts } = await service
+  let { data: masterAccounts } = await service
     .from("master_coa")
     .select("account_name, parent_account_name, is_parent, section, sort_order")
     .eq("jurisdiction", jurisdiction)
     .eq("industry", industry)
     .eq("is_parent", false)
     .order("sort_order");
+  if ((masterAccounts || []).length === 0 && industry === "painters") {
+    const fb = await service
+      .from("master_coa")
+      .select("account_name, parent_account_name, is_parent, section, sort_order")
+      .eq("jurisdiction", jurisdiction)
+      .eq("is_parent", false)
+      .order("sort_order");
+    masterAccounts = fb.data;
+  }
 
   // Also load live QBO accounts so we can resolve target_account_id when the
   // bookkeeper picks a master account by name. The qbo-accounts endpoint already
