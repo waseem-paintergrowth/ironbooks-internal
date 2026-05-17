@@ -21,7 +21,9 @@ import {
   Loader2,
   Building2,
   Trash2,
+  FileText,
 } from "lucide-react";
+import { CleanupReportModal } from "@/components/CleanupReportModal";
 
 interface ClientRow {
   id: string;
@@ -454,6 +456,7 @@ function ClientRow({
   const [stripeLoading, setStripeLoading] = useState(false);
   const [stripeCopied, setStripeCopied] = useState(false);
   const [stripeError, setStripeError] = useState("");
+  const [reportOpen, setReportOpen] = useState(false);
 
   async function handleGenerateLink() {
     setStripeLoading(true);
@@ -749,6 +752,14 @@ function ClientRow({
             >
               Rules
             </Link>
+            <button
+              onClick={() => setReportOpen(true)}
+              className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold bg-navy/10 text-navy hover:bg-navy/15"
+              title="Generate a branded cleanup-summary PDF for this client"
+            >
+              <FileText size={10} />
+              Report
+            </button>
           </>
         )}
       </div>
@@ -809,6 +820,13 @@ function ClientRow({
           </button>
         )}
       </div>
+      {reportOpen && (
+        <CleanupReportModal
+          clientId={client.id}
+          clientName={client.client_name}
+          onClose={() => setReportOpen(false)}
+        />
+      )}
     </div>
   );
 }
