@@ -76,6 +76,28 @@ export function BankRulesFromReclassClient({
     }
   }
 
+  if (proposedRules.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-4">
+        <p className="text-ink-slate text-sm">
+          No vendor→account mappings to create rules from — the job had no approved transactions,
+          or all vendors were already saved as bank rules.
+        </p>
+        <Link
+          href="/stripe-recon/new"
+          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-2.5 rounded-lg"
+        >
+          Continue to Stripe Recon <ArrowRight size={16} />
+        </Link>
+        <div>
+          <Link href="/dashboard" className="text-sm text-ink-slate underline hover:text-navy">
+            Skip — back to dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   if (created !== null) {
     return (
       <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-4">
@@ -89,11 +111,16 @@ export function BankRulesFromReclassClient({
           Future transactions matching these vendors will auto-categorize in QBO.
         </p>
         <Link
-          href="/dashboard"
+          href="/stripe-recon/new"
           className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-2.5 rounded-lg"
         >
-          Done <ArrowRight size={16} />
+          Continue to Stripe Recon <ArrowRight size={16} />
         </Link>
+        <div>
+          <Link href="/dashboard" className="text-sm text-ink-slate underline hover:text-navy">
+            Back to dashboard
+          </Link>
+        </div>
       </div>
     );
   }

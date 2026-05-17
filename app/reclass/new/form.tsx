@@ -333,13 +333,36 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
               </div>
             )}
             {presetsError && (
-              <div className="flex items-start gap-2 p-3 bg-red-50 text-red-800 rounded-lg text-sm">
+              <div className="flex items-start gap-2 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">
                 <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-                {presetsError}
+                Could not load fiscal year from QBO — enter dates manually.
               </div>
             )}
 
-            {datePresets.length > 0 && (
+            {presetsError && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-semibold text-navy mb-2">Date range start</label>
+                  <input
+                    type="date"
+                    value={dateRangeStart}
+                    onChange={(e) => setDateRangeStart(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-navy mb-2">Date range end</label>
+                  <input
+                    type="date"
+                    value={dateRangeEnd}
+                    onChange={(e) => setDateRangeEnd(e.target.value)}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-teal focus:outline-none"
+                  />
+                </div>
+              </div>
+            )}
+
+            {!presetsError && datePresets.length > 0 && (
               <>
                 <div>
                   <label className="flex items-center gap-1.5 text-sm font-semibold text-navy mb-2">
