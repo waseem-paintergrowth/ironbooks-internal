@@ -252,7 +252,6 @@ export function ExecuteLive({
       {job.status === "complete" &&
         job.workflow === "full_categorization" &&
         !job.is_rollback &&
-        job.transactions_moved > 0 &&
         job.client_link_id &&
         (hasStripeDeposits ? (
           <div className="rounded-2xl p-5 bg-gradient-to-br from-purple-50 to-pink-50 border-2 border-purple-200">
@@ -304,8 +303,9 @@ export function ExecuteLive({
                     Generate Bank Rules
                   </h3>
                   <p className="text-sm text-ink-slate">
-                    No Stripe deposits detected — skipping Step 3. Turn the {job.transactions_moved} approved
-                    categorizations into QBO Bank Rules so future transactions auto-categorize.
+                    {job.transactions_moved > 0
+                      ? `No Stripe deposits detected — skipping Step 3. Turn the ${job.transactions_moved} approved categorizations into QBO Bank Rules so future transactions auto-categorize.`
+                      : "All transactions were already correctly categorized — nothing to move. Create bank rules to lock in vendor→account mappings going forward."}
                   </p>
                 </div>
               </div>
