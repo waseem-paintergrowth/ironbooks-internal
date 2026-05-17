@@ -138,7 +138,7 @@ export async function POST(request: Request) {
       sample_descriptions: group.sampleDescriptions,
       transaction_count: group.txCount,
       total_amount: group.totalAmount,
-      created_by: "reclass",
+      created_by: user.id, // UUID — bank_rules.created_by FKs to users.id
       pushed_to_qbo: false,
     });
   }
