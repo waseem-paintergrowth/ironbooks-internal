@@ -414,6 +414,14 @@ function buildReclassRow(
     reasoning: string;
   }
 ) {
+  // An auto_approve without a target account would silently fail at execution time.
+  // Demote it to needs_review so the bookkeeper can assign a target manually.
+  const hasTarget = !!(classification.target_account_id);
+  const decision =
+    !hasTarget && classification.decision === "auto_approve"
+      ? "needs_review"
+      : classification.decision;
+
   return {
     job_id: jobId, // legacy column - we satisfy NOT NULL by reusing
     reclass_job_id: jobId,
@@ -434,7 +442,7 @@ function buildReclassRow(
     is_bank_fed: line.is_bank_fed,
     is_manual_entry: line.is_manual_entry,
     original_memo: line.private_note,
-    decision: classification.decision,
+    decision,
     ai_confidence: classification.confidence,
     ai_reasoning: classification.reasoning,
     status: "pending",
