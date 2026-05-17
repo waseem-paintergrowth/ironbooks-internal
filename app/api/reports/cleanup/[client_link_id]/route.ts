@@ -85,13 +85,20 @@ export async function GET(
   }
 
   const safeClient = data.client_name.replace(/[^A-Za-z0-9 .\-_]+/g, "").trim() || "Client";
-  const filename = `Ironbooks Cleanup — ${safeClient} — ${start}_${end}.pdf`;
+  // HTTP headers are strict ASCII (ByteString). Em-dashes etc. crash the
+  // response with "character at index N has a value greater than 255".
+  // Use a plain ASCII filename for the fallback `filename=` param and
+  // also emit the RFC 5987 `filename*=UTF-8''<percent-encoded>` form for
+  // user-agents that prefer Unicode.
+  const asciiFilename = `Ironbooks Cleanup - ${safeClient} - ${start}_${end}.pdf`;
+  const utf8Filename = `Ironbooks Cleanup — ${safeClient} — ${start}_${end}.pdf`;
+  const encodedUtf8 = encodeURIComponent(utf8Filename);
 
   return new NextResponse(pdfBuffer as any, {
     status: 200,
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodedUtf8}`,
       "Content-Length": String(pdfBuffer.length),
       "Cache-Control": "no-store",
     },
