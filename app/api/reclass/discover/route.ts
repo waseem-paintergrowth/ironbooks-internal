@@ -10,7 +10,7 @@ import {
   getValidToken,
   type ReclassLine,
 } from "@/lib/qbo-reclass";
-import { fetchAllAccounts } from "@/lib/qbo";
+import { fetchAllAccounts, createAccount } from "@/lib/qbo";
 import {
   classifyVendorGroups,
   categorizeAllTransactions,
@@ -502,6 +502,45 @@ function isDoubleCloseLocked(status: string): boolean {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// UNCATEGORIZED EXPENSES ACCOUNT
+// Ensures a catch-all "Uncategorized Expenses" account exists in the client's
+// QBO, creating it if needed. Transactions that can't be categorized land here
+// so the bookkeeper can review and recategorize them in QBO rather than having
+// them stuck in a failed/pending state in Ironbooks.
+// ════════════════════════════════════════════════════════════════════════════
+
+const UNCATEGORIZED_ACCOUNT_NAME = "Uncategorized Expenses";
+
+async function getOrCreateUncategorizedAccount(
+  realmId: string,
+  accessToken: string,
+  availableAccounts: AvailableAccount[]
+): Promise<AvailableAccount | null> {
+  const existing = availableAccounts.find(
+    (a) => a.account_name.toLowerCase() === UNCATEGORIZED_ACCOUNT_NAME.toLowerCase()
+  );
+  if (existing) return existing;
+
+  try {
+    const created = await createAccount(realmId, accessToken, {
+      name: UNCATEGORIZED_ACCOUNT_NAME,
+      accountType: "Expense",
+      accountSubType: "OtherMiscellaneousExpense",
+      description: "Transactions that could not be automatically categorized. Review and recategorize as needed.",
+    });
+    return {
+      qbo_account_id: created.Id,
+      account_name: created.Name,
+      account_type: "Expense",
+      account_subtype: "OtherMiscellaneousExpense",
+    };
+  } catch (err: any) {
+    console.warn("[reclass] Could not create Uncategorized Expenses account:", err.message);
+    return null;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // FULL CATEGORIZATION DISCOVERY
 // Pulls every line in date range, runs Claude line-level classification,
 // applies the auto-approve threshold, and writes reclassifications rows.
@@ -556,6 +595,17 @@ async function runFullCategorization(
       account_type: a.AccountType || "",
       account_subtype: a.AccountSubType || "",
     }));
+
+  // Get or create the "Uncategorized Expenses" catch-all account in QBO
+  const uncategorizedAccount = await getOrCreateUncategorizedAccount(
+    clientLink.qbo_realm_id,
+    accessToken,
+    availableAccounts
+  );
+  // Make sure it's in the name→account map so lookups work
+  if (uncategorizedAccount && !availableAccounts.find((a) => a.qbo_account_id === uncategorizedAccount.qbo_account_id)) {
+    availableAccounts.push(uncategorizedAccount);
+  }
 
   const stats = {
     inScope: 0,
@@ -635,10 +685,12 @@ async function runFullCategorization(
       // Apply the KB decision EVEN IF the suggested account isn't in the client's
       // current QBO COA — the COA cleanup step may have removed it or this client
       // may need it added. The bookkeeper can override via the dropdown.
+      const resolvedAccountId = account?.qbo_account_id || uncategorizedAccount?.qbo_account_id || null;
+      const resolvedAccountName = account?.account_name || kbMatch.account;
       preMatched.set(refId, {
         ref_id: refId,
-        target_account_id: account?.qbo_account_id || null,
-        target_account_name: account?.account_name || kbMatch.account,
+        target_account_id: resolvedAccountId,
+        target_account_name: resolvedAccountName,
         confidence: kbMatch.confidence,
         reasoning: kbMatch.reasoning + (account ? "" : ` (suggest creating "${kbMatch.account}")`),
         decision:
@@ -793,29 +845,39 @@ async function runFullCategorization(
     if (!decision) {
       reclassRows.push(
         buildReclassRow(jobId, line, {
-          target_account_id: null,
-          target_account_name: null,
-          decision: "flagged",
+          target_account_id: uncategorizedAccount?.qbo_account_id || null,
+          target_account_name: uncategorizedAccount?.account_name || null,
+          decision: uncategorizedAccount ? "auto_approve" : "flagged",
           confidence: 0,
-          reasoning: "AI did not return a decision for this line.",
+          reasoning: uncategorizedAccount
+            ? "AI did not return a decision — routed to Uncategorized Expenses for bookkeeper review."
+            : "AI did not return a decision for this line.",
         })
       );
-      stats.flagged++;
+      if (uncategorizedAccount) stats.autoApprove++;
+      else stats.flagged++;
       continue;
     }
 
+    const resolvedTargetId = decision.target_account_id || uncategorizedAccount?.qbo_account_id || null;
+    const resolvedTargetName = decision.target_account_name || uncategorizedAccount?.account_name || null;
+    const resolvedDecision =
+      !decision.target_account_id && uncategorizedAccount
+        ? "auto_approve"
+        : decision.decision;
+
     reclassRows.push(
       buildReclassRow(jobId, line, {
-        target_account_id: decision.target_account_id,
-        target_account_name: decision.target_account_name,
-        decision: decision.decision,
+        target_account_id: resolvedTargetId,
+        target_account_name: resolvedTargetName,
+        decision: resolvedDecision,
         confidence: decision.confidence,
         reasoning: decision.flagged_reason || decision.reasoning,
       })
     );
 
-    if (decision.decision === "auto_approve") stats.autoApprove++;
-    else if (decision.decision === "needs_review") stats.needsReview++;
+    if (resolvedDecision === "auto_approve") stats.autoApprove++;
+    else if (resolvedDecision === "needs_review") stats.needsReview++;
     else stats.flagged++;
   }
 
