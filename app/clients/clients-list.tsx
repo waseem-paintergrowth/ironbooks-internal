@@ -20,6 +20,7 @@ import {
   User as UserIcon,
   Loader2,
   Building2,
+  Trash2,
 } from "lucide-react";
 
 interface ClientRow {
@@ -80,6 +81,7 @@ export function ClientsList({
   const [assignmentFilter, setAssignmentFilter] = useState<string>("all");
   const [jurisdictionFilter, setJurisdictionFilter] = useState<string>("all");
   const [view, setView] = useState<"grid" | "table">("table");
+  const [deleteTarget, setDeleteTarget] = useState<ClientRow | null>(null);
 
   // Filters
   const filtered = useMemo(() => {
@@ -163,6 +165,17 @@ export function ClientsList({
       setClients(initialClients);
     }
     router.refresh();
+  }
+
+  async function deleteClient(id: string) {
+    const res = await fetch(`/api/clients/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(`Delete failed: ${error}`);
+      return;
+    }
+    setClients((prev) => prev.filter((c) => c.id !== id));
+    setDeleteTarget(null);
   }
 
   return (
@@ -322,6 +335,7 @@ export function ClientsList({
               bookkeepers={bookkeepers}
               canEdit={canEdit}
               onUpdate={(updates) => updateClient(client.id, updates)}
+              onDelete={canEdit ? () => setDeleteTarget(client) : undefined}
             />
           ))}
         </div>
@@ -337,9 +351,18 @@ export function ClientsList({
               bookkeepers={bookkeepers}
               canEdit={canEdit}
               onUpdate={(updates) => updateClient(client.id, updates)}
+              onDelete={canEdit ? () => setDeleteTarget(client) : undefined}
             />
           ))}
         </div>
+      )}
+
+      {deleteTarget && (
+        <DeleteConfirmModal
+          client={deleteTarget}
+          onConfirm={() => deleteClient(deleteTarget.id)}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );
@@ -413,11 +436,13 @@ function ClientRow({
   bookkeepers,
   canEdit,
   onUpdate,
+  onDelete,
 }: {
   client: ClientRow;
   bookkeepers: Bookkeeper[];
   canEdit: boolean;
   onUpdate: (updates: Partial<ClientRow>) => void;
+  onDelete?: () => void;
 }) {
   const statusCfg = STATUS_CONFIG[client.status];
   const StatusIcon = statusCfg.icon;
@@ -764,7 +789,7 @@ function ClientRow({
         )}
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end items-center gap-1">
         <a
           href={`https://app.qbo.intuit.com/app/account?cid=${client.qbo_realm_id}`}
           target="_blank"
@@ -774,6 +799,15 @@ function ClientRow({
         >
           <ExternalLink size={13} className="text-ink-slate" />
         </a>
+        {onDelete && (
+          <button
+            onClick={onDelete}
+            className="p-1.5 rounded hover:bg-red-50 text-ink-light hover:text-red-600 transition-colors"
+            title="Delete client"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -784,11 +818,13 @@ function ClientCard({
   bookkeepers,
   canEdit,
   onUpdate,
+  onDelete,
 }: {
   client: ClientRow;
   bookkeepers: Bookkeeper[];
   canEdit: boolean;
   onUpdate: (updates: Partial<ClientRow>) => void;
+  onDelete?: () => void;
 }) {
   const statusCfg = STATUS_CONFIG[client.status];
   const StatusIcon = statusCfg.icon;
@@ -808,13 +844,24 @@ function ClientCard({
             </div>
           </div>
         </div>
-        <span
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider flex-shrink-0"
-          style={{ color: statusCfg.color, backgroundColor: statusCfg.bg }}
-        >
-          <StatusIcon size={9} />
-          {statusCfg.label}
-        </span>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <span
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
+            style={{ color: statusCfg.color, backgroundColor: statusCfg.bg }}
+          >
+            <StatusIcon size={9} />
+            {statusCfg.label}
+          </span>
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="p-1 rounded hover:bg-red-50 text-ink-light hover:text-red-600 transition-colors"
+              title="Delete client"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2 my-3 py-3 border-y border-gray-100">
@@ -915,6 +962,76 @@ function CardStat({
         </span>
       </div>
       <div className="text-[10px] uppercase tracking-wider text-ink-light">{label}</div>
+    </div>
+  );
+}
+
+function DeleteConfirmModal({
+  client,
+  onConfirm,
+  onCancel,
+}: {
+  client: ClientRow;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const match = typed.trim().toLowerCase() === client.client_name.trim().toLowerCase();
+
+  async function handleConfirm() {
+    if (!match) return;
+    setDeleting(true);
+    await onConfirm();
+    setDeleting(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-md mx-4 p-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2.5 rounded-lg bg-red-50">
+            <Trash2 size={18} className="text-red-600" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-navy">Delete Client</h2>
+            <p className="text-xs text-ink-slate mt-0.5">This action cannot be undone.</p>
+          </div>
+        </div>
+
+        <p className="text-sm text-ink-slate mb-1">
+          This will permanently delete <span className="font-semibold text-navy">{client.client_name}</span> and all
+          associated jobs, rules, and history.
+        </p>
+
+        <p className="text-sm text-ink-slate mt-4 mb-2">
+          Type <span className="font-mono font-bold text-navy">{client.client_name}</span> to confirm:
+        </p>
+        <input
+          type="text"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          autoFocus
+          placeholder={client.client_name}
+          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-300 mb-4"
+        />
+
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={!match || deleting}
+            className="flex-1 px-4 py-2 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {deleting ? "Deleting..." : "Delete permanently"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
