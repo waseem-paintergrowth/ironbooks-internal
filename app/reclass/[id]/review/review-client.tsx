@@ -1035,13 +1035,15 @@ function ClientEmailModal({
 
     return `<div style="font-family:'Figtree','Helvetica Neue',Helvetica,Arial,sans-serif;color:${BRAND.navy};max-width:720px;margin:0 auto;background:${BRAND.white};">
   <!-- Brand header bar -->
-  <div style="background:${BRAND.navy};color:${BRAND.white};padding:18px 22px;border-radius:10px 10px 0 0;display:flex;align-items:center;">
+  <div style="background:${BRAND.navy};color:${BRAND.white};padding:18px 22px;border-radius:10px 10px 0 0;">
     <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
       <tr>
-        <td style="background:${BRAND.teal};color:${BRAND.white};font-weight:700;font-size:16px;width:38px;height:38px;text-align:center;border-radius:8px;font-family:'Figtree','Helvetica Neue',sans-serif;">IB</td>
-        <td style="padding-left:12px;color:${BRAND.white};">
-          <div style="font-size:18px;font-weight:700;letter-spacing:-0.01em;line-height:1.1;">Ironbooks</div>
-          <div style="font-size:11px;color:rgba(255,255,255,0.6);margin-top:2px;letter-spacing:0.06em;text-transform:uppercase;">Bookkeeping &middot; Cleanup</div>
+        <td style="vertical-align:middle;width:54px;padding-right:14px;">
+          <img src="https://internal.ironbooks.com/logo.png" alt="Ironbooks" width="44" height="44" style="display:block;width:44px;height:auto;" />
+        </td>
+        <td style="vertical-align:middle;color:${BRAND.white};">
+          <div style="font-size:20px;font-weight:700;letter-spacing:-0.01em;line-height:1.1;color:${BRAND.white};">Ironbooks</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:3px;letter-spacing:0.06em;text-transform:uppercase;">Bookkeeping &middot; Cleanup</div>
         </td>
       </tr>
     </table>

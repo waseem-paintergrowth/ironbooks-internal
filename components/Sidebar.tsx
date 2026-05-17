@@ -99,9 +99,11 @@ export function Sidebar() {
     <aside className="flex flex-col h-screen sticky top-0 w-60 bg-navy text-white">
       <div className="px-5 py-5 border-b border-white/10">
         <div className="flex items-center gap-2.5">
-          <div className="flex items-center justify-center rounded-lg font-bold bg-teal w-9 h-9 text-base">
-            IB
-          </div>
+          <img
+            src="/logo.png"
+            alt="Ironbooks"
+            className="w-10 h-10 object-contain flex-shrink-0"
+          />
           <div>
             <div className="font-bold text-lg tracking-tight leading-none">Ironbooks</div>
             <div className="text-xs mt-0.5 text-white/50">Bookkeeper OS</div>

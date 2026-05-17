@@ -40,9 +40,11 @@ export default function LoginPage() {
     <main className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         <div className="flex items-center gap-3 mb-10 justify-center">
-          <div className="flex items-center justify-center rounded-lg font-bold text-white w-11 h-11 bg-teal text-lg">
-            IB
-          </div>
+          <img
+            src="/logo.png"
+            alt="Ironbooks"
+            className="w-12 h-12 object-contain"
+          />
           <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks</div>
         </div>
 
