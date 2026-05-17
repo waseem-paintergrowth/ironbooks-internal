@@ -262,13 +262,18 @@ export default async function DashboardPage() {
   }
   const pendingRaw = (pendingStripeTokensRes.data || []) as any[];
   // One row per client — keep oldest unused token per client (most overdue).
+  //
+  // Only show clients whose status is explicitly 'pending'. The generate-link
+  // endpoint sets the status when a link is sent; the OAuth callback flips it
+  // to 'connected' on completion; disconnect resets it to 'not_set'. So a
+  // disconnected client with a stale unused token won't appear here (correct
+  // — the bookkeeper would generate a fresh link if they wanted to retry).
   const pendingByClient = new Map<string, PendingStripeRequest>();
   for (const row of pendingRaw) {
     const cl = row.client_links;
     if (!cl) continue;
     if (cl.is_active === false) continue;
-    // Skip clients already connected — their stale token is harmless
-    if (cl.stripe_connection_status === "connected") continue;
+    if (cl.stripe_connection_status !== "pending") continue;
     if (pendingByClient.has(row.client_link_id)) continue; // we sorted asc, oldest first
     const created = row.created_at as string | null;
     const expires = row.expires_at as string;

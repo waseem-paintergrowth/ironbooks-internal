@@ -82,6 +82,13 @@ interface InvoiceLineForExecute {
   customer_name: string | null;
   pre_tax_amount: number;
   tax_amount: number;
+  /** Pre-resolved QBO customer id (set by the Stripe API path so we skip
+   *  the findCustomerIdByName round-trip). */
+  qbo_customer_id?: string | null;
+  /** If set, used verbatim as the deposit-line description suffix instead
+   *  of "Invoice {invoice_id}". Set by the Stripe API path to e.g.
+   *  "3 Stripe charges · payout po_xxx" so the line isn't misleading. */
+  description_label?: string | null;
 }
 
 export interface ExecuteMatchInput {
@@ -281,9 +288,19 @@ export async function applyStripeReconToDeposit(
     (l) => !(l.Description || "").startsWith(IRONBOOKS_TAG)
   );
 
-  // 3. Resolve unique customers → QBO IDs (best-effort)
+  // 3. Resolve unique customers → QBO IDs.
+  //    For Stripe API path the customer_id is pre-resolved and passed
+  //    through on each line; for QBO AI path we look up by name. Skip
+  //    the name lookup when no customer_name is provided (e.g. the
+  //    "unattributed Stripe charges" line).
   const customerIdMap = new Map<string, string>();
   for (const inv of match.matched_invoices) {
+    if (inv.qbo_customer_id) {
+      // Stripe path already gave us the id — record it under the name so
+      // dedupe by name still works for AI-path rows mixed in.
+      if (inv.customer_name) customerIdMap.set(inv.customer_name, inv.qbo_customer_id);
+      continue;
+    }
     const name = (inv.customer_name || "").trim();
     if (!name || customerIdMap.has(name)) continue;
     const id = await findCustomerIdByName(realmId, accessToken, name);
@@ -296,11 +313,20 @@ export async function applyStripeReconToDeposit(
   // 4a. POSITIVE per-invoice income lines (pre-tax revenue)
   for (const inv of match.matched_invoices) {
     if (inv.pre_tax_amount <= 0) continue;
-    const customerName = inv.customer_name || "Unknown";
-    const customerId = customerName ? customerIdMap.get(customerName) : undefined;
+    const customerName = inv.customer_name || "Unattributed";
+    const customerId =
+      inv.qbo_customer_id ??
+      (customerName ? customerIdMap.get(customerName) : undefined);
+    // Use description_label if the data source set one (Stripe API path);
+    // otherwise default to "Invoice X" (QBO AI matcher path).
+    const label = inv.description_label
+      ? inv.description_label
+      : `Invoice ${inv.invoice_id}`;
     linesToAdd.push({
       Amount: Number(inv.pre_tax_amount.toFixed(2)),
-      Description: `${IRONBOOKS_TAG} ${customerName} · Invoice ${inv.invoice_id}`,
+      Description: inv.customer_name
+        ? `${IRONBOOKS_TAG} ${customerName} · ${label}`
+        : `${IRONBOOKS_TAG} ${label}`,
       DetailType: "DepositLineDetail",
       DepositLineDetail: {
         AccountRef: { value: targets.revenueAccountId, name: targets.revenueAccountName },

@@ -29,6 +29,14 @@ export interface InvoiceMatch {
   pre_tax_amount: number;
   /** Sales tax portion (HST/GST/QST/PST as applicable to services in this province) */
   tax_amount: number;
+  /** Pre-resolved QBO customer id — set by the Stripe API path (we already
+   *  looked up the customer via PrimaryEmailAddr). Lets execute skip the
+   *  findCustomerIdByName round-trip. */
+  qbo_customer_id?: string | null;
+  /** Description fragment for the QBO deposit line. Set by the Stripe API
+   *  path to e.g. "3 Stripe charges via payout po_xxx" so the execute step
+   *  doesn't write the misleading "Invoice {customer_id}" string. */
+  description_label?: string | null;
 }
 
 /** Snapshot of one candidate the AI considered. Saved on the match row so

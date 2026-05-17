@@ -36,7 +36,10 @@ export interface StripeBalanceTransaction {
   net: number;              // net cents
   currency: string;
   type: string;             // 'charge' | 'refund' | 'payout' | 'stripe_fee' | ...
-  source: string | null;    // related object id (e.g. charge id)
+  /** If the request used `expand[]=data.source`, this is the expanded
+   *  object (e.g. a full StripeCharge). Otherwise it's the id string or
+   *  null. Code paths must check shape before using. */
+  source: string | StripeCharge | null;
   description: string | null;
   created: number;
 }
@@ -69,14 +72,20 @@ async function stripeFetch<T>(
   accessToken: string,
   params?: Record<string, string | number | undefined>
 ): Promise<T> {
-  const url = new URL(`${STRIPE_API}${path}`);
+  // Build the query string manually rather than via URLSearchParams.set()
+  // so the bracket syntax Stripe uses ("arrival_date[gte]", "expand[]") is
+  // preserved exactly the way Stripe documents it. Some routers reject
+  // percent-encoded brackets and prefer raw [].
+  const queryParts: string[] = [];
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v === undefined) continue;
-      url.searchParams.set(k, String(v));
+      queryParts.push(`${k}=${encodeURIComponent(String(v))}`);
     }
   }
-  const res = await fetch(url.toString(), {
+  const queryString = queryParts.length > 0 ? `?${queryParts.join("&")}` : "";
+  const url = `${STRIPE_API}${path}${queryString}`;
+  const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Stripe-Version": "2024-04-10",
@@ -126,7 +135,10 @@ export async function listPayoutsInRange(
 
 /**
  * List balance transactions (charges + fees + refunds) that compose a payout.
- * Pass `payout` param so Stripe scopes the results.
+ * Pass `payout` param so Stripe scopes the results. Uses
+ * `expand[]=data.source` so every charge object is inlined — avoids N
+ * separate `/charges/{id}` calls (a payout with 500 charges would otherwise
+ * need 500 round-trips).
  */
 export async function listBalanceTransactionsForPayout(
   accessToken: string,
@@ -140,6 +152,7 @@ export async function listBalanceTransactionsForPayout(
       has_more: boolean;
     }>("/balance_transactions", accessToken, {
       payout: payoutId,
+      "expand[]": "data.source",
       limit: 100,
       starting_after: startingAfter,
     });

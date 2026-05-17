@@ -18,8 +18,6 @@
 import {
   listPayoutsInRange,
   listBalanceTransactionsForPayout,
-  getCharge,
-  type StripePayout,
   type StripeCharge,
 } from "./stripe-api";
 import { getProvinceTax, getServiceTaxRate } from "./canadian-tax";
@@ -83,13 +81,36 @@ export async function reconcileViaStripeApi(
     params.arrivalEndISO
   );
 
+  // If Stripe has no payouts in the range, we still want to flag the QBO
+  // deposits explicitly (so the review screen has rows to show) rather than
+  // returning an empty result that looks like "0 matched, 0 anything".
   if (payouts.length === 0) {
+    const matches: DepositMatch[] = params.qboDeposits.map((dep) => ({
+      qbo_deposit_id: dep.qbo_deposit_id,
+      deposit_amount: dep.amount,
+      deposit_date: dep.date,
+      deposit_memo: dep.memo,
+      matched_invoices: [],
+      matched_customer_names: [],
+      total_invoice_amount: 0,
+      pre_tax_revenue: 0,
+      total_sales_tax_collected: 0,
+      computed_fee: 0,
+      computed_tax: 0,
+      tax_code: null,
+      ai_confidence: 0,
+      ai_reasoning:
+        "Stripe API returned no payouts in this date range. The QBO deposit shown might be from a different processor, or the connected Stripe account isn't the one that produced it. If the client uses Stripe Sandbox/test mode, reconnect with the live account.",
+      decision: "flagged",
+      candidate_invoices: [] as CandidateInvoice[],
+      candidate_payments: [] as CandidatePayment[],
+    }));
     return {
-      matches: [],
+      matches,
       warnings: [
-        "No Stripe payouts found in the date range for this connected account. Either Stripe didn't pay out during this period, or the connected account has no charges.",
+        "No Stripe payouts found in the date range for this connected account. Either Stripe didn't pay out during this period, the connected account is in a different mode (test vs live), or the connected account isn't the one producing these QBO deposits.",
       ],
-      summary: "No Stripe payouts in range.",
+      summary: `Stripe API: 0 payouts in range, ${matches.length} QBO deposit${matches.length === 1 ? "" : "s"} flagged.`,
       unmatched_payouts: [],
     };
   }
@@ -133,15 +154,19 @@ export async function reconcileViaStripeApi(
     }
 
     // Sum gross charges and fees from balance transactions (charge type only —
-    // refunds and adjustments are handled separately so the fee math is clean)
+    // refunds and adjustments are handled separately so the fee math is clean).
+    // Because we asked Stripe to expand `data.source`, the charge objects are
+    // inlined on each balance transaction — no extra round-trips needed.
     let grossCents = 0;
     let feeCents = 0;
-    const chargeIds: string[] = [];
+    const inlineCharges: StripeCharge[] = [];
     for (const bt of bts) {
       if (bt.type === "charge" && bt.source) {
         grossCents += bt.amount;
         feeCents += bt.fee;
-        chargeIds.push(bt.source);
+        if (typeof bt.source === "object") {
+          inlineCharges.push(bt.source as StripeCharge);
+        }
       } else if (bt.type === "refund") {
         grossCents += bt.amount; // negative
         feeCents += bt.fee;
@@ -183,18 +208,8 @@ export async function reconcileViaStripeApi(
       continue;
     }
 
-    // 3. Enrich each charge with customer info (in parallel, cap concurrency 5)
-    const enrichedCharges: StripeCharge[] = [];
-    const CONCURRENCY = 5;
-    for (let i = 0; i < chargeIds.length; i += CONCURRENCY) {
-      const batch = chargeIds.slice(i, i + CONCURRENCY);
-      const results = await Promise.allSettled(
-        batch.map((id) => getCharge(params.accessToken, id))
-      );
-      for (const r of results) {
-        if (r.status === "fulfilled") enrichedCharges.push(r.value);
-      }
-    }
+    // 3. Charges are already inlined via expand[]=data.source — no fetches needed
+    const enrichedCharges: StripeCharge[] = inlineCharges;
 
     // 4. Build per-customer invoice matches.
     //   For each Stripe charge:
@@ -242,17 +257,24 @@ export async function reconcileViaStripeApi(
         preTax = grossDollars / (1 + serviceTaxRate);
         taxAmount = grossDollars - preTax;
       }
+      const chargeCount = entry.charge_ids.length;
       matchedInvoices.push({
-        invoice_id: qboCustId, // we don't have a per-invoice link from Stripe; attribute at customer level
+        // For the Stripe API path we attribute at the customer level — there's
+        // no QBO invoice mapping. invoice_id is set to the Stripe payout id
+        // so we have a stable, identifiable reference (not a fake number).
+        invoice_id: payout.id,
         customer_name: entry.customer_name,
         amount: Number(grossDollars.toFixed(2)),
         pre_tax_amount: Number(preTax.toFixed(2)),
         tax_amount: Number(taxAmount.toFixed(2)),
+        qbo_customer_id: qboCustId,
+        description_label: `${chargeCount} Stripe charge${chargeCount === 1 ? "" : "s"} · payout ${payout.id}`,
       });
     }
 
-    // If we have unattributed Stripe charges, add an "Unmatched (Stripe)" line
-    // so the totals reconcile and the bookkeeper sees what's missing.
+    // If we have unattributed Stripe charges, add a line so the totals
+    // reconcile. Description makes it clear these are unattributed (no
+    // QBO customer match) — the bookkeeper can re-tag in QBO after.
     if (unattributed.gross_cents > 0) {
       const grossDollars = dollars(unattributed.gross_cents);
       let preTax = grossDollars;
@@ -261,12 +283,15 @@ export async function reconcileViaStripeApi(
         preTax = grossDollars / (1 + serviceTaxRate);
         taxAmount = grossDollars - preTax;
       }
+      const n = unattributed.charge_ids.length;
       matchedInvoices.push({
-        invoice_id: `_stripe_unattributed_${payout.id}`,
-        customer_name: `Unmatched Stripe customers (${unattributed.charge_ids.length} charge${unattributed.charge_ids.length === 1 ? "" : "s"})`,
+        invoice_id: payout.id,
+        customer_name: null, // no QBO customer to attribute to
         amount: Number(grossDollars.toFixed(2)),
         pre_tax_amount: Number(preTax.toFixed(2)),
         tax_amount: Number(taxAmount.toFixed(2)),
+        qbo_customer_id: null,
+        description_label: `${n} unattributed Stripe charge${n === 1 ? "" : "s"} (no QBO customer match by email) · payout ${payout.id}`,
       });
     }
 
@@ -282,7 +307,20 @@ export async function reconcileViaStripeApi(
       new Set(matchedInvoices.map((m) => m.customer_name).filter(Boolean) as string[])
     );
 
-    // Stripe-truth match: confidence is 1.0, decision auto_approve
+    // Safety net: payouts with no charge-type balance transactions (all-fee
+    // adjustment payouts, refund-only payouts, etc.) shouldn't auto-approve
+    // — there's nothing on the income side to balance the fee line, and
+    // executing would break the deposit math in QBO. Flag for manual review.
+    let decision: "auto_approve" | "flagged" = "auto_approve";
+    let reasoning = `Matched via Stripe API: payout ${payout.id} → ${enrichedCharges.length} charge${enrichedCharges.length === 1 ? "" : "s"}, exact fee $${computedFeeRaw.toFixed(2)}.`;
+    if (matchedInvoices.length === 0 || totalInvoiceAmount <= 0) {
+      decision = "flagged";
+      reasoning =
+        `Stripe payout ${payout.id} paired by amount, but it has no charge-type ` +
+        `balance transactions (likely a refund-only / fee-adjustment payout). ` +
+        `Auto-execute would unbalance the QBO deposit — inspect and apply manually.`;
+    }
+
     matches.push({
       qbo_deposit_id: pairedDeposit.qbo_deposit_id,
       deposit_amount: pairedDeposit.amount,
@@ -300,9 +338,9 @@ export async function reconcileViaStripeApi(
       computed_fee: Number(preTaxFee.toFixed(2)),
       computed_tax: Number(computedTax.toFixed(2)),
       tax_code: taxCode,
-      ai_confidence: 1.0,
-      ai_reasoning: `Matched via Stripe API: payout ${payout.id} → ${enrichedCharges.length} charge${enrichedCharges.length === 1 ? "" : "s"}, exact fee ${computedFeeRaw.toFixed(2)}.`,
-      decision: "auto_approve",
+      ai_confidence: decision === "auto_approve" ? 1.0 : 0.5,
+      ai_reasoning: reasoning,
+      decision,
       candidate_invoices: [] as CandidateInvoice[],
       candidate_payments: [] as CandidatePayment[],
     });

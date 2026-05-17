@@ -457,12 +457,15 @@ function ManualInvoicePicker({
   const [error, setError] = useState<string>("");
 
   if (candidates.length === 0) {
+    // No candidate pool to pick from. The "why" is already in the AI
+    // reasoning shown above the expanded section, so the picker just
+    // explains what to do next without prescribing a specific remedy
+    // (Stripe-API runs surface a different cause than QBO-AI runs do).
     return (
       <div className="text-sm text-ink-slate italic py-2">
-        No QBO invoices or customer payments within ±30 days of this deposit.
-        Either the client doesn't invoice through QBO, or matching records fall
-        outside the window. Send them a Stripe Connect link from the sidebar
-        for deterministic charge-level matching.
+        No candidate invoices or payments to pick from. See the reason above for
+        the cause — the bookkeeper may need to inspect the deposit in QBO
+        directly or generate a fresh job over a wider date range.
       </div>
     );
   }
