@@ -71,7 +71,9 @@ export async function GET(request: Request) {
     return redirect({ status: "error", message: "Could not complete Stripe authorization" });
   }
 
-  // Save the tokens onto the client_link
+  // Save the tokens onto the client_link. We also persist `livemode` so the
+  // recon path can detect "sandbox connection vs live cleanup" mismatches
+  // and warn the bookkeeper before zero-payout confusion sets in.
   const { error: updErr } = await service
     .from("client_links")
     .update({
@@ -80,6 +82,7 @@ export async function GET(request: Request) {
       stripe_refresh_token: tokens.refresh_token,
       stripe_connected_at: new Date().toISOString(),
       stripe_connection_status: "connected",
+      stripe_livemode: tokens.livemode === true,
     } as any)
     .eq("id", connectToken.client_link_id);
 

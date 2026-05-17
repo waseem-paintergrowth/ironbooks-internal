@@ -20,13 +20,14 @@ const STRIPE_API = "https://api.stripe.com/v1";
 export interface StripePayout {
   id: string;
   amount: number;           // net cents paid out to bank
-  currency: string;
+  currency: string;         // lowercase ISO 4217 (e.g. "usd", "cad")
   arrival_date: number;     // unix epoch seconds
   created: number;          // unix epoch seconds
   status: string;
   method: string;           // standard / instant
   type: string;             // bank_account / card
   description: string | null;
+  statement_descriptor: string | null;
 }
 
 export interface StripeBalanceTransaction {

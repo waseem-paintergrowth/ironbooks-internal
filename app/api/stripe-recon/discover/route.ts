@@ -146,6 +146,8 @@ async function runDiscovery(
       );
     }
     const customers = await fetchAllCustomers(clientLink.qbo_realm_id, accessToken);
+    const platformLivemode =
+      (process.env.STRIPE_SECRET_KEY || "").startsWith("sk_live_");
     const stripeResult = await reconcileViaStripeApi({
       accessToken: clientLink.stripe_access_token,
       jurisdiction: clientLink.jurisdiction,
@@ -155,6 +157,8 @@ async function runDiscovery(
       qboCustomers: customers,
       arrivalStartISO: job.date_range_start,
       arrivalEndISO: job.date_range_end,
+      stripeLivemode: (clientLink as any).stripe_livemode ?? null,
+      platformLivemode,
     });
     result = stripeResult;
   } else {

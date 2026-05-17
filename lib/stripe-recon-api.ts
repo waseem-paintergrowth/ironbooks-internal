@@ -64,6 +64,13 @@ interface RunParams {
   /** Stripe payout arrival range — usually matches the job's date range */
   arrivalStartISO: string;
   arrivalEndISO: string;
+  /** True if the OAuth token is for live mode (saved at connect time).
+   *  Used to surface a clear warning when a sandbox connection is being
+   *  used against live cleanup data in production. */
+  stripeLivemode?: boolean | null;
+  /** True if the platform is running in production (live Stripe keys).
+   *  Compared against stripeLivemode to detect mode mismatches. */
+  platformLivemode: boolean;
 }
 
 const cents = (n: number): number => Math.round(n);
@@ -74,12 +81,47 @@ export async function reconcileViaStripeApi(
 ): Promise<StripeApiMatchResult> {
   const warnings: string[] = [];
 
+  // Mode-mismatch guard: a sandbox connection won't return real payouts.
+  // The connection's `livemode` was saved at OAuth callback time.
+  if (
+    params.stripeLivemode !== undefined &&
+    params.stripeLivemode !== null &&
+    params.stripeLivemode !== params.platformLivemode
+  ) {
+    warnings.push(
+      params.platformLivemode
+        ? "This client is connected via a Stripe TEST/sandbox account, but the app is running in LIVE mode. The Stripe API will return zero real payouts. Send the client a fresh Connect link and have them connect their LIVE Stripe account."
+        : "This client is connected via a Stripe LIVE account, but the app is running in TEST mode. Reconciling test cleanup data against live Stripe records is unusual — double-check the environment."
+    );
+  }
+
   // 1. Pull payouts
-  const payouts = await listPayoutsInRange(
+  const allPayouts = await listPayoutsInRange(
     params.accessToken,
     params.arrivalStartISO,
     params.arrivalEndISO
   );
+
+  // Currency filter: only process payouts in the client's home currency.
+  // (Stripe accounts can have multi-currency activity; QBO deposits we're
+  // pairing against are denominated in the QBO realm currency.) Anything
+  // in a different currency would never pair by amount anyway, but we
+  // surface a warning so the bookkeeper knows it was skipped on purpose.
+  const expectedCurrency = params.jurisdiction === "CA" ? "cad" : "usd";
+  const payouts = allPayouts.filter((p) => p.currency.toLowerCase() === expectedCurrency);
+  const skippedByCurrency = allPayouts.length - payouts.length;
+  if (skippedByCurrency > 0) {
+    const otherCurrencies = Array.from(
+      new Set(
+        allPayouts
+          .filter((p) => p.currency.toLowerCase() !== expectedCurrency)
+          .map((p) => p.currency.toUpperCase())
+      )
+    );
+    warnings.push(
+      `Skipped ${skippedByCurrency} Stripe payout${skippedByCurrency === 1 ? "" : "s"} in ${otherCurrencies.join(", ")} — only ${expectedCurrency.toUpperCase()} payouts can pair with this client's QBO deposits. Multi-currency reconciliation isn't supported yet.`
+    );
+  }
 
   // If Stripe has no payouts in the range, we still want to flag the QBO
   // deposits explicitly (so the review screen has rows to show) rather than
@@ -115,11 +157,32 @@ export async function reconcileViaStripeApi(
     };
   }
 
-  // 2. For each payout, get the balance-transaction list and enrich charges
+  // 2. Build customer lookup maps for email AND name. Email is the primary
+  //    match; name is the fallback when the Stripe charge's email doesn't
+  //    appear on a QBO customer (a real-world problem since clients often
+  //    use different emails on Stripe vs QBO).
   const customerByEmail = new Map<string, QBOCustomer>();
+  const customerByName = new Map<string, QBOCustomer>();
+  const normalizeName = (s: string): string =>
+    s
+      .toLowerCase()
+      .replace(/\b(inc|llc|ltd|corp|corporation|company|co|the)\b\.?/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
   for (const c of params.qboCustomers) {
     if (c.primary_email) {
       customerByEmail.set(c.primary_email.toLowerCase(), c);
+    }
+    if (c.display_name) {
+      const norm = normalizeName(c.display_name);
+      if (norm && !customerByName.has(norm)) {
+        // First-match wins on name collisions (rare; usually distinct customers
+        // have distinct names). We could log this for the bookkeeper but
+        // emitting per-collision warnings would be noisy.
+        customerByName.set(norm, c);
+      }
     }
   }
   const invoiceById = new Map(params.qboInvoices.map((i) => [i.id, i]));
@@ -177,13 +240,16 @@ export async function reconcileViaStripeApi(
     }
 
     // Pair with a QBO deposit by exact amount (in cents). If multiple, take
-    // the closest arrival_date.
+    // the closest arrival_date. When 2+ candidates exist, warn — there's
+    // an inherent ambiguity the bookkeeper should verify (e.g., two same-
+    // amount payouts a day apart).
     const payoutAmountKey = payout.amount.toString();
     const candidates = (qboDepositsByAmount.get(payoutAmountKey) || []).filter(
       (d) => !usedQboDepositIds.has(d.qbo_deposit_id)
     );
 
     let pairedDeposit: StripeDeposit | null = null;
+    let pairingAmbiguous = false;
     if (candidates.length > 0) {
       const arrivalDate = new Date(payout.arrival_date * 1000)
         .toISOString()
@@ -195,6 +261,7 @@ export async function reconcileViaStripeApi(
       });
       pairedDeposit = candidates[0];
       usedQboDepositIds.add(pairedDeposit.qbo_deposit_id);
+      pairingAmbiguous = candidates.length > 1;
     }
 
     if (!pairedDeposit) {
@@ -227,7 +294,17 @@ export async function reconcileViaStripeApi(
 
     for (const ch of enrichedCharges) {
       const email = (ch.receipt_email || ch.billing_details?.email || "").toLowerCase().trim();
-      const qboCust = email ? customerByEmail.get(email) : undefined;
+      // Try email first (most reliable when present), then name fallback.
+      let qboCust: QBOCustomer | undefined = email
+        ? customerByEmail.get(email)
+        : undefined;
+      if (!qboCust) {
+        const candidateName = ch.billing_details?.name || "";
+        if (candidateName) {
+          const norm = normalizeName(candidateName);
+          if (norm) qboCust = customerByName.get(norm);
+        }
+      }
       if (qboCust) {
         const entry =
           customerTotals.get(qboCust.id) ||
@@ -242,7 +319,7 @@ export async function reconcileViaStripeApi(
         if (email) entry.emails.add(email);
         customerTotals.set(qboCust.id, entry);
       } else {
-        // No QBO customer match — record by Stripe customer/email as unattributed
+        // No QBO customer match by email OR by name — record as unattributed
         unattributed.gross_cents += ch.amount;
         unattributed.charge_ids.push(ch.id);
       }
@@ -311,7 +388,7 @@ export async function reconcileViaStripeApi(
     // adjustment payouts, refund-only payouts, etc.) shouldn't auto-approve
     // — there's nothing on the income side to balance the fee line, and
     // executing would break the deposit math in QBO. Flag for manual review.
-    let decision: "auto_approve" | "flagged" = "auto_approve";
+    let decision: "auto_approve" | "needs_review" | "flagged" = "auto_approve";
     let reasoning = `Matched via Stripe API: payout ${payout.id} → ${enrichedCharges.length} charge${enrichedCharges.length === 1 ? "" : "s"}, exact fee $${computedFeeRaw.toFixed(2)}.`;
     if (matchedInvoices.length === 0 || totalInvoiceAmount <= 0) {
       decision = "flagged";
@@ -319,6 +396,13 @@ export async function reconcileViaStripeApi(
         `Stripe payout ${payout.id} paired by amount, but it has no charge-type ` +
         `balance transactions (likely a refund-only / fee-adjustment payout). ` +
         `Auto-execute would unbalance the QBO deposit — inspect and apply manually.`;
+    } else if (pairingAmbiguous) {
+      // Same-amount candidates: don't auto-execute on a guess. Demote so
+      // the bookkeeper confirms before this writes to QBO.
+      decision = "needs_review";
+      reasoning =
+        reasoning +
+        ` Note: ${candidates.length} QBO deposits had this exact amount — we paired the closest by date but please verify before approving.`;
     }
 
     matches.push({
@@ -338,7 +422,8 @@ export async function reconcileViaStripeApi(
       computed_fee: Number(preTaxFee.toFixed(2)),
       computed_tax: Number(computedTax.toFixed(2)),
       tax_code: taxCode,
-      ai_confidence: decision === "auto_approve" ? 1.0 : 0.5,
+      ai_confidence:
+        decision === "auto_approve" ? 1.0 : decision === "needs_review" ? 0.7 : 0.5,
       ai_reasoning: reasoning,
       decision,
       candidate_invoices: [] as CandidateInvoice[],
