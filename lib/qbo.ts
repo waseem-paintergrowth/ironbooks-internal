@@ -750,8 +750,11 @@ export interface DateRangePreset {
 }
 
 /**
- * Build the 6 date-range presets shown on the reclass form, using the client's
+ * Build the 4 date-range presets shown on the reclass form, using the client's
  * actual fiscal year start month (from QBO CompanyInfo). Every range ends today.
+ *
+ * Older years are handled by the year-by-year cascade after each cleanup
+ * completes — no need for "+ Last 2 Years" presets here.
  */
 export function getReclassDateRangePresets(
   fiscalStartMonth: number,
@@ -767,12 +770,10 @@ export function getReclassDateRangePresets(
     return `${yr}-${mm}-01`;
   };
   return [
-    { id: "cy",        label: "This Calendar Year",           start: cyStart(y),     end: todayStr },
-    { id: "fy",        label: "This Fiscal Year",             start: fyStart(0),     end: todayStr },
-    { id: "cy_plus_1", label: "Calendar Year + Last Year",    start: cyStart(y - 1), end: todayStr },
-    { id: "fy_plus_1", label: "Fiscal Year + Last Year",      start: fyStart(1),     end: todayStr },
-    { id: "cy_plus_2", label: "Calendar Year + Last 2 Years", start: cyStart(y - 2), end: todayStr },
-    { id: "fy_plus_2", label: "Fiscal Year + Last 2 Years",   start: fyStart(2),     end: todayStr },
+    { id: "fy",        label: "This Fiscal Year",                       start: fyStart(0),     end: todayStr },
+    { id: "cy",        label: "This Calendar Year",                     start: cyStart(y),     end: todayStr },
+    { id: "fy_plus_1", label: "This Fiscal Year + Last Fiscal Year",    start: fyStart(1),     end: todayStr },
+    { id: "cy_plus_1", label: "This Calendar Year + Last Calendar Year", start: cyStart(y - 1), end: todayStr },
   ];
 }
 

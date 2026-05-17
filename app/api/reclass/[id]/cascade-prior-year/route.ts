@@ -34,6 +34,9 @@ export async function POST(
       { status: 400 }
     );
   }
+  // No day-count guard: even multi-year source jobs (e.g., "This FY + Last FY")
+  // can cascade — the prior_start = source_start − 1yr math naturally goes to
+  // the next year back. Chain length cap (3) prevents runaway recursion.
 
   // Count cascades by walking parent_job_id chain. Cap at 3.
   let chainLength = 1;
@@ -55,13 +58,17 @@ export async function POST(
     );
   }
 
-  // Compute prior-year date range
+  // Compute prior-year date range — always a FULL 12-month window ending the
+  // day before the source job started. This preserves the bookkeeper's original
+  // calendar-vs-fiscal choice automatically:
+  //   • Source Jan 1 → May 16 (partial calendar yr) ⇒ Prior Jan 1 → Dec 31 (full prior cal yr)
+  //   • Source Apr 1 → May 16 (partial fiscal yr)   ⇒ Prior Apr 1 → Mar 31 (full prior fiscal yr)
+  //   • Source Jan 1 → Dec 31 (full calendar yr)    ⇒ Prior Jan 1 → Dec 31
   const start = new Date(sourceJob.date_range_start);
-  const end = new Date(sourceJob.date_range_end);
   const priorStart = new Date(start);
   priorStart.setUTCFullYear(priorStart.getUTCFullYear() - 1);
-  const priorEnd = new Date(end);
-  priorEnd.setUTCFullYear(priorEnd.getUTCFullYear() - 1);
+  const priorEnd = new Date(start);
+  priorEnd.setUTCDate(priorEnd.getUTCDate() - 1); // day before source start
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
 
   // Proxy to /api/reclass/discover — reuses job creation + discovery kickoff logic.

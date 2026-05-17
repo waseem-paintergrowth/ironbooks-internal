@@ -123,7 +123,23 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
       .then((data) => {
         setDatePresets(data.date_range_presets);
         setFiscalYearStartMonthName(data.company.fiscal_year_start_month_name);
-        const def = data.date_range_presets.find((p: DateRangePreset) => p.id === "fy")
+
+        // Smart Q1 default: if "This Fiscal Year" is <90 days long (e.g., we
+        // just started a new FY), default to "This FY + Last FY" so the
+        // bookkeeper has enough transactions to build solid bank rules.
+        // Otherwise default to "This Fiscal Year".
+        const fyPreset = data.date_range_presets.find((p: DateRangePreset) => p.id === "fy");
+        const fyPlus1Preset = data.date_range_presets.find((p: DateRangePreset) => p.id === "fy_plus_1");
+        let chosenId = "fy";
+        if (fyPreset) {
+          const fyStart = new Date(fyPreset.start);
+          const fyEnd = new Date(fyPreset.end);
+          const fyDays = Math.round((fyEnd.getTime() - fyStart.getTime()) / 86_400_000);
+          if (fyDays < 90 && fyPlus1Preset) {
+            chosenId = "fy_plus_1";
+          }
+        }
+        const def = data.date_range_presets.find((p: DateRangePreset) => p.id === chosenId)
                  || data.date_range_presets[0];
         if (def) {
           setDatePresetId(def.id);

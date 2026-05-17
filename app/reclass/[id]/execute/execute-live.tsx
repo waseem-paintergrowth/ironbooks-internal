@@ -123,10 +123,24 @@ export function ExecuteLive({
     }
   }
 
-  // Calculate the prior year that would be offered for cascading
-  const priorYear = (() => {
-    const d = new Date(job.date_range_start);
-    return isNaN(d.getTime()) ? null : d.getUTCFullYear() - 1;
+  // Compute prior-year window. Always shows the CTA for full_categorization
+  // jobs (multi-year sources still cascade to the year before their earliest
+  // date). Chain-length cap on the API side prevents runaway recursion.
+  const { priorYear, priorStartLabel, priorEndLabel, cascadeApplicable } = (() => {
+    const start = new Date(job.date_range_start);
+    if (isNaN(start.getTime())) {
+      return { priorYear: null, priorStartLabel: "", priorEndLabel: "", cascadeApplicable: false };
+    }
+    const priorStart = new Date(start);
+    priorStart.setUTCFullYear(priorStart.getUTCFullYear() - 1);
+    const priorEnd = new Date(start);
+    priorEnd.setUTCDate(priorEnd.getUTCDate() - 1);
+    return {
+      priorYear: priorStart.getUTCFullYear(),
+      priorStartLabel: priorStart.toISOString().slice(0, 10),
+      priorEndLabel: priorEnd.toISOString().slice(0, 10),
+      cascadeApplicable: true,
+    };
   })();
 
   async function handleRollback() {
@@ -306,15 +320,17 @@ export function ExecuteLive({
         ))}
 
       {/* Year cascade — "Continue with Previous Year"
-          Offered after every successful full_categorization run (no rollback) so
-          the bookkeeper can clean up year-by-year. The bank-rules cache from this
-          run will speed up the next year dramatically. */}
+          Computes a FULL 12-month prior window based on source start date, so
+          calendar-year jobs cascade to full calendar years and fiscal-year jobs
+          cascade to full fiscal years automatically. Skipped for multi-year
+          source jobs (already covered older periods in one shot). */}
       {job.status === "complete" &&
         job.workflow === "full_categorization" &&
         !job.is_rollback &&
         !job.rolled_back &&
         job.transactions_moved > 0 &&
         job.client_link_id &&
+        cascadeApplicable &&
         priorYear && (
           <div className="rounded-2xl p-5 bg-gradient-to-br from-amber-50 to-orange-50 border-2 border-amber-200">
             <div className="flex items-start justify-between gap-4">
@@ -328,7 +344,7 @@ export function ExecuteLive({
                     Continue with Previous Year ({priorYear})
                   </h3>
                   <p className="text-sm text-ink-slate">
-                    Every account the bookkeeper picked just got saved as a bank rule. Most {priorYear} transactions will auto-categorize instantly from the cache — typically ~10 min of review vs ~30 min for year 1.
+                    Full prior {priorStartLabel.startsWith(`${priorYear}-01-01`) ? "calendar year" : "fiscal year"}: <span className="font-mono font-semibold">{priorStartLabel} → {priorEndLabel}</span>. Every account the bookkeeper picked just got saved as a bank rule — most of those vendors will auto-categorize from the cache, so this should run faster than year 1.
                   </p>
                   {cascadeError && (
                     <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
