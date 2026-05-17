@@ -88,7 +88,7 @@ export default async function DashboardPage() {
     // Completed this month — used for stats + per-bookkeeper chart
     service
       .from("coa_jobs")
-      .select("id, bookkeeper_id, created_at, execution_completed_at, execution_duration_seconds")
+      .select("id, client_link_id, bookkeeper_id, created_at, execution_completed_at")
       .eq("status", "complete")
       .not("execution_completed_at", "is", null)
       .gte("updated_at", startOfMonth),
@@ -214,7 +214,14 @@ export default async function DashboardPage() {
 
   // Stats
   const activeJobsCount = allActiveJobs.length;
-  const completedThisMonthJobs = completedMonthRes.data || [];
+  // Dedupe by client_link_id — only the most recent completion per client counts
+  const completedThisMonthAll = completedMonthRes.data || [];
+  const seenClientIds = new Set<string>();
+  const completedThisMonthJobs = completedThisMonthAll.filter((j) => {
+    if (!j.client_link_id || seenClientIds.has(j.client_link_id)) return false;
+    seenClientIds.add(j.client_link_id);
+    return true;
+  });
   const completedThisMonth = completedThisMonthJobs.length;
   const stripeConnected = stripeCountRes.count || 0;
 
