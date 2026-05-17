@@ -78,26 +78,19 @@ export function Sidebar() {
 
           // Pull real flagged count for seniors — 3 tables, same logic as dashboard
           if (profile.role === "admin" || profile.role === "lead") {
-            const [coaRes, reclassRes, stripeRes] = await Promise.all([
+            const [coaRes, stripeRes] = await Promise.all([
               supabase
                 .from("coa_actions")
                 .select("id", { count: "exact", head: true })
                 .eq("action", "flag")
                 .eq("executed", false),
               supabase
-                .from("reclassifications")
-                .select("id", { count: "exact", head: true })
-                .eq("decision", "flagged")
-                .not("reclass_job_id", "is", null),
-              supabase
                 .from("stripe_recon_matches")
                 .select("id", { count: "exact", head: true })
                 .eq("decision", "flagged")
                 .eq("executed", false),
             ]);
-            setFlaggedCount(
-              (coaRes.count || 0) + (reclassRes.count || 0) + (stripeRes.count || 0)
-            );
+            setFlaggedCount((coaRes.count || 0) + (stripeRes.count || 0));
           }
         }
       }
