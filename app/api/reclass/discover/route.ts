@@ -241,6 +241,7 @@ async function runDiscovery(jobId: string) {
     skipReconciled: 0,
     skipClosedQbo: 0,
     skipClosedDouble: 0,
+    skipAlreadyCorrect: 0,
     skipUnsupported: transactionsSkippedUnsupported,
   };
 
@@ -279,18 +280,18 @@ async function runDiscovery(jobId: string) {
 
   // Now process in-scope lines based on workflow
   if (job.workflow === "consolidation") {
-    // All lines → target account, decision=auto_approve
+    // All lines → target account, decision=auto_approve (or skip if already there)
     for (const line of inScopeLines) {
-      reclassRows.push(
-        buildReclassRow(jobId, line, {
-          target_account_id: job.target_account_id,
-          target_account_name: job.target_account_name,
-          decision: "auto_approve",
-          confidence: 1.0,
-          reasoning: `Consolidation: ${job.source_account_name} → ${job.target_account_name}`,
-        })
-      );
-      stats.autoApprove++;
+      const row = buildReclassRow(jobId, line, {
+        target_account_id: job.target_account_id,
+        target_account_name: job.target_account_name,
+        decision: "auto_approve",
+        confidence: 1.0,
+        reasoning: `Consolidation: ${job.source_account_name} → ${job.target_account_name}`,
+      });
+      reclassRows.push(row);
+      if (row.decision === "skip") stats.skipAlreadyCorrect++;
+      else stats.autoApprove++;
     }
   } else {
     // Workflow C: scrub mode with AI
@@ -342,18 +343,18 @@ async function runDiscovery(jobId: string) {
           continue;
         }
 
-        reclassRows.push(
-          buildReclassRow(jobId, line, {
-            target_account_id: classification.target_account_id,
-            target_account_name: classification.target_account_name,
-            decision: classification.decision,
-            confidence: classification.confidence,
-            reasoning: classification.reasoning,
-          })
-        );
+        const row = buildReclassRow(jobId, line, {
+          target_account_id: classification.target_account_id,
+          target_account_name: classification.target_account_name,
+          decision: classification.decision,
+          confidence: classification.confidence,
+          reasoning: classification.reasoning,
+        });
+        reclassRows.push(row);
 
-        if (classification.decision === "auto_approve") stats.autoApprove++;
-        else if (classification.decision === "needs_review") stats.needsReview++;
+        if (row.decision === "skip") stats.skipAlreadyCorrect++;
+        else if (row.decision === "auto_approve") stats.autoApprove++;
+        else if (row.decision === "needs_review") stats.needsReview++;
         else stats.flagged++;
       }
     }
@@ -417,10 +418,26 @@ function buildReclassRow(
   // An auto_approve without a target account would silently fail at execution time.
   // Demote it to needs_review so the bookkeeper can assign a target manually.
   const hasTarget = !!(classification.target_account_id);
-  const decision =
+  let decision =
     !hasTarget && classification.decision === "auto_approve"
       ? "needs_review"
       : classification.decision;
+
+  // NO-OP DETECTION: if the AI/KB/cache target matches the account this
+  // transaction is already sitting in, there's nothing to do. Skip it with
+  // a clear reason so re-runs after a successful migration show zero work
+  // and we don't fire pointless QBO API calls.
+  const isNoOp =
+    hasTarget &&
+    !!line.current_account_id &&
+    line.current_account_id === classification.target_account_id;
+  let status = "pending";
+  let skipReason: string | undefined;
+  if (isNoOp) {
+    decision = "skip";
+    status = "skipped";
+    skipReason = "already_correct";
+  }
 
   return {
     job_id: jobId, // legacy column - we satisfy NOT NULL by reusing
@@ -445,7 +462,8 @@ function buildReclassRow(
     decision,
     ai_confidence: classification.confidence,
     ai_reasoning: classification.reasoning,
-    status: "pending",
+    status,
+    skip_reason: skipReason,
   };
 }
 
@@ -615,6 +633,7 @@ async function runFullCategorization(
     skipReconciled: 0,
     skipClosedQbo: 0,
     skipClosedDouble: 0,
+    skipAlreadyCorrect: 0,
     skipUnsupported: transactionsSkippedUnsupported,
   };
   const reclassRows: any[] = [];
@@ -843,18 +862,18 @@ async function runFullCategorization(
     const decision = decisionByRef.get(refId);
 
     if (!decision) {
-      reclassRows.push(
-        buildReclassRow(jobId, line, {
-          target_account_id: uncategorizedAccount?.qbo_account_id || null,
-          target_account_name: uncategorizedAccount?.account_name || null,
-          decision: uncategorizedAccount ? "auto_approve" : "flagged",
-          confidence: 0,
-          reasoning: uncategorizedAccount
-            ? "AI did not return a decision — routed to Uncategorized Expenses for bookkeeper review."
-            : "AI did not return a decision for this line.",
-        })
-      );
-      if (uncategorizedAccount) stats.autoApprove++;
+      const row = buildReclassRow(jobId, line, {
+        target_account_id: uncategorizedAccount?.qbo_account_id || null,
+        target_account_name: uncategorizedAccount?.account_name || null,
+        decision: uncategorizedAccount ? "auto_approve" : "flagged",
+        confidence: 0,
+        reasoning: uncategorizedAccount
+          ? "AI did not return a decision — routed to Uncategorized Expenses for bookkeeper review."
+          : "AI did not return a decision for this line.",
+      });
+      reclassRows.push(row);
+      if (row.decision === "skip") stats.skipAlreadyCorrect++;
+      else if (uncategorizedAccount) stats.autoApprove++;
       else stats.flagged++;
       continue;
     }
@@ -866,18 +885,18 @@ async function runFullCategorization(
         ? "auto_approve"
         : decision.decision;
 
-    reclassRows.push(
-      buildReclassRow(jobId, line, {
-        target_account_id: resolvedTargetId,
-        target_account_name: resolvedTargetName,
-        decision: resolvedDecision,
-        confidence: decision.confidence,
-        reasoning: decision.flagged_reason || decision.reasoning,
-      })
-    );
+    const row = buildReclassRow(jobId, line, {
+      target_account_id: resolvedTargetId,
+      target_account_name: resolvedTargetName,
+      decision: resolvedDecision,
+      confidence: decision.confidence,
+      reasoning: decision.flagged_reason || decision.reasoning,
+    });
+    reclassRows.push(row);
 
-    if (resolvedDecision === "auto_approve") stats.autoApprove++;
-    else if (resolvedDecision === "needs_review") stats.needsReview++;
+    if (row.decision === "skip") stats.skipAlreadyCorrect++;
+    else if (row.decision === "auto_approve") stats.autoApprove++;
+    else if (row.decision === "needs_review") stats.needsReview++;
     else stats.flagged++;
   }
 
@@ -887,6 +906,12 @@ async function runFullCategorization(
     const batch = reclassRows.slice(i, i + BATCH_SIZE);
     const { error: insertErr } = await service.from("reclassifications").insert(batch);
     if (insertErr) throw new Error(`Insert batch failed: ${insertErr.message}`);
+  }
+
+  if (stats.skipAlreadyCorrect > 0) {
+    console.log(
+      `[reclass] ${stats.skipAlreadyCorrect} transactions already in the correct account — skipped (re-run after migration).`
+    );
   }
 
   const uniqueVendors = new Set(lines.map((l) => l.vendor_name).filter(Boolean)).size;
