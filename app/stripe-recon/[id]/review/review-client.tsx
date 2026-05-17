@@ -195,6 +195,11 @@ export function StripeReconReview({
             expanded={expanded.has(m.id)}
             onToggle={() => toggleExpanded(m.id)}
             onDecisionChange={(d) => setDecision(m.id, d)}
+            onMatchUpdated={(updates) => {
+              setMatches((prev) =>
+                prev.map((row) => (row.id === m.id ? { ...row, ...updates } : row))
+              );
+            }}
             isCanada={isCanada}
           />
         ))}
@@ -236,12 +241,13 @@ function SummaryCard({
 }
 
 function MatchRow({
-  match, expanded, onToggle, onDecisionChange, isCanada,
+  match, expanded, onToggle, onDecisionChange, onMatchUpdated, isCanada,
 }: {
   match: Match;
   expanded: boolean;
   onToggle: () => void;
   onDecisionChange: (d: Match["decision"]) => void;
+  onMatchUpdated: (updates: Partial<Match>) => void;
   isCanada: boolean;
 }) {
   const decisionConfig = {
@@ -346,9 +352,11 @@ function MatchRow({
             Deposit decomposition
           </div>
           {invoiceList.length === 0 ? (
-            <div className="text-sm text-ink-slate italic py-2">
-              No invoices matched. May need manual placement in QBO.
-            </div>
+            <ManualInvoicePicker
+              match={match}
+              onMatchUpdated={onMatchUpdated}
+              isCanada={isCanada}
+            />
           ) : (
             <div className="space-y-1">
               {/* Per-customer income lines */}
@@ -414,6 +422,207 @@ function MatchRow({
               </div>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Manual invoice picker — shown when the AI didn't auto-match. Lets the
+// bookkeeper check off candidate invoices, see the running total + implied
+// Stripe fee, and persist the selection.
+function ManualInvoicePicker({
+  match,
+  onMatchUpdated,
+  isCanada,
+}: {
+  match: Match;
+  onMatchUpdated: (updates: Partial<Match>) => void;
+  isCanada: boolean;
+}) {
+  const candidates: Array<{
+    id: string;
+    customer_name: string | null;
+    txn_date: string;
+    total_amount: number;
+    balance: number;
+    status: "open" | "paid" | "partial";
+    qbo_total_tax: number;
+  }> = Array.isArray((match as any).candidate_invoices)
+    ? ((match as any).candidate_invoices as any[])
+    : [];
+
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>("");
+
+  if (candidates.length === 0) {
+    return (
+      <div className="text-sm text-ink-slate italic py-2">
+        No QBO invoices or customer payments within ±30 days of this deposit.
+        Either the client doesn't invoice through QBO, or matching records fall
+        outside the window. Send them a Stripe Connect link from the sidebar
+        for deterministic charge-level matching.
+      </div>
+    );
+  }
+
+  const depositAmount = Number(match.deposit_amount || 0);
+  const sortedCandidates = [...candidates].sort((a, b) =>
+    (a.txn_date || "").localeCompare(b.txn_date || "")
+  );
+  const total = sortedCandidates
+    .filter((c) => picked.has(c.id))
+    .reduce((s, c) => s + Number(c.total_amount || 0), 0);
+  const implied = total - depositAmount;
+  const impliedPct = total > 0 ? (implied / total) * 100 : 0;
+
+  function toggle(id: string) {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/stripe-recon/matches/${match.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selected_invoice_ids: Array.from(picked) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Save failed");
+      // Apply server-computed updates locally
+      onMatchUpdated({
+        matched_invoices: data.matched_invoices,
+        total_invoice_amount: data.total_invoice_amount,
+        pre_tax_revenue: data.pre_tax_revenue,
+        computed_fee: data.computed_fee,
+        computed_tax: data.computed_tax,
+        decision: data.decision,
+        bookkeeper_override: true,
+      } as any);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] text-ink-slate italic mb-1">
+        AI couldn't match this deposit. Pick the invoices that make it up — the
+        Stripe fee is the discrepancy between the selected total and the deposit.
+      </div>
+      <div className="rounded-md border border-gray-200 bg-white max-h-64 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-50 sticky top-0">
+            <tr className="border-b border-gray-200">
+              <th className="w-8 px-2 py-1.5"></th>
+              <th className="text-left px-3 py-1.5 font-semibold text-ink-slate">Customer</th>
+              <th className="text-left px-3 py-1.5 font-semibold text-ink-slate">Date</th>
+              <th className="text-right px-3 py-1.5 font-semibold text-ink-slate">Amount</th>
+              <th className="text-right px-3 py-1.5 font-semibold text-ink-slate">Balance</th>
+              <th className="text-left px-3 py-1.5 font-semibold text-ink-slate">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedCandidates.map((c) => {
+              const isPicked = picked.has(c.id);
+              return (
+                <tr
+                  key={c.id}
+                  onClick={() => toggle(c.id)}
+                  className={`border-b border-gray-100 cursor-pointer ${isPicked ? "bg-teal-lighter" : "hover:bg-gray-50"}`}
+                >
+                  <td className="px-2 py-1.5">
+                    <input
+                      type="checkbox"
+                      checked={isPicked}
+                      onChange={() => toggle(c.id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </td>
+                  <td className="px-3 py-1.5 text-navy font-medium">
+                    {c.customer_name || <span className="italic text-ink-light">Unknown</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-ink-slate">{c.txn_date}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-navy">
+                    ${Number(c.total_amount || 0).toFixed(2)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-slate">
+                    ${Number(c.balance || 0).toFixed(2)}
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <span
+                      className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                        c.status === "paid"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : c.status === "partial"
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-gray-100 text-gray-700"
+                      }`}
+                    >
+                      {c.status}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Running totals */}
+      <div className="flex items-center justify-between text-xs bg-white rounded px-3 py-2 border border-gray-200">
+        <div className="flex items-center gap-3">
+          <span className="text-ink-slate">
+            <strong className="text-navy">{picked.size}</strong> selected · sum{" "}
+            <strong className="text-navy font-mono">${total.toFixed(2)}</strong>
+          </span>
+          <span className="text-ink-light">→</span>
+          <span className="text-ink-slate">
+            Deposit{" "}
+            <strong className="text-navy font-mono">
+              ${depositAmount.toFixed(2)}
+            </strong>
+          </span>
+          <span className="text-ink-light">=</span>
+          <span
+            className={`font-mono font-semibold ${
+              picked.size === 0
+                ? "text-ink-light"
+                : impliedPct >= 0.5 && impliedPct <= 5.5
+                ? "text-emerald-700"
+                : impliedPct > 5.5
+                ? "text-amber-700"
+                : "text-red-700"
+            }`}
+          >
+            ${implied.toFixed(2)}{" "}
+            <span className="text-[10px] text-ink-slate">
+              ({impliedPct.toFixed(2)}% fee {isCanada ? "+ tax" : ""})
+            </span>
+          </span>
+        </div>
+        <button
+          onClick={save}
+          disabled={saving || picked.size === 0}
+          className="bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+        >
+          {saving ? "Saving..." : "Save selection"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+          {error}
         </div>
       )}
     </div>

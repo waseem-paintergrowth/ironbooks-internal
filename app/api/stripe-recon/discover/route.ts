@@ -146,6 +146,9 @@ async function runDiscovery(jobId: string, autoApproveConfidence: number) {
     ai_confidence: m.ai_confidence,
     ai_reasoning: m.ai_reasoning,
     decision: m.decision,
+    // Save the candidate pool so the review UI can render a manual picker
+    candidate_invoices: m.candidate_invoices as any,
+    candidate_payments: m.candidate_payments as any,
   }));
 
   if (rows.length > 0) {

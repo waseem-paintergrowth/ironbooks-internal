@@ -31,6 +31,27 @@ export interface InvoiceMatch {
   tax_amount: number;
 }
 
+/** Snapshot of one candidate the AI considered. Saved on the match row so
+ *  the review UI can render a manual-picker for flagged/needs_review rows. */
+export interface CandidateInvoice {
+  id: string;
+  customer_name: string | null;
+  txn_date: string;
+  total_amount: number;
+  balance: number;
+  status: "open" | "paid" | "partial";
+  qbo_total_tax: number;
+}
+
+export interface CandidatePayment {
+  id: string;
+  customer_name: string | null;
+  txn_date: string;
+  total_amount: number;
+  payment_method: string | null;
+  linked_invoice_ids: string[];
+}
+
 export interface DepositMatch {
   qbo_deposit_id: string;
   deposit_amount: number;
@@ -51,6 +72,10 @@ export interface DepositMatch {
   ai_confidence: number;
   ai_reasoning: string;
   decision: "auto_approve" | "needs_review" | "flagged";
+  /** Full candidate pool from the ±30-day window — surfaced in the review
+   *  UI so the bookkeeper can manually pick when AI matching fails. */
+  candidate_invoices: CandidateInvoice[];
+  candidate_payments: CandidatePayment[];
 }
 
 const SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper performing Stripe AR reconciliation for a residential painting contractor.
@@ -292,6 +317,7 @@ Match each deposit to its underlying invoice(s). Return JSON only.`;
         }
       }
 
+      const { invs: candidateInvs, pays: candidatePays } = candidatesFor(deposit);
       allMatches.push({
         qbo_deposit_id: deposit.qbo_deposit_id,
         deposit_amount: deposit.amount,
@@ -308,6 +334,23 @@ Match each deposit to its underlying invoice(s). Return JSON only.`;
         ai_confidence: confidence,
         ai_reasoning: m.reasoning || "",
         decision,
+        candidate_invoices: candidateInvs.map((inv) => ({
+          id: inv.id,
+          customer_name: inv.customer_name,
+          txn_date: inv.txn_date,
+          total_amount: inv.total_amount,
+          balance: inv.balance,
+          status: inv.status,
+          qbo_total_tax: inv.qbo_total_tax,
+        })),
+        candidate_payments: candidatePays.map((p) => ({
+          id: p.id,
+          customer_name: p.customer_name,
+          txn_date: p.txn_date,
+          total_amount: p.total_amount,
+          payment_method: p.payment_method,
+          linked_invoice_ids: p.linked_invoice_ids,
+        })),
       });
     }
   }
@@ -336,6 +379,7 @@ Match each deposit to its underlying invoice(s). Return JSON only.`;
         "multi-customer batch the AI couldn't disambiguate — review manually.";
     }
 
+    const { invs: candidateInvs, pays: candidatePays } = candidatesFor(dep);
     allMatches.push({
       qbo_deposit_id: dep.qbo_deposit_id,
       deposit_amount: dep.amount,
@@ -352,6 +396,23 @@ Match each deposit to its underlying invoice(s). Return JSON only.`;
       ai_confidence: 0,
       ai_reasoning: reasoning,
       decision: "flagged",
+      candidate_invoices: candidateInvs.map((inv) => ({
+        id: inv.id,
+        customer_name: inv.customer_name,
+        txn_date: inv.txn_date,
+        total_amount: inv.total_amount,
+        balance: inv.balance,
+        status: inv.status,
+        qbo_total_tax: inv.qbo_total_tax,
+      })),
+      candidate_payments: candidatePays.map((p) => ({
+        id: p.id,
+        customer_name: p.customer_name,
+        txn_date: p.txn_date,
+        total_amount: p.total_amount,
+        payment_method: p.payment_method,
+        linked_invoice_ids: p.linked_invoice_ids,
+      })),
     });
   }
 
