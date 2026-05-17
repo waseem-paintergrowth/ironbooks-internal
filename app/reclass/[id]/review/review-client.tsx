@@ -136,45 +136,35 @@ export function ReclassReview({
   }
 
   /**
-   * Normalize a vendor name so all transactions from "SHERWIN-WILLIAMS #4521"
-   * and "Sherwin Williams Co" cluster together for propagation.
-   */
-  function normalizeVendorName(raw: string | null | undefined): string {
-    return (raw || "")
-      .toUpperCase()
-      .replace(/^(interac\s+(purchase|retail|debit)\s*[\-:]?\s*)/i, "")
-      .replace(/^(pos\s+(purchase|debit)\s*[\-:]?\s*)/i, "")
-      .replace(/\bstore\s*#?\s*\d+\b/gi, "")
-      .replace(/#\d+/g, "")
-      .replace(/[^A-Z0-9 ]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  /**
    * Set the target account for a row + promote to "approved".
    *
-   * Propagation: if other unresolved rows (needs_review / flagged / ask_client)
-   * share the same normalized vendor name, they get the same target — saves the
-   * bookkeeper from picking the same account 20 times for the same vendor.
+   * Propagation: when the bookkeeper picks an account for one row, the same
+   * target is applied to all OTHER unresolved rows (needs_review / flagged /
+   * ask_client) whose "effective sender" matches. The effective sender uses
+   * vendor_name when meaningful, otherwise extracts from description — so a
+   * batch of 15 "Unknown vendor" rows with "Josh Smith" in the description
+   * cluster together and all get updated when the bookkeeper picks one.
    *
    * Also fires a bank-rule upsert so future runs skip categorization for this
-   * vendor. Skipped for ask_client (peer payments are unique).
+   * vendor. Skipped for ask_client (peer payments are too unique to memoize).
    */
   async function setTarget(rowId: string, targetAccountName: string) {
     const row = rows.find((r) => r.id === rowId);
     if (!row) return;
 
-    // Find all sibling rows with the same normalized vendor that are still
-    // unresolved (needs_review / flagged / ask_client). Auto-approve them too.
-    const normalized = normalizeVendorName(row.vendor_name);
+    // Extract the effective sender (digs into description when vendor_name is
+    // generic), then normalize for dedup matching.
+    const effectiveSender = extractSender(row.vendor_name, row.description, (row as any).original_memo);
+    const normalized = normalizeSender(effectiveSender);
+
     const unresolvedStates = new Set(["needs_review", "flagged", "ask_client"]);
     const propagateIds = new Set<string>([rowId]);
     if (normalized) {
       for (const r of rows) {
         if (r.id === rowId) continue;
         if (!unresolvedStates.has(r.decision)) continue;
-        if (normalizeVendorName(r.vendor_name) === normalized) {
+        const rSender = extractSender(r.vendor_name, r.description, (r as any).original_memo);
+        if (normalizeSender(rSender) === normalized) {
           propagateIds.add(r.id);
         }
       }
@@ -853,6 +843,66 @@ function MasterAccountSelect({
 
 // ─────────── Client Email Modal ───────────
 
+/**
+ * Extract the real sender from a transaction.
+ *
+ * QBO often surfaces e-transfers with vendor_name = "Unknown vendor" while the
+ * actual sender name lives in the description/memo (e.g., "Interac e-Transfer
+ * from Josh Smith for July rent"). This helper digs the real name out so we
+ * can group by it.
+ *
+ * Returns the cleanest human-readable name we can find, falling back to
+ * "Unknown" only when truly nothing identifiable exists.
+ */
+function extractSender(
+  vendorName: string | null | undefined,
+  description: string | null | undefined,
+  privateNote?: string | null
+): string {
+  const isMeaningfulVendor = (v: string) => {
+    const lower = v.toLowerCase().trim();
+    return lower && lower !== "unknown vendor" && lower !== "unknown" && lower !== "n/a";
+  };
+
+  const v = (vendorName || "").trim();
+  if (isMeaningfulVendor(v)) return v;
+
+  // Fall back to description, then private note
+  const source = (description || privateNote || "").trim();
+  if (!source) return "Unknown";
+
+  let cleaned = source
+    // Strip Interac/POS bank-feed prefixes
+    .replace(/^(interac\s+(purchase|retail|debit)\s*[\-:]?\s*)/i, "")
+    .replace(/^(pos\s+(purchase|debit)\s*[\-:]?\s*)/i, "")
+    // Strip e-transfer noise words at the start of the descriptor
+    .replace(/^(interac\s+)?e[\s\-]?transfer\s*(from\s+|to\s+)?/i, "")
+    .replace(/^(emt|e[\s\-]?tfr)\s+(from\s+|to\s+)?/i, "")
+    .replace(/^(received\s+from|sent\s+to|from|to)\s+/i, "")
+    // Strip trailing reference numbers and memo qualifiers ("for X")
+    .replace(/\s+(ref|reference|confirmation|memo)[\s:#]*[A-Z0-9]+.*$/i, "")
+    .replace(/\s+for\s+(deposit|payment|services?|invoice|job|reno|cleanup|rent|materials?).*$/i, "")
+    .replace(/\s+#?\d{4,}\b.*$/, "")
+    .trim();
+
+  if (!cleaned) return "Unknown";
+  // Collapse double spaces
+  cleaned = cleaned.replace(/\s+/g, " ");
+  return cleaned;
+}
+
+/**
+ * Normalize an extracted sender name for grouping/dedup. Removes punctuation
+ * and case differences so "Josh Smith", "JOSH SMITH", "josh-smith" all match.
+ */
+function normalizeSender(name: string): string {
+  return (name || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -862,20 +912,46 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-interface TxnRow {
-  date: string;
-  vendor: string;
-  amount: number;
+interface SenderGroup {
+  sender: string;             // display name (e.g. "Josh Smith")
+  normalized: string;         // dedup key
+  count: number;
+  total: number;
+  firstDate: string;
+  lastDate: string;
 }
 
-function buildTxnRows(rows: Reclassification[]): TxnRow[] {
-  return rows
-    .map((r) => ({
-      date: r.transaction_date || "",
-      vendor: (r.vendor_name || "Unknown").trim(),
-      amount: Math.abs(Number(r.transaction_amount || 0)),
-    }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+/**
+ * Group ask-client rows by extracted sender (digs into description when
+ * vendor_name is "Unknown vendor"). Returns one row per unique recipient
+ * with transaction count + total — 105 raw e-transfers collapse to ~15 rows.
+ */
+function buildSenderGroups(rows: Reclassification[]): SenderGroup[] {
+  const map = new Map<string, SenderGroup>();
+  for (const r of rows) {
+    const sender = extractSender(r.vendor_name, r.description, (r as any).original_memo);
+    const norm = normalizeSender(sender);
+    if (!norm) continue;
+    const amount = Math.abs(Number(r.transaction_amount || 0));
+    const date = r.transaction_date || "";
+    if (!map.has(norm)) {
+      map.set(norm, {
+        sender,
+        normalized: norm,
+        count: 0,
+        total: 0,
+        firstDate: date,
+        lastDate: date,
+      });
+    }
+    const g = map.get(norm)!;
+    g.count++;
+    g.total += amount;
+    if (date && (!g.firstDate || date < g.firstDate)) g.firstDate = date;
+    if (date && (!g.lastDate || date > g.lastDate)) g.lastDate = date;
+  }
+  // Sort by total descending (biggest mysteries first)
+  return Array.from(map.values()).sort((a, b) => b.total - a.total);
 }
 
 const fmtMoney = (n: number) =>
@@ -897,13 +973,13 @@ function ClientEmailModal({
   onClose: () => void;
 }) {
   void jobId; // legacy prop, no longer used
-  const txns = useMemo(() => buildTxnRows(rows), [rows]);
+  const groups = useMemo(() => buildSenderGroups(rows), [rows]);
   const periodLabel = `${dateStart} → ${dateEnd}`;
 
   const defaultIntro = useMemo(
     () =>
-      `Hi ${clientName.split(" ")[0] || "there"},\n\nWhile cleaning up your books for the period ${periodLabel}, we found ${rows.length} transaction${rows.length === 1 ? "" : "s"} we have questions about. Most look like e-transfers, Venmo, or peer payments without a clear vendor.\n\nPlease fill in the "What was this for?" column in the table below so we can categorize them correctly:`,
-    [clientName, periodLabel, rows.length]
+      `Hi ${clientName.split(" ")[0] || "there"},\n\nWhile cleaning up your books for the period ${periodLabel}, we found ${rows.length} transaction${rows.length === 1 ? "" : "s"} from ${groups.length} sender${groups.length === 1 ? "" : "s"} that we have questions about. These look like e-transfers, Venmo, or peer payments without a clear category.\n\nPlease fill in the "What were these for?" column in the table below — one answer per sender is fine (e.g., "rent payments" or "materials reimbursement"):`,
+    [clientName, periodLabel, rows.length, groups.length]
   );
   const defaultOutro = `Please reply within 48 hours so we can complete your books.\n\nKindly,\nIronbooks`;
 
@@ -938,15 +1014,19 @@ function ClientEmailModal({
       .split("\n\n")
       .map((p) => `<p style="margin:0 0 12px 0;color:${BRAND.navy};line-height:1.55;">${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
       .join("");
-    const tableRows = txns
+    const tableRows = groups
       .map(
-        (t, i) => {
+        (g, i) => {
           const bg = i % 2 === 0 ? BRAND.white : BRAND.tealLighter;
+          const dateLabel = g.firstDate === g.lastDate
+            ? g.firstDate
+            : `${g.firstDate} → ${g.lastDate}`;
           return `
         <tr style="background:${bg};">
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.slate};font-variant-numeric:tabular-nums;">${escapeHtml(t.date)}</td>
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.navy};font-weight:500;">${escapeHtml(t.vendor)}</td>
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:right;color:${BRAND.navy};font-weight:600;font-variant-numeric:tabular-nums;">$${fmtMoney(t.amount)}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.navy};font-weight:600;">${escapeHtml(g.sender)}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:center;color:${BRAND.slate};font-variant-numeric:tabular-nums;">${g.count}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:right;color:${BRAND.navy};font-weight:600;font-variant-numeric:tabular-nums;">$${fmtMoney(g.total)}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.slate};font-size:11px;font-variant-numeric:tabular-nums;">${escapeHtml(dateLabel)}</td>
           <td style="border:1px solid ${BRAND.border};padding:8px 12px;background:${BRAND.white};">&nbsp;</td>
         </tr>`;
         }
@@ -971,14 +1051,15 @@ function ClientEmailModal({
   <div style="border:1px solid ${BRAND.border};border-top:none;padding:24px 22px;border-radius:0 0 10px 10px;background:${BRAND.white};">
     ${introHtml}
 
-    <!-- Branded transaction table -->
+    <!-- Branded sender-grouped table — one row per unique sender -->
     <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;border:1px solid ${BRAND.border};font-family:'Figtree','Helvetica Neue',sans-serif;font-size:13px;margin:8px 0 18px 0;">
       <thead>
         <tr style="background:${BRAND.teal};">
-          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Date</th>
-          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Sender / Vendor</th>
-          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:right;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Amount</th>
-          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">What was this for?</th>
+          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Sender</th>
+          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:center;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;"># Txns</th>
+          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:right;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Total</th>
+          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Date Range</th>
+          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">What were these for?</th>
         </tr>
       </thead>
       <tbody>${tableRows}
@@ -994,25 +1075,30 @@ function ClientEmailModal({
     </div>
   </div>
 </div>`;
-  }, [intro, outro, txns]);
+  }, [intro, outro, groups]);
 
   // Plain-text fallback for paste destinations that don't take HTML
   const plainText = useMemo(() => {
-    const widths = { date: 12, vendor: 28, amount: 12, note: 28 };
-    const pad = (s: string, n: number) => s.length >= n ? s : s + " ".repeat(n - s.length);
-    const padR = (s: string, n: number) => s.length >= n ? s : " ".repeat(n - s.length) + s;
+    const widths = { sender: 28, count: 6, total: 12, dates: 24 };
+    const pad = (s: string, n: number) => s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length);
+    const padR = (s: string, n: number) => s.length >= n ? s.slice(0, n) : " ".repeat(n - s.length) + s;
     const header =
-      pad("Date", widths.date) + " | " +
-      pad("Sender", widths.vendor) + " | " +
-      padR("Amount", widths.amount) + " | What was this for?";
+      pad("Sender", widths.sender) + " | " +
+      padR("# Txns", widths.count) + " | " +
+      padR("Total", widths.total) + " | " +
+      pad("Date Range", widths.dates) + " | What were these for?";
     const sep = "-".repeat(header.length);
-    const lines = txns.map((t) =>
-      pad(t.date, widths.date) + " | " +
-      pad((t.vendor || "").slice(0, widths.vendor), widths.vendor) + " | " +
-      padR("$" + fmtMoney(t.amount), widths.amount) + " | "
-    );
+    const lines = groups.map((g) => {
+      const dateLabel = g.firstDate === g.lastDate ? g.firstDate : `${g.firstDate} → ${g.lastDate}`;
+      return (
+        pad(g.sender, widths.sender) + " | " +
+        padR(String(g.count), widths.count) + " | " +
+        padR("$" + fmtMoney(g.total), widths.total) + " | " +
+        pad(dateLabel, widths.dates) + " | "
+      );
+    });
     return `${intro}\n\n${header}\n${sep}\n${lines.join("\n")}\n\n${outro}`;
-  }, [intro, outro, txns]);
+  }, [intro, outro, groups]);
 
   async function copySubject() {
     try {
@@ -1114,37 +1200,44 @@ function ClientEmailModal({
             />
           </div>
 
-          {/* Branded table preview — matches what the client will see */}
+          {/* Branded table preview — one row per unique sender */}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-ink-slate mb-1">
-              Transaction Table Preview ({txns.length} rows)
+              Sender Table Preview ({groups.length} unique sender{groups.length === 1 ? "" : "s"} · {rows.length} total transaction{rows.length === 1 ? "" : "s"})
             </label>
             <div className="rounded-lg border border-gray-200 overflow-hidden">
               <div className="overflow-x-auto max-h-72">
                 <table className="w-full text-xs border-collapse">
                   <thead>
                     <tr style={{ background: "#2D7A75" }}>
-                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Date</th>
-                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Sender / Vendor</th>
-                      <th className="text-right px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Amount</th>
-                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">What was this for?</th>
+                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Sender</th>
+                      <th className="text-center px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]"># Txns</th>
+                      <th className="text-right px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Total</th>
+                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">Date Range</th>
+                      <th className="text-left px-3 py-2 text-white font-semibold uppercase tracking-wider text-[10px]">What were these for?</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {txns.map((t, i) => (
-                      <tr key={i} style={{ background: i % 2 === 0 ? "#FFFFFF" : "#F4F9F8" }}>
-                        <td className="px-3 py-1.5 text-ink-slate border border-gray-200">{t.date}</td>
-                        <td className="px-3 py-1.5 text-navy border border-gray-200 font-medium">{t.vendor}</td>
-                        <td className="px-3 py-1.5 text-right font-semibold text-navy border border-gray-200">${fmtMoney(t.amount)}</td>
-                        <td className="px-3 py-1.5 text-ink-light italic border border-gray-200">(client fills in)</td>
-                      </tr>
-                    ))}
+                    {groups.map((g, i) => {
+                      const dateLabel = g.firstDate === g.lastDate
+                        ? g.firstDate
+                        : `${g.firstDate} → ${g.lastDate}`;
+                      return (
+                        <tr key={i} style={{ background: i % 2 === 0 ? "#FFFFFF" : "#F4F9F8" }}>
+                          <td className="px-3 py-1.5 text-navy border border-gray-200 font-semibold">{g.sender}</td>
+                          <td className="px-3 py-1.5 text-center text-ink-slate border border-gray-200">{g.count}</td>
+                          <td className="px-3 py-1.5 text-right font-semibold text-navy border border-gray-200">${fmtMoney(g.total)}</td>
+                          <td className="px-3 py-1.5 text-ink-slate border border-gray-200 text-[10px]">{dateLabel}</td>
+                          <td className="px-3 py-1.5 text-ink-light italic border border-gray-200">(client fills in)</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             </div>
             <p className="text-[11px] text-ink-light mt-1.5">
-              When copied, the email gets a branded Ironbooks header bar, this teal-styled table, and a brand-line footer.
+              Sender extracted from vendor name or transaction description (catches e-transfer recipient names). 105 raw transactions from 15 unique people collapse to 15 rows — client gives one answer per sender.
             </p>
           </div>
 
