@@ -285,6 +285,44 @@ export function ReclassReview({
     );
   }
 
+  // Move a row (or set of rows) to the Ask Client bucket — used from
+  // Needs Review / Flagged when the bookkeeper realizes only the client
+  // can answer this one.
+  async function moveToAskClient(rowIds: string[]) {
+    if (rowIds.length === 0) return;
+    setRows((prev) =>
+      prev.map((r) => (rowIds.includes(r.id) ? { ...r, decision: "ask_client" } : r))
+    );
+    await Promise.all(
+      rowIds.map((id) =>
+        fetch(`/api/reclass/decisions/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision: "ask_client" }),
+        })
+      )
+    );
+  }
+
+  // Bring a skipped row back into the active workflow when the bookkeeper
+  // catches a miscategorization. Setting a target account flips it to
+  // "approved" status with pending status so it executes on the next run.
+  async function unskipRow(rowId: string, accountName: string) {
+    // First set the target name (this writes bookkeeper_override_*)
+    await setTarget(rowId, accountName);
+    // Then flip the decision back to approved so it ships at execute time
+    setRows((prev) =>
+      prev.map((r) =>
+        r.id === rowId ? { ...r, decision: "approved", status: "pending" } : r
+      )
+    );
+    await fetch(`/api/reclass/decisions/${rowId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision: "approved", status: "pending" }),
+    });
+  }
+
   async function toggleAttestation() {
     const next = !attested;
     setAttested(next);
@@ -460,16 +498,25 @@ export function ReclassReview({
         {activeTab === "review" && (
           <>
             {partitioned.review.length > 0 && (
-              <div className="p-3 bg-amber-50 border-b border-amber-100 flex items-center justify-between">
+              <div className="p-3 bg-amber-50 border-b border-amber-100 flex items-center justify-between gap-3">
                 <span className="text-sm text-amber-800">
                   AI confidence 70-91%. Pick the right account from the dropdown — selection applies to all matching-vendor transactions automatically.
                 </span>
-                <button
-                  onClick={() => bulkApprove(partitioned.review.map((r) => r.id))}
-                  className="text-sm bg-amber-600 text-white px-3 py-1.5 rounded-lg hover:bg-amber-700"
-                >
-                  Approve all AI picks
-                </button>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => moveToAskClient(partitioned.review.map((r) => r.id))}
+                    className="text-sm bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700"
+                    title="Move all rows to Ask Client so the client can clarify"
+                  >
+                    Move all to Ask Client
+                  </button>
+                  <button
+                    onClick={() => bulkApprove(partitioned.review.map((r) => r.id))}
+                    className="text-sm bg-amber-600 text-white px-3 py-1.5 rounded-lg hover:bg-amber-700"
+                  >
+                    Approve all AI picks
+                  </button>
+                </div>
               </div>
             )}
             <RowTable
@@ -479,6 +526,7 @@ export function ReclassReview({
               showApproveReject={false}
               masterAccounts={masterAccounts}
               onTargetChange={setTarget}
+              onMoveToAskClient={(id) => moveToAskClient([id])}
             />
           </>
         )}
@@ -486,8 +534,17 @@ export function ReclassReview({
         {activeTab === "flagged" && (
           <>
             {partitioned.flagged.length > 0 && (
-              <div className="p-3 bg-red-50 border-b border-red-100 text-sm text-red-800">
-                AI couldn't confidently match these. Pick the right account from the dropdown — selection auto-applies to all matching-vendor transactions.
+              <div className="p-3 bg-red-50 border-b border-red-100 flex items-center justify-between gap-3">
+                <span className="text-sm text-red-800">
+                  AI couldn't confidently match these. Pick the right account from the dropdown — selection auto-applies to all matching-vendor transactions.
+                </span>
+                <button
+                  onClick={() => moveToAskClient(partitioned.flagged.map((r) => r.id))}
+                  className="text-sm bg-purple-600 text-white px-3 py-1.5 rounded-lg hover:bg-purple-700 flex-shrink-0"
+                  title="Move all rows to Ask Client so the client can clarify"
+                >
+                  Move all to Ask Client
+                </button>
               </div>
             )}
             <RowTable
@@ -497,6 +554,7 @@ export function ReclassReview({
               showApproveReject={false}
               masterAccounts={masterAccounts}
               onTargetChange={setTarget}
+              onMoveToAskClient={(id) => moveToAskClient([id])}
             />
           </>
         )}
@@ -531,7 +589,24 @@ export function ReclassReview({
         )}
 
         {activeTab === "skipped" && (
-          <RowTable rows={partitioned.skipped} showConfidence={false} showActions={false} showSkipReason />
+          <>
+            {partitioned.skipped.length > 0 && (
+              <div className="p-3 bg-gray-50 border-b border-gray-100 text-sm text-ink-slate">
+                Skipped rows aren't executed by default. If you spot a miscategorization,
+                pick a target account from the dropdown — that brings the row back into
+                the queue as "approved" for the next execute.
+              </div>
+            )}
+            <RowTable
+              rows={partitioned.skipped}
+              showConfidence={false}
+              showActions={true}
+              showApproveReject={false}
+              showSkipReason
+              masterAccounts={masterAccounts}
+              onTargetChange={unskipRow}
+            />
+          </>
         )}
       </div>
 
@@ -658,6 +733,7 @@ function RowTable({
   onTargetChange,
   onApprove,
   onReject,
+  onMoveToAskClient,
 }: {
   rows: Reclassification[];
   showConfidence: boolean;
@@ -670,6 +746,9 @@ function RowTable({
   onTargetChange?: (rowId: string, accountName: string) => void;
   onApprove?: (id: string) => void;
   onReject?: (id: string) => void;
+  /** If provided, renders an "Ask Client" button per row so a single
+   *  needs_review / flagged item can be punted to the client. */
+  onMoveToAskClient?: (id: string) => void;
 }) {
   if (rows.length === 0) {
     return <div className="p-8 text-center text-ink-slate text-sm">No transactions in this category.</div>;
@@ -698,6 +777,9 @@ function RowTable({
             )}
             {showActionsCol && (
               <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Actions</th>
+            )}
+            {onMoveToAskClient && (
+              <th className="text-right px-4 py-2.5 font-semibold text-ink-slate">Ask Client?</th>
             )}
           </tr>
         </thead>
@@ -797,6 +879,18 @@ function RowTable({
                       Reject
                     </button>
                   </div>
+                </td>
+              )}
+              {onMoveToAskClient && (
+                <td className="px-4 py-2.5 text-right">
+                  <button
+                    onClick={() => onMoveToAskClient(r.id)}
+                    className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded hover:bg-purple-200 inline-flex items-center gap-1"
+                    title="Move this row to the Ask Client bucket"
+                  >
+                    <HelpCircle size={11} />
+                    Ask Client
+                  </button>
                 </td>
               )}
             </tr>
@@ -1010,12 +1104,38 @@ interface SenderGroup {
   total: number;
   firstDate: string;
   lastDate: string;
+  /** Distinct memo/description snippets seen for this sender. Up to 5,
+   *  truncated for readability. Crucial context for Venmo/Zelle/E-transfer
+   *  rows where the sender alone tells the client nothing. */
+  memos: string[];
+}
+
+/**
+ * Cleaned-up memo: strip the same leading prefixes extractSender removes
+ * so we don't echo "Interac e-Transfer from Josh Smith for X" — we show
+ * just "for X". Truncated to ~80 chars.
+ */
+function cleanMemo(raw: string | null | undefined): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  let cleaned = s
+    .replace(/^(interac\s+(purchase|retail|debit)\s*[\-:]?\s*)/i, "")
+    .replace(/^(pos\s+(purchase|debit)\s*[\-:]?\s*)/i, "")
+    .replace(/^(interac\s+)?e[\s\-]?transfer\s*(from\s+|to\s+)?[A-Za-z .'-]+?(\s+for\s+)?/i, "$3")
+    .replace(/^(emt|e[\s\-]?tfr)\s+(from\s+|to\s+)?[A-Za-z .'-]+?(\s+for\s+)?/i, "$3")
+    .replace(/^(venmo|zelle|cash\s*app|paypal)\s*\*?\s*[A-Za-z .'-]+?(\s+for\s+)?/i, "$2")
+    .replace(/\s+ref(erence)?[\s:#]*[A-Z0-9]+.*$/i, "")
+    .replace(/\s+#?\d{6,}\b.*$/, "")
+    .trim();
+  if (cleaned.length > 80) cleaned = cleaned.slice(0, 77) + "…";
+  return cleaned;
 }
 
 /**
  * Group ask-client rows by extracted sender (digs into description when
  * vendor_name is "Unknown vendor"). Returns one row per unique recipient
- * with transaction count + total — 105 raw e-transfers collapse to ~15 rows.
+ * with transaction count + total + up to 5 distinct memo snippets so
+ * Venmo/Zelle rows aren't context-free in the client email.
  */
 function buildSenderGroups(rows: Reclassification[]): SenderGroup[] {
   const map = new Map<string, SenderGroup>();
@@ -1033,6 +1153,7 @@ function buildSenderGroups(rows: Reclassification[]): SenderGroup[] {
         total: 0,
         firstDate: date,
         lastDate: date,
+        memos: [],
       });
     }
     const g = map.get(norm)!;
@@ -1040,6 +1161,11 @@ function buildSenderGroups(rows: Reclassification[]): SenderGroup[] {
     g.total += amount;
     if (date && (!g.firstDate || date < g.firstDate)) g.firstDate = date;
     if (date && (!g.lastDate || date > g.lastDate)) g.lastDate = date;
+    // Collect up to 5 distinct memo snippets
+    const memo = cleanMemo(r.description || (r as any).original_memo);
+    if (memo && g.memos.length < 5 && !g.memos.includes(memo)) {
+      g.memos.push(memo);
+    }
   }
   // Sort by total descending (biggest mysteries first)
   return Array.from(map.values()).sort((a, b) => b.total - a.total);
@@ -1112,13 +1238,19 @@ function ClientEmailModal({
           const dateLabel = g.firstDate === g.lastDate
             ? g.firstDate
             : `${g.firstDate} → ${g.lastDate}`;
+          const memosHtml = g.memos.length > 0
+            ? g.memos
+                .map((m) => `<div style="color:${BRAND.slate};font-size:11px;line-height:1.45;">• ${escapeHtml(m)}</div>`)
+                .join("")
+            : `<div style="color:${BRAND.lightSlate};font-size:11px;font-style:italic;">No memo on bank record</div>`;
           return `
         <tr style="background:${bg};">
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.navy};font-weight:600;">${escapeHtml(g.sender)}</td>
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:center;color:${BRAND.slate};font-variant-numeric:tabular-nums;">${g.count}</td>
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:right;color:${BRAND.navy};font-weight:600;font-variant-numeric:tabular-nums;">$${fmtMoney(g.total)}</td>
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.slate};font-size:11px;font-variant-numeric:tabular-nums;">${escapeHtml(dateLabel)}</td>
-          <td style="border:1px solid ${BRAND.border};padding:8px 12px;background:${BRAND.white};">&nbsp;</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.navy};font-weight:600;vertical-align:top;">${escapeHtml(g.sender)}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:center;color:${BRAND.slate};font-variant-numeric:tabular-nums;vertical-align:top;">${g.count}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;text-align:right;color:${BRAND.navy};font-weight:600;font-variant-numeric:tabular-nums;vertical-align:top;">$${fmtMoney(g.total)}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;color:${BRAND.slate};font-size:11px;font-variant-numeric:tabular-nums;vertical-align:top;">${escapeHtml(dateLabel)}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;vertical-align:top;">${memosHtml}</td>
+          <td style="border:1px solid ${BRAND.border};padding:8px 12px;background:${BRAND.white};vertical-align:top;">&nbsp;</td>
         </tr>`;
         }
       )
@@ -1152,6 +1284,7 @@ function ClientEmailModal({
           <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:center;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;"># Txns</th>
           <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:right;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Total</th>
           <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Date Range</th>
+          <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">Bank Memo / Notes</th>
           <th style="border:1px solid ${BRAND.tealDark};padding:10px 12px;text-align:left;color:${BRAND.white};font-weight:600;font-size:12px;letter-spacing:0.04em;text-transform:uppercase;">What were these for?</th>
         </tr>
       </thead>
@@ -1172,25 +1305,20 @@ function ClientEmailModal({
 
   // Plain-text fallback for paste destinations that don't take HTML
   const plainText = useMemo(() => {
-    const widths = { sender: 28, count: 6, total: 12, dates: 24 };
-    const pad = (s: string, n: number) => s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length);
-    const padR = (s: string, n: number) => s.length >= n ? s.slice(0, n) : " ".repeat(n - s.length) + s;
-    const header =
-      pad("Sender", widths.sender) + " | " +
-      padR("# Txns", widths.count) + " | " +
-      padR("Total", widths.total) + " | " +
-      pad("Date Range", widths.dates) + " | What were these for?";
-    const sep = "-".repeat(header.length);
     const lines = groups.map((g) => {
       const dateLabel = g.firstDate === g.lastDate ? g.firstDate : `${g.firstDate} → ${g.lastDate}`;
-      return (
-        pad(g.sender, widths.sender) + " | " +
-        padR(String(g.count), widths.count) + " | " +
-        padR("$" + fmtMoney(g.total), widths.total) + " | " +
-        pad(dateLabel, widths.dates) + " | "
-      );
+      const memoBlock = g.memos.length > 0
+        ? g.memos.map((m) => `      • ${m}`).join("\n")
+        : "      (no memo on bank record)";
+      return [
+        `▸ ${g.sender}`,
+        `    ${g.count} txn${g.count === 1 ? "" : "s"} · $${fmtMoney(g.total)} · ${dateLabel}`,
+        `    Bank memo / notes:`,
+        memoBlock,
+        `    What were these for? __________________________`,
+      ].join("\n");
     });
-    return `${intro}\n\n${header}\n${sep}\n${lines.join("\n")}\n\n${outro}`;
+    return `${intro}\n\n${lines.join("\n\n")}\n\n${outro}`;
   }, [intro, outro, groups]);
 
   async function copySubject() {
