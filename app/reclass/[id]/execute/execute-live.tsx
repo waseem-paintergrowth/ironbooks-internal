@@ -284,7 +284,7 @@ export function ExecuteLive({
                 Skip if this client doesn't use Stripe →
               </span>
               <Link
-                href={`/rules/new?client=${job.client_link_id}&from_reclass=${job.id}`}
+                href={`/reclass/${job.id}/bank-rules`}
                 className="font-semibold text-purple-700 hover:text-purple-900"
               >
                 Skip to Bank Rules
@@ -310,7 +310,7 @@ export function ExecuteLive({
                 </div>
               </div>
               <Link
-                href={`/rules/new?client=${job.client_link_id}&from_reclass=${job.id}`}
+                href={`/reclass/${job.id}/bank-rules`}
                 className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg flex-shrink-0 shadow-md"
               >
                 Generate Bank Rules <ArrowRight size={16} />
