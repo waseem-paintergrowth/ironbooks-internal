@@ -260,7 +260,7 @@ export function LiveExecution({
                 COA cleanup complete — next: reclassify transactions
               </h3>
               <p className="text-sm text-ink-slate">
-                Now that {clientName}'s chart of accounts is aligned to the IronBooks master,
+                Now that {clientName}'s chart of accounts is aligned to the Ironbooks master,
                 run AI transaction reclassification to map historical transactions to the new accounts.
               </p>
             </div>

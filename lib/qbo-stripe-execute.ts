@@ -22,7 +22,7 @@
  * dedicated tax-payable / tax-recoverable accounts. This matches the canonical
  * CRA / IRS treatment for service contractors processing payments via Stripe.
  *
- * Idempotency: any line starting with [IronBooks Stripe Recon] is stripped
+ * Idempotency: any line starting with [Ironbooks Stripe Recon] is stripped
  * before re-applying — safe to re-run after tweaking fees in the review UI.
  */
 
@@ -33,7 +33,7 @@ const QBO_BASE =
     ? "https://quickbooks.api.intuit.com"
     : "https://sandbox-quickbooks.api.intuit.com";
 
-const IRONBOOKS_TAG = "[IronBooks Stripe Recon]";
+const IRONBOOKS_TAG = "[Ironbooks Stripe Recon]";
 
 // ─────────── Types ───────────
 
@@ -252,7 +252,7 @@ function buildLabeledMemo(
   const today = new Date().toISOString().slice(0, 10);
   const customers = customerNames.length > 0 ? customerNames.join(", ") : "unmatched";
   const tag = `${IRONBOOKS_TAG} ${today}: Stripe payment for ${customers}`;
-  const existing = (existingMemo || "").replace(/\[IronBooks Stripe Recon\][^\n]*/gi, "").trim();
+  const existing = (existingMemo || "").replace(/\[Ironbooks Stripe Recon\][^\n]*/gi, "").trim();
   return existing ? `${tag}\n${existing}` : tag;
 }
 
@@ -276,7 +276,7 @@ export async function applyStripeReconToDeposit(
   const deposit: QBODeposit = fetched.Deposit;
   if (!deposit) throw new Error(`Deposit ${match.qbo_deposit_id} not found`);
 
-  // 2. Strip prior IronBooks lines so we can safely re-run
+  // 2. Strip prior Ironbooks lines so we can safely re-run
   const cleanLines: QBODepositLine[] = (deposit.Line || []).filter(
     (l) => !(l.Description || "").startsWith(IRONBOOKS_TAG)
   );

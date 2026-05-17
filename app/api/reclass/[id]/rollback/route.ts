@@ -143,7 +143,7 @@ async function runRollback(
   if (!rollbackJob) throw new Error("Rollback job not found");
 
   const clientLink = (rollbackJob as any).client_links;
-  const bookkeeperName = (rollbackJob as any).users?.full_name || "IronBooks";
+  const bookkeeperName = (rollbackJob as any).users?.full_name || "Ironbooks";
 
   // Find all originally-executed reclassifications
   const { data: originalReclass } = await service

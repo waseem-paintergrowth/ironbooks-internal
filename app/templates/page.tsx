@@ -35,15 +35,23 @@ export default async function MasterCOAPage({
       .eq("jurisdiction", jur)
       .eq("industry", validIndustry)
       .order("sort_order");
-    if ((filtered.data || []).length === 0 && validIndustry === "painters") {
-      // Pre-migration fallback: industry column missing or not populated → fetch all rows
-      return supabase
+    if ((filtered.data || []).length > 0) return filtered;
+    // Fallback 1 — painters baseline (always populated)
+    if (validIndustry !== "painters") {
+      const painters = await supabase
         .from("master_coa")
         .select("*")
         .eq("jurisdiction", jur)
+        .eq("industry", "painters")
         .order("sort_order");
+      if ((painters.data || []).length > 0) return painters;
     }
-    return filtered;
+    // Fallback 2 — pre-Migration-7 state, no industry column populated
+    return supabase
+      .from("master_coa")
+      .select("*")
+      .eq("jurisdiction", jur)
+      .order("sort_order");
   }
 
   const [usData, caData, usageData] = await Promise.all([

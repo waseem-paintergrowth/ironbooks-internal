@@ -176,7 +176,7 @@ export default async function DashboardPage() {
         {/* Workflow guide */}
         <div className="rounded-xl bg-white border border-gray-200 mb-6 overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-200 bg-gradient-to-r from-teal-lighter to-blue-50">
-            <h2 className="text-base font-bold text-navy">The IronBooks Cleanup Workflow</h2>
+            <h2 className="text-base font-bold text-navy">The Ironbooks Cleanup Workflow</h2>
             <p className="text-xs text-ink-slate mt-0.5">
               Four sequential steps to take a painter's QBO from messy to clean. Each step hands off to the next.
             </p>
@@ -185,7 +185,7 @@ export default async function DashboardPage() {
             {[
               {
                 num: 1, label: "COA Cleanup", icon: FilePlus2, href: "/jobs/new",
-                desc: "Align chart of accounts to the IronBooks master template",
+                desc: "Align chart of accounts to the Ironbooks master template",
                 tag: "Required", tagColor: "#2D7A75",
               },
               {

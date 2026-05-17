@@ -1,7 +1,7 @@
 /**
  * Claude AI Integration for COA Cleanup
  * --------------------------------------
- * Sends the client's QBO Chart of Accounts to Claude along with the IronBooks
+ * Sends the client's QBO Chart of Accounts to Claude along with the Ironbooks
  * Master COA template. Claude returns structured suggestions for each account:
  *   - keep / rename / delete / flag
  *   - confidence score
@@ -56,12 +56,12 @@ export interface AnalysisResult {
 
 // ============== SYSTEM PROMPT ==============
 
-const SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper — a senior accountant specializing in painting contractors.
+const SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper — a senior accountant specializing in painting contractors.
 
-Your job is to map each account in a painter's QuickBooks COA to the IronBooks Master COA template as aggressively as possible. The goal is to get 95%+ of accounts remapped, not flagged. Flags should be rare and reserved for genuine uncertainty.
+Your job is to map each account in a painter's QuickBooks COA to the Ironbooks Master COA template as aggressively as possible. The goal is to get 95%+ of accounts remapped, not flagged. Flags should be rare and reserved for genuine uncertainty.
 
 You will receive:
-1. The IronBooks Master COA (the target standard)
+1. The Ironbooks Master COA (the target standard)
 2. The client's current QBO COA
 
 For each client account, choose ONE action:

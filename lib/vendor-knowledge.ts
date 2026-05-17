@@ -49,12 +49,15 @@ const PATTERNS: VendorPattern[] = [
   { pattern: /\bwithdrawal\s*[\-:]\s*atm/i, account: "Owner Draw / Salary", confidence: 0.95, reasoning: "ATM Withdrawal → Owner Draw" },
   { pattern: /^atm\b/i, account: "Owner Draw / Salary", confidence: 0.88, reasoning: "ATM transaction → Owner Draw" },
 
-  // ══════════════════ INTERAC E-TRANSFER FEE — tiny amounts ALWAYS bank fee ══════════════════
-  // Caught by amountRange so this only fires for sub-$2 amounts which are
-  // unambiguously fees (Canadian banks charge $1-$1.50 per e-transfer)
-  { pattern: /interac\s+e[\s\-]?transfer/i, account: "Bank Charges", confidence: 0.99, reasoning: "Interac e-Transfer < $2 → Bank Charges (fee)", amountRange: [0, 2] },
+  // ══════════════════ E-TRANSFER FEE — tiny amounts ALWAYS bank fee ══════════════════
+  // Canadian banks charge $1-$1.50 per e-transfer. Anything sub-$2 with "e-transfer"
+  // language anywhere in the descriptor is unambiguously a fee. Broad regex catches
+  // all variants: "E-TRANSFER", "ETRANSFER", "E-TFR", "ETFR", "EMT", "Interac E-Transfer".
+  { pattern: /e[\s\-]?transfer/i, account: "Bank Charges", confidence: 0.99, reasoning: "e-Transfer < $2 → Bank Charges (fee)", amountRange: [0, 2] },
   { pattern: /\be[\s\-]?tfr\b/i, account: "Bank Charges", confidence: 0.99, reasoning: "e-Tfr < $2 → Bank Charges (fee)", amountRange: [0, 2] },
   { pattern: /\bemt\b/i, account: "Bank Charges", confidence: 0.99, reasoning: "EMT < $2 → Bank Charges (fee)", amountRange: [0, 2] },
+  // Generic "fee" + tiny amount also bank charges, regardless of e-transfer wording
+  { pattern: /\b(fee|service\s+charge|nsf|overdraft)\b/i, account: "Bank Charges", confidence: 0.97, reasoning: "Small fee/service charge → Bank Charges", amountRange: [0, 5] },
 
   // ══════════════════ GYMS → Owner Draw ══════════════════
   // Personal fitness memberships almost always = owner draw for trades clients

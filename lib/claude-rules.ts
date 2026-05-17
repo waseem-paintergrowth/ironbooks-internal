@@ -1,7 +1,7 @@
 /**
  * Claude AI Integration for Bank Rule Discovery
  * ----------------------------------------------
- * Takes grouped vendor transactions and the IronBooks master COA,
+ * Takes grouped vendor transactions and the Ironbooks master COA,
  * returns structured rule suggestions: vendor → account mapping with confidence.
  */
 
@@ -28,9 +28,9 @@ export interface RuleAnalysisResult {
   summary: string;
 }
 
-const SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper analyzing vendor patterns for a painting contractor.
+const SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper analyzing vendor patterns for a painting contractor.
 
-Your job: Take a list of grouped vendor transactions and map each vendor to the correct IronBooks Master COA account.
+Your job: Take a list of grouped vendor transactions and map each vendor to the correct Ironbooks Master COA account.
 
 For each vendor group, decide:
 - Which master account does this vendor's spend belong in?
@@ -103,7 +103,7 @@ CLIENT: ${params.clientName}
 JURISDICTION: ${params.jurisdiction}
 INDUSTRY: Residential Painting Contractor
 
-===== VALID TARGET ACCOUNTS (from IronBooks Master COA) =====
+===== VALID TARGET ACCOUNTS (from Ironbooks Master COA) =====
 ${JSON.stringify(validTargets, null, 2)}
 
 ===== VENDOR GROUPS DISCOVERED (last 6 months) =====

@@ -95,7 +95,7 @@ export default async function ReviewPage({
       <AppShell>
         <TopBar
           title={`Analyzing ${clientLink?.client_name}`}
-          subtitle="Claude is reviewing the COA against the IronBooks Master template..."
+          subtitle="Claude is reviewing the COA against the Ironbooks Master template..."
         />
         <div className="px-8 py-12 flex flex-col items-center">
           <Loader2 size={48} className="animate-spin text-teal mb-4" />
@@ -123,14 +123,25 @@ export default async function ReviewPage({
     .eq("industry", industry)
     .eq("is_parent", false)
     .order("sort_order");
-  if ((masterAccounts || []).length === 0 && industry === "painters") {
-    const fb = await supabase
+  // Fallbacks for missing industry rows or pre-Migration-7 state
+  if ((masterAccounts || []).length === 0 && industry !== "painters") {
+    const painters = await supabase
+      .from("master_coa")
+      .select("account_name, parent_account_name, is_parent, section, sort_order")
+      .eq("jurisdiction", jurisdiction)
+      .eq("industry", "painters")
+      .eq("is_parent", false)
+      .order("sort_order");
+    masterAccounts = painters.data;
+  }
+  if ((masterAccounts || []).length === 0) {
+    const noFilter = await supabase
       .from("master_coa")
       .select("account_name, parent_account_name, is_parent, section, sort_order")
       .eq("jurisdiction", jurisdiction)
       .eq("is_parent", false)
       .order("sort_order");
-    masterAccounts = fb.data;
+    masterAccounts = noFilter.data;
   }
 
   // ============ DONE — show review UI ============

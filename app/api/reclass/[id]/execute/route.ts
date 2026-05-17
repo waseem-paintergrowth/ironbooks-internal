@@ -97,7 +97,7 @@ async function executeReclass(jobId: string) {
     .single();
   if (!job) throw new Error("Job not found");
   const clientLink = (job as any).client_links;
-  const bookkeeperName = (job as any).users?.full_name || "IronBooks";
+  const bookkeeperName = (job as any).users?.full_name || "Ironbooks";
 
   // Audit start
   await service.from("audit_log").insert({

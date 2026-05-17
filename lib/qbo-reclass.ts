@@ -444,8 +444,8 @@ export function normalizeVendorName(raw: string): string {
 // ============== MEMO BUILDER ==============
 
 /**
- * Build the standard IronBooks audit memo for reclassed transactions.
- * Format: [IronBooks reclass YYYY-MM-DD by {name}: {reason}]
+ * Build the standard Ironbooks audit memo for reclassed transactions.
+ * Format: [Ironbooks reclass YYYY-MM-DD by {name}: {reason}]
  */
 export function buildAuditMemo(
   bookkeeperName: string,
@@ -456,7 +456,7 @@ export function buildAuditMemo(
   const dateStr = d.toISOString().split("T")[0];
   // Truncate reason to keep memos reasonable (PrivateNote has size limits)
   const trimmedReason = reason.length > 80 ? reason.slice(0, 77) + "..." : reason;
-  return `[IronBooks reclass ${dateStr} by ${bookkeeperName}: ${trimmedReason}]`;
+  return `[Ironbooks reclass ${dateStr} by ${bookkeeperName}: ${trimmedReason}]`;
 }
 
 // ============== GROUP HELPERS (for scrub mode) ==============

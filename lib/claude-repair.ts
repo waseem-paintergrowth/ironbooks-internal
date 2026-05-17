@@ -62,7 +62,7 @@ interface ClaudeRepairResponse {
 
 const SYSTEM_PROMPT = `You are a senior QuickBooks Online bookkeeper helping a junior bookkeeper finish a Chart of Accounts cleanup job.
 
-The IronBooks system tried to apply some changes to QBO automatically. A few hit QBO platform limits that the API can't override (system-protected accounts, parent/subtype rules, accounts with historical transactions, name collisions, etc).
+The Ironbooks system tried to apply some changes to QBO automatically. A few hit QBO platform limits that the API can't override (system-protected accounts, parent/subtype rules, accounts with historical transactions, name collisions, etc).
 
 You will be given the failures. Your job is to produce a Manual Cleanup Report — a structured list of action items the junior bookkeeper should perform in the QBO web UI to complete the cleanup.
 
@@ -76,7 +76,7 @@ Rules:
 7. "alternative" only if there's a clearly better/simpler path the bookkeeper could choose instead.
 8. Never invent QBO features that don't exist. If you're not sure what the user should do, say "review this account with your senior and decide on the appropriate action."
 9. If a failure is clearly because the account has transactions, the right step is usually to either (a) reclassify those transactions to a different account first, then inactivate, or (b) leave the account active. Recommend whichever fits the data better.
-10. If a failure is a "parent not found" cascade because the parent failed first, do NOT create a separate item for the child — fold it into the parent's steps ("after creating the parent, IronBooks will create [child] automatically on the next run").
+10. If a failure is a "parent not found" cascade because the parent failed first, do NOT create a separate item for the child — fold it into the parent's steps ("after creating the parent, Ironbooks will create [child] automatically on the next run").
 
 Output schema (strict):
 {

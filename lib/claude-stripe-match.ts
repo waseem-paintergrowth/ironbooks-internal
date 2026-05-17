@@ -53,7 +53,7 @@ export interface DepositMatch {
   decision: "auto_approve" | "needs_review" | "flagged";
 }
 
-const SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper performing Stripe AR reconciliation for a residential painting contractor.
+const SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper performing Stripe AR reconciliation for a residential painting contractor.
 
 You will receive a Stripe deposit and a small pool of candidate invoices/customer-payments from the ±7-day window around it. Your job: pick the subset of invoices (or customer payments) whose amounts best add up to the deposit amount, allowing for Stripe processing fees.
 

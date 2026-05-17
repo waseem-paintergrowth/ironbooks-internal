@@ -221,7 +221,7 @@ export async function POST(
                 auditMemo: buildAuditMemo(
                   src.name,
                   candidate.target_name,
-                  "IronBooks merge"
+                  "Ironbooks merge"
                 ),
               }
             );

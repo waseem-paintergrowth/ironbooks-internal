@@ -335,7 +335,7 @@ export async function findCloseForDate(
  * POST /api/non-closing-tasks
  * Creates a custom (non-closing) task in Double.
  *
- * Use this to post IronBooks work-product into Lisa's task board:
+ * Use this to post Ironbooks work-product into Lisa's task board:
  *   - "Cleanup complete: 247 transactions reclassified"
  *   - "Bank rules pushed: 18 new rules active"
  */
@@ -423,7 +423,7 @@ export async function postCleanupComplete(
   const durationStr = minutes >= 1 ? `${minutes}m` : `${stats.durationSeconds}s`;
 
   const subText = [
-    `IronBooks COA cleanup complete by ${stats.bookkeeperName}.`,
+    `Ironbooks COA cleanup complete by ${stats.bookkeeperName}.`,
     "",
     `• Accounts renamed: ${stats.accountsRenamed}`,
     `• Accounts created: ${stats.accountsCreated}`,
@@ -439,7 +439,7 @@ export async function postCleanupComplete(
 
   return createTask({
     clientId,
-    taskName: `IronBooks: COA cleanup complete (${totalChanges} changes)`,
+    taskName: `Ironbooks: COA cleanup complete (${totalChanges} changes)`,
     dueDate: today,
     priority: false,
     type: "nonClosing",
@@ -477,7 +477,7 @@ export async function postReclassComplete(
   const targetClause = stats.targetAccount ? ` → ${stats.targetAccount}` : "";
 
   const subText = [
-    `IronBooks reclassification complete by ${stats.bookkeeperName}.`,
+    `Ironbooks reclassification complete by ${stats.bookkeeperName}.`,
     "",
     `Source: ${stats.sourceAccount}${targetClause}`,
     `Date range: ${stats.dateRangeStart} to ${stats.dateRangeEnd}`,
@@ -493,7 +493,7 @@ export async function postReclassComplete(
 
   return createTask({
     clientId,
-    taskName: `IronBooks: ${stats.transactionsMoved} txs reclassified${targetClause}`,
+    taskName: `Ironbooks: ${stats.transactionsMoved} txs reclassified${targetClause}`,
     dueDate: today,
     priority: false,
     type: "nonClosing",

@@ -92,14 +92,27 @@ export default async function ReclassReviewPage({
     .eq("industry", industry)
     .eq("is_parent", false)
     .order("sort_order");
-  if ((masterAccounts || []).length === 0 && industry === "painters") {
-    const fb = await service
+  // Fallbacks for missing industry rows or pre-Migration-7 state:
+  //   1. Try painters (the always-populated baseline) for this jurisdiction
+  //   2. If that's empty too, fetch with no industry filter at all
+  if ((masterAccounts || []).length === 0 && industry !== "painters") {
+    const painters = await service
+      .from("master_coa")
+      .select("account_name, parent_account_name, is_parent, section, sort_order")
+      .eq("jurisdiction", jurisdiction)
+      .eq("industry", "painters")
+      .eq("is_parent", false)
+      .order("sort_order");
+    masterAccounts = painters.data;
+  }
+  if ((masterAccounts || []).length === 0) {
+    const noFilter = await service
       .from("master_coa")
       .select("account_name, parent_account_name, is_parent, section, sort_order")
       .eq("jurisdiction", jurisdiction)
       .eq("is_parent", false)
       .order("sort_order");
-    masterAccounts = fb.data;
+    masterAccounts = noFilter.data;
   }
 
   // Also load live QBO accounts so we can resolve target_account_id when the

@@ -103,7 +103,7 @@ export function Sidebar() {
             IB
           </div>
           <div>
-            <div className="font-bold text-lg tracking-tight leading-none">IronBooks</div>
+            <div className="font-bold text-lg tracking-tight leading-none">Ironbooks</div>
             <div className="text-xs mt-0.5 text-white/50">Bookkeeper OS</div>
           </div>
         </div>

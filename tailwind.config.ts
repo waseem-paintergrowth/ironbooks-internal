@@ -8,7 +8,7 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // IronBooks brand
+        // Ironbooks brand
         teal: {
           DEFAULT: "#2D7A75",
           dark: "#1F5D58",

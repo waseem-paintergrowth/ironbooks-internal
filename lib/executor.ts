@@ -152,7 +152,7 @@ async function getBookkeeperName(ctx: ExecutionContext): Promise<string> {
     .select("full_name")
     .eq("id", ctx.bookkeeperId)
     .single();
-  return data?.full_name || "IronBooks";
+  return data?.full_name || "Ironbooks";
 }
 
 export async function executeJob(jobId: string): Promise<{
@@ -711,7 +711,7 @@ export async function executeJob(jobId: string): Promise<{
                 new_account_id: targetAccount.Id,
                 new_account_name: targetAccount.Name,
               })),
-              auditMemo: `IronBooks merge: "${action.current_name}" → "${action.new_name}"`,
+              auditMemo: `Ironbooks merge: "${action.current_name}" → "${action.new_name}"`,
             });
             linesReclassed += txLines.length;
           }

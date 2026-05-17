@@ -1,6 +1,6 @@
-# IronBooks App — v2
+# Ironbooks App — v2
 
-Next.js 15 + Supabase + Claude application for IronBooks bookkeeping operations.
+Next.js 15 + Supabase + Claude application for Ironbooks bookkeeping operations.
 
 Supabase backend (`ironbooks-prod`, project ID `omzobviyhrgiqywfjzwo`) is already deployed with all schema, RLS, and 108-account master COA seeded.
 
@@ -261,7 +261,7 @@ Body for action update:
 
 ### Key Tables
 
-- `users` — IronBooks team (admin/lead/bookkeeper/viewer)
+- `users` — Ironbooks team (admin/lead/bookkeeper/viewer)
 - `master_coa` — 108 accounts (54 US + 54 CA) with tax_treatment JSONB
 - `client_links` — QBO ↔ Double client pairing
 - `coa_jobs` — COA cleanup runs (status workflow)

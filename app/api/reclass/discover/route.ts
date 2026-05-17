@@ -624,21 +624,22 @@ async function runFullCategorization(
     const kbMatch = lookupVendor(line.vendor_name, line.description, line.transaction_amount, industry);
     if (kbMatch) {
       const account = accountByName.get(kbMatch.account.toLowerCase());
-      if (account) {
-        preMatched.set(refId, {
-          ref_id: refId,
-          target_account_id: account.qbo_account_id,
-          target_account_name: account.account_name,
-          confidence: kbMatch.confidence,
-          reasoning: kbMatch.reasoning,
-          decision:
-            kbMatch.confidence >= 0.80 && absAmount < threshold
-              ? "auto_approve"
-              : "needs_review",
-        });
-        kbHits++;
-        continue;
-      }
+      // Apply the KB decision EVEN IF the suggested account isn't in the client's
+      // current QBO COA — the COA cleanup step may have removed it or this client
+      // may need it added. The bookkeeper can override via the dropdown.
+      preMatched.set(refId, {
+        ref_id: refId,
+        target_account_id: account?.qbo_account_id || null,
+        target_account_name: account?.account_name || kbMatch.account,
+        confidence: kbMatch.confidence,
+        reasoning: kbMatch.reasoning + (account ? "" : ` (suggest creating "${kbMatch.account}")`),
+        decision:
+          kbMatch.confidence >= 0.80 && absAmount < threshold
+            ? "auto_approve"
+            : "needs_review",
+      });
+      kbHits++;
+      continue;
     }
 
     // 2) Per-client bank rules cache (instant DB lookup, already done)
@@ -841,7 +842,7 @@ async function runFullCategorization(
 
 /**
  * Build the auto-generated reason for full_categorization jobs.
- * Format: "IronBooks Categorization, May 2026, MGH"
+ * Format: "Ironbooks Categorization, May 2026, MGH"
  *   - month spelled out + year
  *   - bookkeeper initials from users.full_name
  */
@@ -866,7 +867,7 @@ async function buildAutoReason(
   const month = now.toLocaleString("en-US", { month: "long" });
   const year = now.getFullYear();
 
-  return `IronBooks Categorization, ${month} ${year}${initials ? `, ${initials}` : ""}`;
+  return `Ironbooks Categorization, ${month} ${year}${initials ? `, ${initials}` : ""}`;
 }
 
 export const maxDuration = 300;

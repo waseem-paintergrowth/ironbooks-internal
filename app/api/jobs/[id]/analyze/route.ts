@@ -12,7 +12,7 @@ export const maxDuration = 300;
  * POST /api/jobs/[id]/analyze
  *
  * 1. Fetches the client's current COA from QBO
- * 2. Loads the IronBooks master COA for the jurisdiction
+ * 2. Loads the Ironbooks master COA for the jurisdiction
  * 3. Calls Claude to generate suggestions
  * 4. Persists everything in coa_jobs + coa_actions
  */
@@ -75,7 +75,17 @@ export async function POST(
       .eq("jurisdiction", clientLink.jurisdiction)
       .eq("industry", industry)
       .order("sort_order");
-    if ((masterRows || []).length === 0 && industry === "painters") {
+    // Fallback: painters baseline if this industry isn't seeded; then no-filter
+    if ((masterRows || []).length === 0 && industry !== "painters") {
+      const fb = await service
+        .from("master_coa")
+        .select("*")
+        .eq("jurisdiction", clientLink.jurisdiction)
+        .eq("industry", "painters")
+        .order("sort_order");
+      masterRows = fb.data;
+    }
+    if ((masterRows || []).length === 0) {
       const fb = await service
         .from("master_coa")
         .select("*")

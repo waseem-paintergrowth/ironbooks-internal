@@ -46,7 +46,7 @@ export interface AvailableAccount {
   account_subtype: string;
 }
 
-const SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper performing a transaction scrub for a residential painting contractor.
+const SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper performing a transaction scrub for a residential painting contractor.
 
 The bookkeeper has selected a single source account that needs cleaning (often a dumping ground like "Uncategorized Expense" or "Ask My Accountant"). Your job: for each vendor group found in that account, map it to the correct target account in the client's COA.
 
@@ -266,7 +266,7 @@ export interface FullCategorizationDecision {
   flagged_reason?: string;
 }
 
-const FULL_CAT_SYSTEM_PROMPT = `You are the IronBooks AI Bookkeeper categorizing transactions for a residential painting contractor. Your job is to be DECISIVE — most transactions have an obvious home; you should auto-approve them at high confidence. Flagging should be rare.
+const FULL_CAT_SYSTEM_PROMPT = `You are the Ironbooks AI Bookkeeper categorizing transactions for a residential painting contractor. Your job is to be DECISIVE — most transactions have an obvious home; you should auto-approve them at high confidence. Flagging should be rare.
 
 You'll receive transaction lines (vendor, amount, date, description, current account) and the full list of valid target accounts. For each line, pick the BEST target account and a confidence score.
 
@@ -479,12 +479,19 @@ export async function categorizeAllTransactions(params: {
   //    (these are bank service charges, not actual peer payments — $1.50 EMT fee,
   //     $1.00 e-transfer fee, etc. are common Canadian charges)
   //  - Plain "Interac Purchase" (NOT "Interac e-Transfer") → falls through to AI
-  const bankChargesAccount = params.availableAccounts.find(
-    (a) =>
-      a.account_name.toLowerCase() === "bank charges" ||
-      a.account_name.toLowerCase() === "bank charges & fees" ||
-      a.account_name.toLowerCase() === "bank charges and fees"
-  );
+  // Find a Bank Charges account in the client's QBO — be lenient about naming
+  const bankChargesAccount = params.availableAccounts.find((a) => {
+    const n = a.account_name.toLowerCase();
+    return (
+      n === "bank charges" ||
+      n === "bank charges & fees" ||
+      n === "bank charges and fees" ||
+      n === "bank service charges" ||
+      n === "merchant fees" ||
+      n.includes("bank charge") ||
+      n.includes("bank fee")
+    );
+  });
 
   const linesToClassify: FullCategorizationLine[] = [];
   for (const line of params.lines) {
@@ -494,12 +501,14 @@ export async function categorizeAllTransactions(params: {
     const absAmount = Math.abs(line.amount);
     const isLikelyFee = isETransfer && (looksLikeFee || absAmount < 5);
 
-    if (isLikelyFee && bankChargesAccount) {
-      // Tiny-amount e-transfers / fees → Bank Charges
+    if (isLikelyFee) {
+      // Tiny-amount e-transfers / fees → Bank Charges. If the client's QBO doesn't
+      // have a matching account yet, still apply the decision — bookkeeper can pick
+      // a different account via the dropdown or COA cleanup will add one later.
       allDecisions.push({
         ref_id: line.ref_id,
-        target_account_id: bankChargesAccount.qbo_account_id,
-        target_account_name: bankChargesAccount.account_name,
+        target_account_id: bankChargesAccount?.qbo_account_id || null,
+        target_account_name: bankChargesAccount?.account_name || "Bank Charges",
         confidence: 0.95,
         reasoning: `${absAmount < 5 ? "Small-amount" : "Fee-labeled"} e-transfer → Bank Charges`,
         decision: "auto_approve",

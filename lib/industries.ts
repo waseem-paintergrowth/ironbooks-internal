@@ -1,5 +1,5 @@
 /**
- * Trades industries supported by IronBooks.
+ * Trades industries supported by Ironbooks.
  *
  * Each industry has its own master COA template (set up by Migration 7).
  * The bookkeeper picks the industry when starting a new COA cleanup; the AI

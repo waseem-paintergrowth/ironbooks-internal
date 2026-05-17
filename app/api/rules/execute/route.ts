@@ -68,7 +68,7 @@ export async function POST(request: Request) {
       }
 
       const created = await createBankRule(clientLink.qbo_realm_id, accessToken, {
-        name: `IronBooks: ${rule.vendor_pattern}`,
+        name: `Ironbooks: ${rule.vendor_pattern}`,
         vendorPattern: rule.vendor_pattern,
         matchType: (rule.match_type || "contains") === "contains"
           ? "Contains"

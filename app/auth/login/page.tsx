@@ -43,7 +43,7 @@ export default function LoginPage() {
           <div className="flex items-center justify-center rounded-lg font-bold text-white w-11 h-11 bg-teal text-lg">
             IB
           </div>
-          <div className="font-bold text-2xl tracking-tight text-navy">IronBooks</div>
+          <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks</div>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm">
@@ -93,7 +93,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-xs text-center text-ink-slate mt-6">
-          Internal tool for IronBooks team members only.
+          Internal tool for Ironbooks team members only.
         </p>
       </div>
     </main>

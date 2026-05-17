@@ -398,13 +398,22 @@ export function ReclassReview({
       {/* Tab content */}
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         {activeTab === "auto" && (
-          <RowTable
-            rows={partitioned.auto}
-            showConfidence={true}
-            showActions={false}
-            masterAccounts={masterAccounts}
-            onTargetChange={setTarget}
-          />
+          <>
+            {partitioned.auto.length > 0 && (
+              <div className="p-3 bg-green-50 border-b border-green-100 text-sm text-green-800">
+                <CheckCircle2 size={14} className="inline mr-1" />
+                Auto-approved — these will execute as shown. Use the dropdown if you want to override any.
+              </div>
+            )}
+            <RowTable
+              rows={partitioned.auto}
+              showConfidence={true}
+              showActions={true}
+              showApproveReject={false}
+              masterAccounts={masterAccounts}
+              onTargetChange={setTarget}
+            />
+          </>
         )}
 
         {activeTab === "review" && (
@@ -905,7 +914,7 @@ function ClientEmailModal({
     lines.push("Please reply within 48 hours so we can complete your books.");
     lines.push("");
     lines.push("Kindly,");
-    lines.push("IronBooks");
+    lines.push("Ironbooks");
     return lines.join("\n");
   }, [rows, groups, clientName, periodLabel]);
 
