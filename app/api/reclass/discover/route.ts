@@ -6,6 +6,8 @@ import {
   fetchAllTransactionLines,
   getCompanyClosingDate,
   isInClosedPeriod,
+  findDoubleClose,
+  isDoubleCloseLocked,
   groupLinesByVendor,
   getValidToken,
   type ReclassLine,
@@ -502,22 +504,6 @@ function normalizeVendor(raw: string): string {
     .replace(/\b(CO|INC|LLC|LTD|CORP|COMPANY|THE|STORE|#\d+|\d+)\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function findDoubleClose(
-  txnDate: string,
-  closes: DoubleEndCloseSummary[]
-): DoubleEndCloseSummary | null {
-  const d = new Date(txnDate);
-  const yearMonth = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-  return closes.find((c) => c.yearMonth === yearMonth) || null;
-}
-
-function isDoubleCloseLocked(status: string | null | undefined): boolean {
-  // Lock on any "completed" or "delivered" status. Conservative: treat null/unknown
-  // as NOT locked (don't false-positive on missing data).
-  if (!status) return false;
-  return ["complete", "completed", "closed", "delivered"].includes(status.toLowerCase());
 }
 
 // ════════════════════════════════════════════════════════════════════════════

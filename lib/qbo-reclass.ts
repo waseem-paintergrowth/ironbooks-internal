@@ -365,6 +365,34 @@ export function isInClosedPeriod(
   return new Date(txnDate) <= new Date(bookCloseDate);
 }
 
+// ============== DOUBLE END-CLOSE HELPERS ==============
+// Shared by the reclass workflow and the COA-cleanup merge step.
+
+import type { DoubleEndCloseSummary } from "./double";
+
+/**
+ * Return the Double end-close record that covers the given transaction date,
+ * if any. Matches by year+month (Double tracks closes per calendar month).
+ */
+export function findDoubleClose(
+  txnDate: string,
+  closes: DoubleEndCloseSummary[]
+): DoubleEndCloseSummary | null {
+  const d = new Date(txnDate);
+  const yearMonth = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  return closes.find((c) => c.yearMonth === yearMonth) || null;
+}
+
+/**
+ * True if a Double end-close is in a state that means "this month is locked,
+ * don't touch its transactions." Treats null/unknown as NOT locked to avoid
+ * blocking work on missing metadata.
+ */
+export function isDoubleCloseLocked(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return ["complete", "completed", "closed", "delivered"].includes(status.toLowerCase());
+}
+
 // ============== TRANSACTION UPDATE ==============
 
 /**

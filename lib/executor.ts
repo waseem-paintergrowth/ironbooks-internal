@@ -10,7 +10,15 @@ import * as qbo from "./qbo";
 import * as double from "./double";
 import * as validate from "./qbo-validation";
 import { generateManualRepairPlan, type FailureContext } from "./claude-repair";
-import { fetchTransactionsForAccount, reclassifyTransactionLines } from "./qbo-reclass";
+import {
+  fetchTransactionsForAccount,
+  reclassifyTransactionLines,
+  getCompanyClosingDate,
+  isInClosedPeriod,
+  findDoubleClose,
+  isDoubleCloseLocked,
+} from "./qbo-reclass";
+import { getClientEndCloses, type DoubleEndCloseSummary } from "./double";
 
 type SupabaseClient = ReturnType<typeof createServiceSupabase>;
 
@@ -675,6 +683,32 @@ export async function executeJob(jobId: string): Promise<{
       await logProgress(ctx, "stage_start", `Merging ${merges.length} accounts`,
         { stage: "merge", total: merges.length });
 
+      // Pull the closed-period markers ONCE for the whole merge stage. Any
+      // merge whose source has even a single line inside a closed period
+      // gets routed to manual cleanup — never auto-rewrite closed-period
+      // transactions. Bookkeeper handles those in QBO with the closing-date
+      // password if they really want to override.
+      const bookCloseDate = await getCompanyClosingDate(ctx.realmId, ctx.accessToken);
+      let doubleCloses: DoubleEndCloseSummary[] = [];
+      if (clientLink.double_client_id && !String(clientLink.double_client_id).startsWith("pending_")) {
+        try {
+          const dcId = parseInt(clientLink.double_client_id, 10);
+          if (!Number.isNaN(dcId)) {
+            doubleCloses = await getClientEndCloses(dcId);
+          }
+        } catch (err: any) {
+          console.warn("[executor] Could not fetch Double end-closes:", err.message);
+        }
+      }
+      if (bookCloseDate || doubleCloses.length > 0) {
+        await logProgress(
+          ctx,
+          "merge_period_guard",
+          `Closed-period guard active · QBO closes on ${bookCloseDate || "(none)"} · Double tracks ${doubleCloses.length} closed months`,
+          { qbo_close_date: bookCloseDate, double_closed_months: doubleCloses.length }
+        );
+      }
+
       // Re-fetch live accounts after Stage 3 so we have fresh QBO IDs for renamed targets.
       const postRenameAccounts = await qbo.fetchAllAccounts(ctx.realmId, ctx.accessToken);
       const postRenameByName = new Map(
@@ -722,6 +756,67 @@ export async function executeJob(jobId: string): Promise<{
             ctx.realmId, ctx.accessToken, action.qbo_account_id,
             ctx.dateRangeStart, ctx.dateRangeEnd
           );
+
+          // CLOSED-PERIOD GUARD — never auto-rewrite transactions in a
+          // closed accounting period. If ANY line on the source falls in
+          // QBO's closed period (per BookCloseDate) or in a Double month
+          // marked complete/closed/delivered, the entire merge gets routed
+          // to manual cleanup. The bookkeeper handles it in QBO with the
+          // closing-date password if they really want to touch closed books.
+          const closedLines = lines.filter((l) => {
+            if (isInClosedPeriod(l.transaction_date, bookCloseDate)) return true;
+            const dc = findDoubleClose(l.transaction_date, doubleCloses);
+            if (dc && isDoubleCloseLocked(dc.status)) return true;
+            return false;
+          });
+          if (closedLines.length > 0) {
+            const closedDates = Array.from(
+              new Set(closedLines.map((l) => l.transaction_date.slice(0, 7)))
+            )
+              .sort()
+              .slice(0, 6)
+              .join(", ");
+            const reason =
+              `Merge "${action.current_name}" → "${action.new_name}" blocked by closed-period guard: ` +
+              `${closedLines.length} of ${lines.length} lines fall in closed accounting periods (${closedDates}${closedLines.length > 6 ? "…" : ""}). ` +
+              `Auto-rewriting closed-period transactions is an audit risk. Handle in QBO directly with the ` +
+              `closing-date password if intended, then inactivate the source.`;
+            pendingFailures.push({
+              intended_action: "rename",
+              account_id: action.qbo_account_id,
+              account_name: action.current_name || "Unknown",
+              request_body: {
+                merge_source: action.current_name,
+                merge_target: action.new_name,
+                lines_total: lines.length,
+                lines_in_closed_period: closedLines.length,
+                qbo_close_date: bookCloseDate,
+              },
+              qbo_error: reason,
+              account_snapshot: sourceAccount
+                ? {
+                    Name: sourceAccount.Name,
+                    AccountType: sourceAccount.AccountType,
+                    AccountSubType: sourceAccount.AccountSubType,
+                    CurrentBalance: sourceAccount.CurrentBalance,
+                    Active: sourceAccount.Active,
+                  }
+                : null,
+            });
+            await ctx.supabase
+              .from("coa_actions")
+              .update({
+                executed: false,
+                error_message: null,
+                flagged_reason: reason,
+              })
+              .eq("id", action.id);
+            await logActionResult(ctx, action.id, "manual_cleanup_required", {
+              name: action.current_name,
+              reason: `Closed-period guard: ${closedLines.length}/${lines.length} lines in closed periods (${closedDates})`,
+            });
+            continue;
+          }
 
           // SIZE GUARD — a merge with thousands of transactions reclassed one
           // at a time will absolutely blow past Vercel's 5-minute function
