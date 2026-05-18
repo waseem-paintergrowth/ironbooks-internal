@@ -74,9 +74,23 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
     setLoadingPresets(true);
     fetch(`/api/clients/${selected.id}/company-info`)
       .then((r) => (r.ok ? r.json() : Promise.reject("Could not load fiscal year")))
-      .then((data: { fiscalYearStartMonthName?: string; datePresets: DateRangePreset[] }) => {
-        setDatePresets(data.datePresets);
-        setFiscalYearStartMonthName(data.fiscalYearStartMonthName || "January");
+      .then((data: any) => {
+        // The endpoint returns date_range_presets (snake_case) and
+        // company.fiscal_year_start_month_name. Earlier I wrote this against
+        // an assumed camelCase shape, which made datePresets state become
+        // undefined and crashed with "Cannot read properties of undefined
+        // (reading 'find')" once the bookkeeper picked a date preset.
+        const presets: DateRangePreset[] = Array.isArray(data?.date_range_presets)
+          ? data.date_range_presets
+          : Array.isArray(data?.datePresets) // legacy fallback in case the API ever changes
+          ? data.datePresets
+          : [];
+        const fyMonth: string =
+          data?.company?.fiscal_year_start_month_name ||
+          data?.fiscalYearStartMonthName ||
+          "January";
+        setDatePresets(presets);
+        setFiscalYearStartMonthName(fyMonth);
       })
       .catch(() => {
         // Sensible fallback if the fetch fails — calendar-year only
