@@ -120,6 +120,31 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
       return;
     }
 
+    // SAME-CLIENT GUARD — refuse to start a second cleanup on a client that
+    // already has one in flight. Different clients in parallel is fine and
+    // encouraged; same-client parallel cleanups cause snapshot races and
+    // "account no longer exists" errors mid-rename. Point the bookkeeper at
+    // the existing job so they can stop or finish it first.
+    const ACTIVE_STATUSES = ["draft", "in_review", "pending_lisa", "approved", "executing"];
+    const { data: existingJobs } = await supabase
+      .from("coa_jobs")
+      .select("id, status")
+      .eq("client_link_id", selected.id)
+      .in("status", ACTIVE_STATUSES)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (existingJobs && existingJobs.length > 0) {
+      const existing = existingJobs[0];
+      const proceed = confirm(
+        `${selected.client_name} already has an active cleanup (status: ${existing.status}). ` +
+        `Running two at once on the same client causes snapshot races. ` +
+        `\n\nOpen the existing job?`
+      );
+      setCreating(false);
+      if (proceed) router.push(`/jobs/${existing.id}/review`);
+      return;
+    }
+
     const jurisdictionChanged = selected.jurisdiction !== country;
     const provinceChanged = (selected.state_province || "") !== province;
     const industryChanged = ((selected as any).industry || "painters") !== industry;

@@ -230,6 +230,35 @@ export async function executeJob(jobId: string): Promise<{
   const clientLink = (job as any).client_links;
   if (!clientLink) throw new Error("Client link not found");
 
+  // SAME-CLIENT CONCURRENCY GUARD. Refuse to start if ANOTHER coa_job on
+  // this same client is already executing. Two concurrent executes on the
+  // same QBO realm cause snapshot races (Job A renames "X"→"Y", Job B
+  // tries to rename "X" and gets a 404) and inflate the per-realm QBO
+  // rate-limit budget. Different clients in parallel is fine — they hit
+  // different realms with independent budgets.
+  const { data: rivalJobs } = await supabase
+    .from("coa_jobs")
+    .select("id, status")
+    .eq("client_link_id", clientLink.id)
+    .eq("status", "executing")
+    .neq("id", jobId);
+  if (rivalJobs && rivalJobs.length > 0) {
+    const rivalId = rivalJobs[0].id;
+    const reason =
+      `Cleanup refused: another cleanup is already executing on ${clientLink.client_name} ` +
+      `(job ${rivalId}). Wait for it to finish or stop it from its live page, then re-execute this one. ` +
+      `Running two cleanups on the same client at once causes account-snapshot conflicts.`;
+    await supabase
+      .from("coa_jobs")
+      .update({
+        status: "failed",
+        execution_completed_at: new Date().toISOString(),
+        error_message: reason,
+      } as any)
+      .eq("id", jobId);
+    throw new Error(reason);
+  }
+
   await supabase.from("coa_jobs").update({
     status: "executing",
     execution_started_at: new Date().toISOString(),
