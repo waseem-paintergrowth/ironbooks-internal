@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createBrowserClient } from "@supabase/ssr";
 import {
-  Search, ArrowRight, MapPin, CheckCircle2, Plus, Loader2, Globe2, Briefcase, Sparkles,
+  Search, ArrowRight, MapPin, CheckCircle2, Plus, Loader2, Globe2, Briefcase, Sparkles, Calendar,
 } from "lucide-react";
 import type { Database } from "@/lib/database.types";
 import { CANADIAN_PROVINCES, getProvinceTax } from "@/lib/canadian-tax";
@@ -25,6 +25,22 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
   const [province, setProvince] = useState<string>("");
   const [industry, setIndustry] = useState<IndustryKey>("painters");
   const [aiSuggestedIndustry, setAiSuggestedIndustry] = useState<IndustryKey | null>(null);
+
+  // Date range that scopes the cleanup. Renames + creates happen regardless;
+  // merges + inactivation-empty-checks honor this window. Default to "This
+  // Calendar Year" since that's the typical bookkeeper instinct ("clean up
+  // 2026 right now, leave 2025 books alone").
+  interface DateRangePreset {
+    id: string;
+    label: string;
+    start: string;
+    end: string;
+  }
+  const [datePresetId, setDatePresetId] = useState<string>("cy");
+  const [datePresets, setDatePresets] = useState<DateRangePreset[]>([]);
+  const [fiscalYearStartMonthName, setFiscalYearStartMonthName] = useState<string>("");
+  const [loadingPresets, setLoadingPresets] = useState(false);
+  const selectedPreset = datePresets.find((p) => p.id === datePresetId);
 
   useEffect(() => {
     const clientId = searchParams.get("client");
@@ -48,6 +64,31 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
+
+  // Fetch date presets from QBO's company info (fiscal-year-aware) when a
+  // client is picked. Reuses the same /company-info endpoint the reclass
+  // workflow already uses; that endpoint computes "this fiscal year",
+  // "this + last fiscal year", etc. via getReclassDateRangePresets.
+  useEffect(() => {
+    if (!selected) return;
+    setLoadingPresets(true);
+    fetch(`/api/clients/${selected.id}/company-info`)
+      .then((r) => (r.ok ? r.json() : Promise.reject("Could not load fiscal year")))
+      .then((data: { fiscalYearStartMonthName?: string; datePresets: DateRangePreset[] }) => {
+        setDatePresets(data.datePresets);
+        setFiscalYearStartMonthName(data.fiscalYearStartMonthName || "January");
+      })
+      .catch(() => {
+        // Sensible fallback if the fetch fails — calendar-year only
+        const y = new Date().getUTCFullYear();
+        const today = new Date().toISOString().slice(0, 10);
+        setDatePresets([
+          { id: "cy", label: "This Calendar Year", start: `${y}-01-01`, end: today },
+          { id: "cy_plus_1", label: "This + Last Calendar Year", start: `${y - 1}-01-01`, end: today },
+        ]);
+      })
+      .finally(() => setLoadingPresets(false));
+  }, [selected]);
 
   const filtered = clientLinks.filter((c) =>
     c.client_name.toLowerCase().includes(search.toLowerCase())
@@ -98,13 +139,22 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
       }
     }
 
+    if (!selectedPreset) {
+      alert("Pick a date range before starting the cleanup.");
+      setCreating(false);
+      return;
+    }
+
     const { data, error } = await supabase
       .from("coa_jobs")
       .insert({
         client_link_id: selected.id,
         bookkeeper_id: user.id,
         status: "draft",
-      })
+        date_range_start: selectedPreset.start,
+        date_range_end: selectedPreset.end,
+        date_range_preset: selectedPreset.id,
+      } as any)
       .select()
       .single();
 
@@ -336,10 +386,60 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         </div>
       </div>
 
+      {/* ─── Cleanup Scope (Date Range) ─── */}
+      <div className="rounded-xl bg-white border border-gray-200 mb-6">
+        <div className="px-5 py-4 border-b border-gray-200">
+          <h3 className="font-bold text-base text-navy flex items-center gap-2">
+            <Calendar size={16} className="text-teal" />
+            Cleanup Scope
+          </h3>
+          <p className="text-xs text-ink-slate mt-1">
+            Pick the period this cleanup covers. <strong>Renames and new-account creation
+            happen regardless</strong> — but <strong>merges</strong> only move transactions
+            inside this range. Anything older stays put on the source account, and the source
+            stays active until you handle older years manually.
+          </p>
+        </div>
+        <div className="px-5 py-4 space-y-3">
+          {loadingPresets ? (
+            <div className="flex items-center gap-2 text-sm text-ink-slate">
+              <Loader2 className="animate-spin" size={14} />
+              Loading fiscal year from QuickBooks...
+            </div>
+          ) : (
+            <>
+              {fiscalYearStartMonthName && (
+                <div className="text-xs text-ink-slate">
+                  Fiscal year starts in <span className="font-semibold">{fiscalYearStartMonthName}</span> (pulled from QBO)
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                {datePresets.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setDatePresetId(p.id)}
+                    className={`px-3 py-2.5 rounded-lg border-2 text-xs font-semibold text-left transition-colors ${
+                      datePresetId === p.id
+                        ? "bg-teal-lighter border-teal text-teal"
+                        : "bg-white border-gray-200 hover:border-gray-300 text-navy"
+                    }`}
+                  >
+                    <div>{p.label}</div>
+                    <div className="text-[10px] mt-0.5 text-ink-slate font-mono">
+                      {p.start} → {p.end}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
       <div className="flex justify-end gap-3">
         <button
           onClick={startJob}
-          disabled={!canStart || creating}
+          disabled={!canStart || creating || !selectedPreset}
           className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg transition-colors"
         >
           {creating ? <Loader2 className="animate-spin" size={16} /> : <ArrowRight size={16} />}

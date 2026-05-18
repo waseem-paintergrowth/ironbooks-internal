@@ -22,6 +22,12 @@ interface ExecutionContext {
   doubleClientId: string;
   bookkeeperId: string;
   supabase: SupabaseClient;
+  /** Date range that scopes merges + inactivation checks. The bookkeeper
+   *  picks this at the new-job step. Renames and creates aren't gated by
+   *  it. Legacy jobs created before Migration 17 default to 2000-01-01 →
+   *  today to preserve old behavior. */
+  dateRangeStart: string;
+  dateRangeEnd: string;
 }
 
 interface ExecutionStats {
@@ -205,6 +211,13 @@ export async function executeJob(jobId: string): Promise<{
 
   const accessToken = await qbo.getValidToken(clientLink.id, supabase as any);
 
+  // Pull the date range the bookkeeper chose at job-creation time. Legacy
+  // jobs (pre-Migration-17) get the old "all time" range so behavior is
+  // unchanged for anything already in flight.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const dateRangeStart = (job as any).date_range_start || "2000-01-01";
+  const dateRangeEnd = (job as any).date_range_end || todayIso;
+
   const ctx: ExecutionContext = {
     jobId,
     clientLinkId: clientLink.id,
@@ -213,9 +226,16 @@ export async function executeJob(jobId: string): Promise<{
     doubleClientId: clientLink.double_client_id,
     bookkeeperId: job.bookkeeper_id,
     supabase,
+    dateRangeStart,
+    dateRangeEnd,
   };
 
-  await logProgress(ctx, "job_start", `Starting cleanup for ${clientLink.client_name}`);
+  await logProgress(
+    ctx,
+    "job_start",
+    `Starting cleanup for ${clientLink.client_name} · scope: ${dateRangeStart} → ${dateRangeEnd}`,
+    { date_range_start: dateRangeStart, date_range_end: dateRangeEnd }
+  );
 
   const { data: actions } = await supabase
     .from("coa_actions").select("*").eq("job_id", jobId).order("sort_order");
@@ -693,12 +713,14 @@ export async function executeJob(jobId: string): Promise<{
         }
 
         try {
-          // Fetch all transactions that reference the source account (all time)
-          const dateStart = "2000-01-01";
-          const dateEnd = new Date().toISOString().slice(0, 10);
-
+          // Fetch transactions that reference the source account, scoped to
+          // the job's date range. Older transactions stay put — the source
+          // account remains active until the bookkeeper does an "all-time"
+          // pass on closed years separately. This prevents auto-rewriting
+          // closed-period transactions, which is an audit risk.
           const { lines, transactionsPulled } = await fetchTransactionsForAccount(
-            ctx.realmId, ctx.accessToken, action.qbo_account_id, dateStart, dateEnd
+            ctx.realmId, ctx.accessToken, action.qbo_account_id,
+            ctx.dateRangeStart, ctx.dateRangeEnd
           );
 
           // SIZE GUARD — a merge with thousands of transactions reclassed one
