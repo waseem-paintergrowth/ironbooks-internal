@@ -234,6 +234,32 @@ export function FlaggedQueue({
 }
 
 /**
+ * Inline-bold renderer. Lets `summarizeFlag` write copy with `**markers**`
+ * around account names, suggested targets, and decision verbs, and have
+ * those segments render as <strong> in the UI. Keeps the prose authored
+ * as plain strings (easy to scan in the source) while letting the eye
+ * lock onto the actionable terms on screen. No markdown library, no
+ * sanitization headaches — the strings come from our own code.
+ */
+function Bold({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (p.startsWith("**") && p.endsWith("**")) {
+          return (
+            <strong key={i} className="font-bold text-navy">
+              {p.slice(2, -2)}
+            </strong>
+          );
+        }
+        return <span key={i}>{p}</span>;
+      })}
+    </>
+  );
+}
+
+/**
  * Decision kinds a flagged item can fall into. Drives the card's title,
  * fact rows, and which button set to show.
  *
@@ -296,18 +322,21 @@ function summarizeFlag(item: FlaggedItem): FlagSummary {
 
   if (item.type === "coa") {
     const facts: Array<{ label: string; value: string }> = [];
-    facts.push({ label: "Account", value: item.headline });
+    facts.push({ label: "Account", value: `**${item.headline}**` });
     if (item.subheadline) facts.push({ label: "Type", value: item.subheadline });
     if (item.transaction_count !== null && item.transaction_count !== undefined) {
       facts.push({
         label: "Transactions",
         value: item.transaction_count === 0
-          ? "0 (none in cleanup range)"
-          : String(item.transaction_count),
+          ? "**0** (none in cleanup range)"
+          : `**${item.transaction_count}**`,
       });
     }
     if (item.ai_suggested_target) {
-      facts.push({ label: "AI wanted to map to", value: `"${item.ai_suggested_target}"` });
+      facts.push({
+        label: "AI wanted to map to",
+        value: `**${item.ai_suggested_target}**`,
+      });
     }
     if (item.flagged_reason || item.ai_reasoning) {
       facts.push({
@@ -321,37 +350,38 @@ function summarizeFlag(item: FlaggedItem): FlagSummary {
         kind,
         title: "QBO blocked this — needs manual handling",
         whatWasAttempted: item.ai_suggested_target
-          ? `Tried to map "${item.headline}" → "${item.ai_suggested_target}"`
-          : `Tried to modify "${item.headline}"`,
+          ? `Tried to map **${item.headline}** → **${item.ai_suggested_target}**`
+          : `Tried to modify **${item.headline}**`,
         facts,
         nextStep:
           item.transaction_count && item.transaction_count > 0
-            ? `Open this account in QBO and either reclassify its ${item.transaction_count} transactions then inactivate, or rename manually. Click Dismiss once handled (or to ignore).`
-            : `This account can't be modified via the QBO API (system-protected or platform-locked). Click Dismiss to remove from the queue — no further action needed.`,
+            ? `Open **${item.headline}** in QBO. Either reclassify its **${item.transaction_count}** transactions then inactivate, or rename manually. Then click **Dismiss from queue**.`
+            : `**${item.headline}** is system-protected — QBO won't accept changes via the API. Click **Dismiss from queue** to remove this flag. No further action needed.`,
       };
     }
 
     return {
       kind,
-      title: "AI needs your input — confidence below auto-approve",
+      title: "AI needs your input on this account",
       whatWasAttempted: item.ai_suggested_target
-        ? `Wants to map "${item.headline}" → "${item.ai_suggested_target}"`
-        : `Unsure how to handle "${item.headline}"`,
+        ? `AI wants to map **${item.headline}** → **${item.ai_suggested_target}**, but isn't confident.`
+        : `AI is unsure how to handle **${item.headline}**.`,
       facts,
-      nextStep:
-        "Approve the AI's suggestion, Override with a different target, or Reject to leave the account as-is.",
+      nextStep: item.ai_suggested_target
+        ? `If **${item.ai_suggested_target}** is right, click **Approve**. To send it somewhere else, click **Pick a different target**. To leave **${item.headline}** alone, click **Leave as-is**.`
+        : `Click **Pick a different target** to choose the right master account, or **Leave as-is** to skip.`,
     };
   }
 
   if (item.type === "reclass") {
     const amt = item.amount !== null ? `$${Math.abs(item.amount).toFixed(2)}` : "—";
     const facts: Array<{ label: string; value: string }> = [
-      { label: "Vendor", value: item.headline },
-      { label: "Amount", value: amt },
+      { label: "Vendor", value: `**${item.headline}**` },
+      { label: "Amount", value: `**${amt}**` },
       ...(item.date ? [{ label: "Date", value: item.date }] : []),
-      ...(item.subheadline ? [{ label: "Currently in", value: `"${item.subheadline}"` }] : []),
+      ...(item.subheadline ? [{ label: "Currently in", value: `**${item.subheadline}**` }] : []),
       ...(item.ai_suggested_target
-        ? [{ label: "AI wants to move to", value: `"${item.ai_suggested_target}"` }]
+        ? [{ label: "AI wants to move to", value: `**${item.ai_suggested_target}**` }]
         : []),
       ...(item.ai_reasoning
         ? [{ label: "AI reasoning", value: item.ai_reasoning }]
@@ -361,24 +391,27 @@ function summarizeFlag(item: FlaggedItem): FlagSummary {
       kind: "ai_uncertain",
       title: "Categorize this transaction",
       whatWasAttempted: item.ai_suggested_target
-        ? `Wants to move ${item.headline} → "${item.ai_suggested_target}"`
-        : `Couldn't confidently categorize ${item.headline}`,
+        ? `AI wants to move **${item.headline}** (${amt}) from **${item.subheadline || "current account"}** → **${item.ai_suggested_target}**.`
+        : `AI couldn't confidently categorize **${item.headline}** (${amt}).`,
       facts,
-      nextStep:
-        "Approve the AI's category, Override with a different account, or Reject to leave the transaction where it is.",
+      nextStep: item.ai_suggested_target
+        ? `If **${item.ai_suggested_target}** is the right category, click **Approve**. Otherwise click **Pick a different target** to choose another account, or **Leave as-is** to keep it in **${item.subheadline || "the current account"}**.`
+        : `Click **Pick a different target** to assign the right category, or **Leave as-is** to skip.`,
     };
   }
 
   // Stripe
   const amt = item.amount !== null ? `$${item.amount.toFixed(2)}` : "—";
+  const customers =
+    item.subheadline && item.subheadline !== "No customers matched"
+      ? item.subheadline
+      : null;
   const facts: Array<{ label: string; value: string }> = [
-    { label: "Deposit", value: amt },
-    ...(item.date ? [{ label: "Date", value: item.date }] : []),
+    { label: "Deposit amount", value: `**${amt}**` },
+    ...(item.date ? [{ label: "Deposit date", value: item.date }] : []),
     {
       label: "Customers identified",
-      value: item.subheadline && item.subheadline !== "No customers matched"
-        ? item.subheadline
-        : "None — AI couldn't match invoices",
+      value: customers ? `**${customers}**` : "**None** — AI couldn't match invoices",
     },
     ...(item.ai_reasoning
       ? [{ label: "Why AI flagged it", value: item.ai_reasoning }]
@@ -388,21 +421,24 @@ function summarizeFlag(item: FlaggedItem): FlagSummary {
   if (kind === "info_only") {
     return {
       kind,
-      title: "Nothing to match here",
-      whatWasAttempted: null,
+      title: "Nothing to match — manual deposit",
+      whatWasAttempted: `**${amt}** Stripe deposit with no matching QBO invoices.`,
       facts,
       nextStep:
-        "This client doesn't invoice through QBO (Payment Links / subscriptions). Click Dismiss — the deposit will need a manual handling or Stripe Connect.",
+        "This client doesn't invoice through QBO (Payment Links / subscriptions / direct charges). To reconcile, send them a **Stripe Connect** link from the sidebar. Otherwise click **Dismiss from queue**.",
     };
   }
 
   return {
     kind: "ai_uncertain",
     title: "Match this Stripe deposit",
-    whatWasAttempted: "Couldn't confidently match this deposit to QBO invoices",
+    whatWasAttempted: customers
+      ? `AI matched **${amt}** to ${customers} but isn't confident.`
+      : `AI couldn't match this **${amt}** deposit to QBO invoices.`,
     facts,
-    nextStep:
-      "Approve the AI's match, Override by picking specific invoices, or Reject to leave the deposit unmatched.",
+    nextStep: customers
+      ? `If those customers are right, click **Approve**. Otherwise click **Pick a different target** to choose specific invoices, or **Leave as-is** to skip.`
+      : `Click **Pick a different target** to choose invoices manually, or **Leave as-is** to skip.`,
   };
 }
 
@@ -494,8 +530,8 @@ function ItemCard({
           {/* Row 2: what was attempted */}
           {summary.whatWasAttempted && (
             <div className="text-xs text-ink-slate">
-              <span className="font-semibold text-navy">What happened:</span>{" "}
-              {summary.whatWasAttempted}
+              <span className="font-bold text-navy">What happened:</span>{" "}
+              <Bold text={summary.whatWasAttempted} />
             </div>
           )}
 
@@ -504,10 +540,12 @@ function ItemCard({
             <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1.5 text-xs leading-relaxed">
               {summary.facts.map((f) => (
                 <div key={f.label} className="contents">
-                  <dt className="font-semibold text-navy whitespace-nowrap">
+                  <dt className="font-bold text-navy whitespace-nowrap">
                     {f.label}:
                   </dt>
-                  <dd className="text-ink-slate break-words">{f.value}</dd>
+                  <dd className="text-ink-slate break-words">
+                    <Bold text={f.value} />
+                  </dd>
                 </div>
               ))}
             </dl>
@@ -517,8 +555,8 @@ function ItemCard({
           <div className="text-xs text-ink-slate flex items-start gap-1.5">
             <Sparkles size={11} className="text-teal flex-shrink-0 mt-0.5" />
             <span>
-              <span className="font-semibold text-navy">What to do: </span>
-              {summary.nextStep}
+              <span className="font-bold text-navy">What to do: </span>
+              <Bold text={summary.nextStep} />
             </span>
           </div>
 
