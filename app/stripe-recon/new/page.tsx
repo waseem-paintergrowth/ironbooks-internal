@@ -11,10 +11,13 @@ export default async function NewStripeReconPage() {
   if (!user) redirect("/auth/login");
 
   const service = createServiceSupabase();
+  // Cleanup-completed clients are hidden — they live in the Completed
+  // Accounts table on /clients with a Reopen button.
   const { data: clientLinks } = await service
     .from("client_links")
     .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status")
     .eq("is_active", true)
+    .is("cleanup_completed_at", null)
     .order("client_name");
 
   return (

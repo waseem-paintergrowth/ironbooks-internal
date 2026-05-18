@@ -7,10 +7,14 @@ import { NewJobForm } from "./form";
 export default async function NewJobPage() {
   const supabase = await createServerSupabase();
 
+  // Hide cleanup-completed clients from the select-client list. They show up
+  // in the Completed Accounts table on /clients with a Reopen button if a
+  // bookkeeper genuinely needs to start fresh work on a closed-out client.
   const { data: clientLinks } = await supabase
     .from("client_links")
     .select("*")
     .eq("is_active", true)
+    .is("cleanup_completed_at", null)
     .order("client_name");
 
   return (

@@ -4,6 +4,7 @@ import { createServerSupabase } from "@/lib/supabase";
 import { sweepStaleJobs } from "@/lib/stale-jobs";
 import { Plus } from "lucide-react";
 import { ClientsList } from "./clients-list";
+import { CompletedAccounts } from "./completed-accounts";
 
 export default async function ClientsPage() {
   // Watchdog: auto-fail any job that's been hung in `executing` past its
@@ -26,8 +27,13 @@ export default async function ClientsPage() {
 
   const [clientsRes, linksRes, bookkeepersRes, resumableCoaRes] = await Promise.all([
     supabase.from("client_list_view").select("*").order("client_name"),
-    // client_list_view doesn't expose double_client_name or stripe fields, pull from client_links and merge
-    supabase.from("client_links").select("id, double_client_name, stripe_connection_status, due_date"),
+    // client_list_view doesn't expose double_client_name, stripe fields, or
+    // the cleanup-completion markers — pull from client_links and merge.
+    supabase
+      .from("client_links")
+      .select(
+        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note"
+      ),
     supabase
       .from("users")
       .select("id, full_name, avatar_url")
@@ -55,6 +61,29 @@ export default async function ClientsPage() {
   const dueDateById = new Map<string, string | null>(
     linksData.map((l) => [l.id, (l as any).due_date ?? null])
   );
+  // Completion markers — drives the "active vs Completed Accounts"
+  // partition below. A client is "completed" when cleanup_completed_at
+  // is non-null; reopening clears the column back to null.
+  const completionById = new Map<
+    string,
+    {
+      cleanup_completed_at: string;
+      cleanup_range_start: string | null;
+      cleanup_range_end: string | null;
+      cleanup_completion_note: string | null;
+    }
+  >();
+  for (const l of linksData) {
+    const ca = (l as any).cleanup_completed_at;
+    if (ca) {
+      completionById.set(l.id, {
+        cleanup_completed_at: ca,
+        cleanup_range_start: (l as any).cleanup_range_start ?? null,
+        cleanup_range_end: (l as any).cleanup_range_end ?? null,
+        cleanup_completion_note: (l as any).cleanup_completion_note ?? null,
+      });
+    }
+  }
 
   // Most recent resumable COA job per client. The map's `.set` only
   // writes on first insert because the query is ordered desc; first
@@ -74,11 +103,29 @@ export default async function ClientsPage() {
     resumable_job: c.id ? resumableJobByClient.get(c.id) ?? null : null,
   }));
 
+  // Partition: completed clients drop out of the active "step 1 select
+  // client" list and into a separate Completed Accounts table below.
+  const activeClients = enrichedClients.filter(
+    (c: any) => c.id && !completionById.has(c.id)
+  );
+  const completedClients = enrichedClients
+    .filter((c: any) => c.id && completionById.has(c.id))
+    .map((c: any) => ({
+      id: c.id as string,
+      client_name: c.client_name as string,
+      jurisdiction: c.jurisdiction as "US" | "CA",
+      state_province: (c.state_province as string | null) || null,
+      ...completionById.get(c.id)!,
+    }))
+    .sort((a, b) =>
+      (b.cleanup_completed_at || "").localeCompare(a.cleanup_completed_at || "")
+    );
+
   return (
     <AppShell>
       <TopBar
         title="Clients"
-        subtitle={`${enrichedClients.length} clients`}
+        subtitle={`${activeClients.length} active · ${completedClients.length} completed`}
         actions={
           <a
             href="/api/qbo/connect"
@@ -89,13 +136,16 @@ export default async function ClientsPage() {
           </a>
         }
       />
-      <div className="px-8 py-6">
+      <div className="px-8 py-6 space-y-8">
         <ClientsList
-          initialClients={enrichedClients}
+          initialClients={activeClients as any}
           bookkeepers={bookkeepersRes.data || []}
           currentUserId={user?.id || ""}
           canEdit={!!canEdit}
         />
+        {completedClients.length > 0 && (
+          <CompletedAccounts clients={completedClients} canEdit={!!canEdit} />
+        )}
       </div>
     </AppShell>
   );

@@ -7,6 +7,7 @@ import Link from "next/link";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { StripeReconReview } from "./review-client";
 import { UnmatchedPanel } from "./unmatched-panel";
+import { MarkCleanupCompleteButton } from "./mark-complete-button";
 
 export default async function StripeReconReviewPage({
   params,
@@ -209,7 +210,7 @@ export default async function StripeReconReviewPage({
           currentState="active"
           completedSteps={["coa", "reclass", "rules"]}
         />
-        <div className="px-8 py-6">
+        <div className="px-8 py-6 space-y-6">
           <UnmatchedPanel
             jobId={id}
             clientLinkId={job.client_link_id as unknown as string}
@@ -218,6 +219,14 @@ export default async function StripeReconReviewPage({
             totalAmount={totalAmount}
             reclassJobId={(job.reclass_job_id as unknown as string) || null}
           />
+          <div className="max-w-2xl">
+            <MarkCleanupCompleteButton
+              clientLinkId={job.client_link_id as unknown as string}
+              clientName={clientLink?.client_name || "this client"}
+              defaultRangeStart={job.date_range_start as unknown as string}
+              defaultRangeEnd={job.date_range_end as unknown as string}
+            />
+          </div>
         </div>
       </AppShell>
     );
@@ -230,11 +239,17 @@ export default async function StripeReconReviewPage({
         subtitle={`${matches?.length || 0} deposits matched`}
       />
       <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "rules"]} />
-      <div className="px-8 py-6">
+      <div className="px-8 py-6 space-y-6">
         <StripeReconReview
           job={job as any}
           matches={(matches as any) || []}
           clientLink={clientLink}
+        />
+        <MarkCleanupCompleteButton
+          clientLinkId={job.client_link_id as unknown as string}
+          clientName={clientLink?.client_name || "this client"}
+          defaultRangeStart={job.date_range_start as unknown as string}
+          defaultRangeEnd={job.date_range_end as unknown as string}
         />
       </div>
     </AppShell>
