@@ -59,5 +59,9 @@ export async function POST(
   return NextResponse.json({ started: true, job_id: jobId });
 }
 
-// Long-running execution support
-export const maxDuration = 300;
+// Long-running execution support. Vercel Pro caps Node serverless functions
+// at 800s. We use 800 so legitimately big merges (sub-500-line) and many
+// small actions in one execute pass have room to finish. Oversized merges
+// (>500 lines) are pre-flighted and routed to manual cleanup so the timeout
+// is a safety net, not a hot path.
+export const maxDuration = 800;

@@ -45,6 +45,38 @@ export async function GET(
 
   const { data: logs } = await query;
 
+  // Auto-recover from silent timeouts. If the job is still 'executing' but
+  // we haven't seen ANY audit log event in 90+ seconds, the background
+  // function almost certainly died (Vercel killed it past maxDuration,
+  // OOM, etc.). Flip the job back to in_review so the bookkeeper can
+  // re-execute — the executor is idempotent and will resume where it
+  // stopped. Without this the job sits "executing" forever.
+  if (job.status === "executing") {
+    const { data: lastEvent } = await supabase
+      .from("audit_log")
+      .select("occurred_at")
+      .eq("job_id", jobId)
+      .order("occurred_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const lastTs = lastEvent?.occurred_at ? new Date(lastEvent.occurred_at).getTime() : 0;
+    const silenceMs = Date.now() - lastTs;
+    if (lastTs > 0 && silenceMs > 90_000) {
+      await supabase
+        .from("coa_jobs")
+        .update({
+          status: "in_review",
+          execution_started_at: null,
+          error_message:
+            `Execution timed out at ${new Date(lastTs).toISOString()} ` +
+            `(no progress for ${Math.round(silenceMs / 1000)}s). ` +
+            `Click Execute again to resume — completed actions are skipped automatically.`,
+        } as any)
+        .eq("id", jobId);
+      job.status = "in_review";
+    }
+  }
+
   // Calculate progress.
   // IMPORTANT: denominator must be ONLY actionable items (create/rename/delete).
   // `keep` actions are no-ops and never get executed=true, so including them

@@ -701,6 +701,58 @@ export async function executeJob(jobId: string): Promise<{
             ctx.realmId, ctx.accessToken, action.qbo_account_id, dateStart, dateEnd
           );
 
+          // SIZE GUARD — a merge with thousands of transactions reclassed one
+          // at a time will absolutely blow past Vercel's 5-minute function
+          // limit. Flag oversized merges for the bookkeeper to handle in QBO's
+          // Reclassify Transactions tool (which does this in bulk natively).
+          //
+          // Threshold: 500 lines is a comfortable budget (~250ms × 500 = 2min
+          // for the reclass alone, leaving headroom for other merges in the
+          // same execute). Tuned to be cautious; we can raise once we batch.
+          const MERGE_MAX_LINES = 500;
+          if (lines.length > MERGE_MAX_LINES) {
+            const reason =
+              `Merge of "${action.current_name}" → "${action.new_name}" touches ` +
+              `${lines.length} lines (across ${transactionsPulled} transactions) — ` +
+              `too large for automated reclassification within the function timeout. ` +
+              `Use QBO's Reclassify Transactions tool to move them in bulk, then ` +
+              `inactivate the source account manually.`;
+            pendingFailures.push({
+              intended_action: "rename",
+              account_id: action.qbo_account_id,
+              account_name: action.current_name || "Unknown",
+              request_body: {
+                merge_source: action.current_name,
+                merge_target: action.new_name,
+                lines: lines.length,
+                transactions: transactionsPulled,
+              },
+              qbo_error: reason,
+              account_snapshot: sourceAccount
+                ? {
+                    Name: sourceAccount.Name,
+                    AccountType: sourceAccount.AccountType,
+                    AccountSubType: sourceAccount.AccountSubType,
+                    CurrentBalance: sourceAccount.CurrentBalance,
+                    Active: sourceAccount.Active,
+                  }
+                : null,
+            });
+            await ctx.supabase
+              .from("coa_actions")
+              .update({
+                executed: false,
+                error_message: null,
+                flagged_reason: reason,
+              })
+              .eq("id", action.id);
+            await logActionResult(ctx, action.id, "manual_cleanup_required", {
+              name: action.current_name,
+              reason: `Too large for auto-merge (${lines.length} lines)`,
+            });
+            continue;
+          }
+
           await logProgress(ctx, "merge_progress",
             `Merging "${action.current_name}" → "${action.new_name}" (${lines.length} lines across ${transactionsPulled} txns)`,
             { source: action.current_name, target: action.new_name, lines: lines.length }
