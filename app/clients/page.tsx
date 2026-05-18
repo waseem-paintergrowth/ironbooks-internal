@@ -14,7 +14,7 @@ export default async function ClientsPage() {
 
   const canEdit = profile && ["admin", "lead"].includes(profile.role);
 
-  const [clientsRes, linksRes, bookkeepersRes] = await Promise.all([
+  const [clientsRes, linksRes, bookkeepersRes, resumableCoaRes] = await Promise.all([
     supabase.from("client_list_view").select("*").order("client_name"),
     // client_list_view doesn't expose double_client_name or stripe fields, pull from client_links and merge
     supabase.from("client_links").select("id, double_client_name, stripe_connection_status, due_date"),
@@ -24,6 +24,14 @@ export default async function ClientsPage() {
       .eq("is_active", true)
       .in("role", ["admin", "lead", "bookkeeper"])
       .order("full_name"),
+    // Resumable cleanup jobs — anything mid-flight (executing, in_review,
+    // failed, cancelled with executed actions). The Continue button on
+    // each client row jumps straight to the most recent one.
+    supabase
+      .from("coa_jobs")
+      .select("id, client_link_id, status, updated_at, execution_started_at")
+      .in("status", ["in_review", "executing", "failed", "cancelled"])
+      .order("updated_at", { ascending: false }),
   ]);
 
   const linksData = linksRes.data || [];
@@ -37,11 +45,22 @@ export default async function ClientsPage() {
     linksData.map((l) => [l.id, (l as any).due_date ?? null])
   );
 
+  // Most recent resumable COA job per client. The map's `.set` only
+  // writes on first insert because the query is ordered desc; first
+  // wins → newest. That's what the Continue button routes to.
+  const resumableJobByClient = new Map<string, { id: string; status: string }>();
+  for (const j of resumableCoaRes.data || []) {
+    if (!j.client_link_id) continue;
+    if (resumableJobByClient.has(j.client_link_id)) continue;
+    resumableJobByClient.set(j.client_link_id, { id: j.id, status: j.status });
+  }
+
   const enrichedClients = (clientsRes.data || []).map((c) => ({
     ...c,
     double_client_name: c.id ? nameById.get(c.id) ?? null : null,
     stripe_connection_status: c.id ? stripeStatusById.get(c.id) ?? null : null,
     due_date: c.id ? dueDateById.get(c.id) ?? null : null,
+    resumable_job: c.id ? resumableJobByClient.get(c.id) ?? null : null,
   }));
 
   return (

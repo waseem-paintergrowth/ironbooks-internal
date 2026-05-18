@@ -22,6 +22,7 @@ import {
   Building2,
   Trash2,
   FileText,
+  Play,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -49,6 +50,10 @@ interface ClientRow {
   last_cleanup_at: string | null;
   stripe_connection_status: string | null;
   due_date: string | null;
+  /** Most recent resumable COA cleanup job for this client (if any).
+   *  Used by the Continue button. Null when the client has no active /
+   *  failed / cancelled jobs. */
+  resumable_job: { id: string; status: string } | null;
 }
 
 interface Bookkeeper {
@@ -738,6 +743,39 @@ function ClientRow({
             >
               Rematch
             </Link>
+            {/* Continue an in-flight / errored cleanup. Shown only when the
+                client has a resumable COA job (executing, in_review, failed,
+                cancelled). The destination page handles whether to show the
+                Execute button or the post-mortem with Revert/Report. */}
+            {client.resumable_job && (
+              <Link
+                href={
+                  client.resumable_job.status === "executing"
+                    ? `/jobs/${client.resumable_job.id}/execute`
+                    : `/jobs/${client.resumable_job.id}/review`
+                }
+                className={`inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold ${
+                  client.resumable_job.status === "failed" ||
+                  client.resumable_job.status === "cancelled"
+                    ? "bg-red-100 text-red-700 hover:bg-red-200"
+                    : client.resumable_job.status === "executing"
+                    ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                    : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                }`}
+                title={
+                  client.resumable_job.status === "failed"
+                    ? "Failed cleanup — resume from where it errored (completed actions are skipped)"
+                    : client.resumable_job.status === "cancelled"
+                    ? "Cancelled cleanup — review or restart from the existing job"
+                    : client.resumable_job.status === "executing"
+                    ? "Cleanup is running right now — view live progress"
+                    : "Cleanup in review — finish or execute"
+                }
+              >
+                <Play size={10} />
+                Continue
+              </Link>
+            )}
             <Link
               href={`/jobs/new?client=${client.id}`}
               className="px-2 py-1 rounded text-[10px] font-semibold bg-teal-light text-teal hover:bg-teal/20"

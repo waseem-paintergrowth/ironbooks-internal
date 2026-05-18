@@ -58,6 +58,52 @@ export function LiveExecution({
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string>("");
 
+  // Detect which stage failed by scanning the audit log for the most recent
+  // stage_start event whose stage_complete never landed. Falls back to
+  // 'merge' if we can't tell (most common failure stage).
+  function detectFailedStage(): "create" | "rename" | "merge" | "delete" | null {
+    const stageStarts = events.filter((e) => e.event_type === "stage_start");
+    const stageCompletes = events.filter((e) => e.event_type === "stage_complete");
+    const completedStages = new Set(
+      stageCompletes.map((e) => String(e.request_payload?.stage || ""))
+    );
+    // Walk starts in reverse order — most recent first
+    for (let i = stageStarts.length - 1; i >= 0; i--) {
+      const stage = String(stageStarts[i].request_payload?.stage || "");
+      if (!completedStages.has(stage)) {
+        if (stage === "merge" || stage === "rename" || stage === "delete" || stage === "inactivate") {
+          return stage === "inactivate" ? "delete" : stage;
+        }
+        if (stage === "create_parents" || stage === "create_children" || stage === "create_missing_parents") {
+          return "create";
+        }
+      }
+    }
+    return null;
+  }
+  const failedStage = detectFailedStage();
+
+  async function handleRevertStage(stage: "create" | "rename" | "merge" | "delete") {
+    const label = stage === "delete" ? "inactivate" : stage;
+    if (!confirm(
+      `Revert the "${label}" stage? This undoes only the ${label} actions that already executed — other stages stay applied. Safe to re-execute afterwards.`
+    )) return;
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/revert-stage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stage }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      alert(
+        `Started revert of ${data.actions_to_revert} ${label} action${data.actions_to_revert === 1 ? "" : "s"}. Refresh in ~30 seconds to see progress.`
+      );
+    } catch (e: any) {
+      alert(`Revert failed: ${e?.message || e}`);
+    }
+  }
+
   async function handleDownloadReport() {
     try {
       const res = await fetch(`/api/jobs/${jobId}/error-report`);
@@ -272,8 +318,9 @@ export function LiveExecution({
       )}
 
       {/* Revert + Report banner — visible when the job failed OR has any
-          manual cleanup items. Lets the bookkeeper recover with one click
-          and download a Claude-friendly diagnosis report. */}
+          manual cleanup items. Revert is now stage-scoped: only undoes the
+          actions of the stage that errored, leaving completed stages
+          (renames, creates) intact. */}
       {(isFailed ||
         status?.status === "cancelled" ||
         (status?.manual_cleanup_items && status.manual_cleanup_items.length > 0)) && (
@@ -282,31 +329,60 @@ export function LiveExecution({
             <div className="text-sm text-red-900 leading-relaxed">
               <p className="font-semibold mb-1">Hit a problem — quick recovery actions:</p>
               <p className="text-xs">
-                <strong>Revert</strong> stops the run and flags every remaining action so nothing
-                else runs. <strong>Download Error Report</strong> saves a Claude-friendly markdown
-                file of what happened so you can ask Claude to fix the underlying code.
+                <strong>Revert {failedStage ? `(${failedStage === "delete" ? "inactivate" : failedStage} stage)` : "stage"}</strong>{" "}
+                undoes only the actions of the stage that errored. Other stages stay applied.{" "}
+                <strong>Download Error Report</strong> saves a Claude-friendly markdown file you
+                can paste into a Claude conversation for diagnosis.
               </p>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {!isFailed && status?.status !== "cancelled" && (
+            <div className="flex flex-col items-end gap-2 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                {failedStage && (
+                  <button
+                    onClick={() => handleRevertStage(failedStage)}
+                    className="inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold px-3 py-2 rounded-lg"
+                    title={`Revert only the ${failedStage} stage`}
+                  >
+                    <RotateCcw size={14} />
+                    Revert {failedStage === "delete" ? "Inactivate" : failedStage.charAt(0).toUpperCase() + failedStage.slice(1)} Stage
+                  </button>
+                )}
+                {!isFailed && status?.status !== "cancelled" && (
+                  <button
+                    onClick={() => handleCancel(false)}
+                    disabled={cancelling}
+                    className="inline-flex items-center gap-1.5 bg-red-100 hover:bg-red-200 disabled:opacity-50 text-red-800 text-xs font-semibold px-3 py-2 rounded-lg border border-red-300"
+                    title="Stop the run without reverting (remaining actions get flagged)"
+                  >
+                    <RotateCcw size={14} />
+                    {cancelling ? "Stopping…" : "Stop"}
+                  </button>
+                )}
                 <button
-                  onClick={() => handleCancel(false)}
-                  disabled={cancelling}
-                  className="inline-flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 rounded-lg"
-                  title="Stop the cleanup and flag remaining actions"
+                  onClick={handleDownloadReport}
+                  className="inline-flex items-center gap-1.5 bg-navy hover:bg-ink-slate text-white text-xs font-semibold px-3 py-2 rounded-lg"
+                  title="Download a markdown report you can paste into Claude for diagnosis"
                 >
-                  <RotateCcw size={14} />
-                  {cancelling ? "Reverting…" : "Revert"}
+                  <FileDown size={14} />
+                  Download Error Report
                 </button>
-              )}
-              <button
-                onClick={handleDownloadReport}
-                className="inline-flex items-center gap-1.5 bg-navy hover:bg-ink-slate text-white text-xs font-semibold px-3 py-2 rounded-lg"
-                title="Download a markdown report you can paste into Claude for diagnosis"
-              >
-                <FileDown size={14} />
-                Download Error Report
-              </button>
+              </div>
+              {/* Optional: surface per-stage revert if the bookkeeper wants
+                  to revert something other than the auto-detected failed stage */}
+              <details className="text-[10px] text-red-700 cursor-pointer">
+                <summary className="hover:text-red-900">Revert a different stage…</summary>
+                <div className="flex items-center gap-2 mt-2">
+                  {(["create", "rename", "merge", "delete"] as const).map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => handleRevertStage(s)}
+                      className="px-2 py-1 rounded border border-red-300 bg-white hover:bg-red-50 text-red-800 font-semibold"
+                    >
+                      {s === "delete" ? "Inactivate" : s.charAt(0).toUpperCase() + s.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </details>
             </div>
           </div>
         </div>
