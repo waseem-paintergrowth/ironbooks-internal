@@ -359,6 +359,44 @@ export async function inactivateAccount(
 }
 
 /**
+ * Reactivate (un-inactivate) a previously inactivated account. Used by the
+ * revert flow so we can move transactions back into a now-inactive source.
+ * Same Type/SubAccount/ParentRef preservation rules as inactivateAccount.
+ */
+export async function reactivateAccount(
+  realmId: string,
+  accessToken: string,
+  accountId: string,
+  syncToken: string,
+  currentAccount?: QBOAccount
+): Promise<QBOAccount> {
+  const body: any = {
+    Id: accountId,
+    SyncToken: syncToken,
+    sparse: true,
+    Active: true,
+  };
+  if (currentAccount) {
+    if (currentAccount.AccountType) body.AccountType = currentAccount.AccountType;
+    if (currentAccount.AccountSubType) body.AccountSubType = currentAccount.AccountSubType;
+    if (currentAccount.SubAccount) {
+      body.SubAccount = true;
+      if (currentAccount.ParentRef?.value) {
+        body.ParentRef = { value: currentAccount.ParentRef.value };
+      }
+    }
+    if (currentAccount.Name) body.Name = currentAccount.Name;
+  }
+  const data = await qboRequest<{ Account: QBOAccount }>(
+    realmId,
+    accessToken,
+    '/account?minorversion=70',
+    { method: 'POST', body: JSON.stringify(body) }
+  );
+  return data.Account;
+}
+
+/**
  * Move a sub-account under a different parent.
  */
 export async function reparentAccount(
