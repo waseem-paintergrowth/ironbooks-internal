@@ -219,12 +219,74 @@ export async function executeJob(jobId: string): Promise<{
 
   const accessToken = await qbo.getValidToken(clientLink.id, supabase as any);
 
-  // Pull the date range the bookkeeper chose at job-creation time. Legacy
-  // jobs (pre-Migration-17) get the old "all time" range so behavior is
-  // unchanged for anything already in flight.
+  // STRICT date-range validation. The executor REFUSES to run if the job
+  // doesn't have a bookkeeper-chosen scope. No silent fallback to all-time
+  // — that's exactly the bug that caused Renaissance to rewrite years of
+  // closed-period transactions. Allowed presets are the four from the
+  // new-job form: cy, fy, cy_plus_1, fy_plus_1. Legacy backfilled jobs
+  // (preset='legacy_all_time') must be re-scoped before they can run.
   const todayIso = new Date().toISOString().slice(0, 10);
-  const dateRangeStart = (job as any).date_range_start || "2000-01-01";
-  const dateRangeEnd = (job as any).date_range_end || todayIso;
+  const ALLOWED_PRESETS = new Set(["cy", "fy", "cy_plus_1", "fy_plus_1"]);
+  const rawStart: string | null = (job as any).date_range_start || null;
+  const rawEnd: string | null = (job as any).date_range_end || null;
+  const rawPreset: string | null = (job as any).date_range_preset || null;
+
+  if (!rawStart || !rawEnd) {
+    const reason =
+      "Cleanup refused: this job has no date range. Open the job in the app, " +
+      "pick a scope from the Cleanup Scope card (This Calendar Year, etc.), " +
+      "and re-run.";
+    await supabase
+      .from("coa_jobs")
+      .update({
+        status: "failed",
+        execution_completed_at: new Date().toISOString(),
+        error_message: reason,
+      } as any)
+      .eq("id", jobId);
+    throw new Error(reason);
+  }
+
+  if (rawPreset && !ALLOWED_PRESETS.has(rawPreset)) {
+    const reason =
+      `Cleanup refused: date_range_preset is "${rawPreset}" which isn't an ` +
+      `allowed scope. Allowed: ${Array.from(ALLOWED_PRESETS).join(", ")}. ` +
+      `Update the job's date range to one of the supported presets and re-run.`;
+    await supabase
+      .from("coa_jobs")
+      .update({
+        status: "failed",
+        execution_completed_at: new Date().toISOString(),
+        error_message: reason,
+      } as any)
+      .eq("id", jobId);
+    throw new Error(reason);
+  }
+
+  // Defense in depth: even if preset slipped through somehow, refuse any
+  // start date older than 3 years. A cleanup never legitimately needs more.
+  const startMs = new Date(rawStart).getTime();
+  const threeYearsAgo = Date.now() - 3 * 365 * 86_400_000;
+  if (Number.isNaN(startMs) || startMs < threeYearsAgo) {
+    const reason =
+      `Cleanup refused: date_range_start is ${rawStart}, more than 3 years ` +
+      `back. Touching that far into the past risks rewriting closed-period ` +
+      `transactions. Pick a current scope (This Calendar Year, This Fiscal ` +
+      `Year, or either + last) and re-run.`;
+    await supabase
+      .from("coa_jobs")
+      .update({
+        status: "failed",
+        execution_completed_at: new Date().toISOString(),
+        error_message: reason,
+      } as any)
+      .eq("id", jobId);
+    throw new Error(reason);
+  }
+
+  const dateRangeStart = rawStart;
+  const dateRangeEnd = rawEnd;
+  void todayIso;
 
   const ctx: ExecutionContext = {
     jobId,
