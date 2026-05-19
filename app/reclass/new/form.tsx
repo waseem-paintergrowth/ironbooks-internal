@@ -62,6 +62,8 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string>("");
+  const [blockingJobId, setBlockingJobId] = useState<string>("");
+  const [cancelling, setCancelling] = useState(false);
 
   const selectedClient = clientLinks.find((c) => c.id === clientLinkId);
   const sourceAccount = accounts.find((a) => a.id === sourceAccountId);
@@ -219,11 +221,36 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start job");
+      if (!res.ok) {
+        if (res.status === 409 && data.existing_job_id) {
+          setBlockingJobId(data.existing_job_id);
+        }
+        throw new Error(data.error || "Failed to start job");
+      }
       router.push(`/reclass/${data.job_id}/review`);
     } catch (e: any) {
       setSubmitError(e.message);
       setSubmitting(false);
+    }
+  }
+
+  async function cancelBlockingJob() {
+    if (!blockingJobId) return;
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/reclass/${blockingJobId}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || "Cancel failed");
+      }
+      setBlockingJobId("");
+      setSubmitError("");
+      // Auto-retry
+      await handleSubmit();
+    } catch (e: any) {
+      setSubmitError(e.message);
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -508,9 +535,21 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         )}
 
         {submitError && (
-          <div className="flex items-start gap-2 p-3 bg-red-50 text-red-800 rounded-lg text-sm">
-            <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
-            {submitError}
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm">
+            <div className="flex items-start gap-2 text-red-800">
+              <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+              <span>{submitError}</span>
+            </div>
+            {blockingJobId && (
+              <button
+                onClick={cancelBlockingJob}
+                disabled={cancelling}
+                className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-red-700 hover:bg-red-800 text-white text-xs font-bold disabled:opacity-60 transition-colors"
+              >
+                {cancelling && <Loader2 size={12} className="animate-spin" />}
+                {cancelling ? "Cancelling…" : "Cancel stuck job & retry"}
+              </button>
+            )}
           </div>
         )}
 
