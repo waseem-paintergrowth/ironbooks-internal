@@ -44,13 +44,22 @@ export async function POST(request: Request) {
   // SAME-CLIENT CONCURRENCY GUARD. Two stripe-recon jobs on the same
   // client would race on the same QBO deposits — Job A rewrites a
   // deposit, Job B can't reconcile against the now-changed state.
+  //
+  // upgrade_from: the upgrade flow acknowledges a prior job and then
+  // POSTs here. If replication lag means the prior job is still
+  // momentarily readable as in_review, exclude it explicitly so the
+  // upgrade isn't bounced back into the loop. The acknowledge call
+  // already ran and the audit trail is preserved either way.
   const ACTIVE_STRIPE_RECON_STATUSES = ["discovering", "in_review", "executing"];
-  const { data: rivalStripeJobs } = await service
+  let rivalQuery = service
     .from("stripe_recon_jobs")
     .select("id, status")
     .eq("client_link_id", body.client_link_id)
-    .in("status", ACTIVE_STRIPE_RECON_STATUSES)
-    .limit(1);
+    .in("status", ACTIVE_STRIPE_RECON_STATUSES);
+  if (body.upgrade_from && typeof body.upgrade_from === "string") {
+    rivalQuery = rivalQuery.neq("id", body.upgrade_from);
+  }
+  const { data: rivalStripeJobs } = await rivalQuery.limit(1);
   if (rivalStripeJobs && rivalStripeJobs.length > 0) {
     const rival = rivalStripeJobs[0];
     // Short prose for clients that don't read structured fields; clients

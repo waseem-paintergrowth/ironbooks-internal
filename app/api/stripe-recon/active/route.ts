@@ -1,8 +1,13 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
+// Force fresh data — the form fires this immediately after closing a
+// prior job via /acknowledge, and we can't have a cached "in_review"
+// response triggering the upgrade-loop bug.
+export const dynamic = "force-dynamic";
+
 /**
- * GET /api/stripe-recon/active?client_link_id=...
+ * GET /api/stripe-recon/active?client_link_id=...&exclude_job_id=...
  *
  * Returns the in-flight Stripe reconciliation job for a client, if any.
  * Used by the new-recon form to pre-check before the bookkeeper hits
@@ -10,6 +15,10 @@ import { NextResponse } from "next/server";
  * in the console as a phantom "Failed to load resource" error. The
  * server-side guard in /api/stripe-recon/discover still stands as the
  * source of truth — this endpoint is purely a UX nicety.
+ *
+ * exclude_job_id: optional. The upgrade flow passes the just-acknowledged
+ * job id here so even if DB replication lag means the job still shows as
+ * in_review, this endpoint ignores it. Breaks the upgrade-loop.
  */
 export async function GET(request: Request) {
   const supabase = await createServerSupabase();
@@ -18,6 +27,7 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const clientLinkId = url.searchParams.get("client_link_id");
+  const excludeJobId = url.searchParams.get("exclude_job_id");
   if (!clientLinkId) {
     return NextResponse.json({ active: null }); // empty query = no client picked yet
   }
@@ -27,11 +37,15 @@ export async function GET(request: Request) {
   const ACTIVE = ["discovering", "in_review", "executing"];
 
   const service = createServiceSupabase();
-  const { data } = await service
+  let q = service
     .from("stripe_recon_jobs")
     .select("id, status, created_at")
     .eq("client_link_id", clientLinkId)
-    .in("status", ACTIVE)
+    .in("status", ACTIVE);
+  if (excludeJobId) {
+    q = q.neq("id", excludeJobId);
+  }
+  const { data } = await q
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();

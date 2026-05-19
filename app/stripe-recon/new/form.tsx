@@ -109,13 +109,22 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
   // Catches the 409 case BEFORE submit so the form can disable itself and
   // show the conflict panel proactively — eliminates the "Failed to load
   // resource: 409" console errors that fire on the submit path.
+  //
+  // Two safeguards to avoid the upgrade-loop bug:
+  //   - cache: 'no-store' so a freshly-acknowledged prior job isn't seen
+  //     as still-active from a stale cached response.
+  //   - exclude_job_id=upgradeFromJobId when we arrived via the upgrade
+  //     CTA, so even if DB replication lag means the prior job still
+  //     reads as in_review for a beat, this endpoint ignores it.
   useEffect(() => {
     if (!clientLinkId) {
       setConflict(null);
       return;
     }
     let cancelled = false;
-    fetch(`/api/stripe-recon/active?client_link_id=${clientLinkId}`)
+    const params = new URLSearchParams({ client_link_id: clientLinkId });
+    if (upgradeFromJobId) params.set("exclude_job_id", upgradeFromJobId);
+    fetch(`/api/stripe-recon/active?${params.toString()}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
@@ -131,7 +140,7 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
     return () => {
       cancelled = true;
     };
-  }, [clientLinkId]);
+  }, [clientLinkId, upgradeFromJobId]);
 
   // Load fiscal year + presets when client is selected
   useEffect(() => {
@@ -201,6 +210,10 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
           jurisdiction: selectedClient.jurisdiction,
           state_province: selectedClient.state_province || "",
           method,
+          // upgrade_from: tells the discover concurrency guard to ignore
+          // the just-acknowledged prior job, in case its row hasn't fully
+          // propagated to the read replica yet.
+          upgrade_from: upgradeFromJobId || undefined,
         }),
       });
       const data = await res.json();
