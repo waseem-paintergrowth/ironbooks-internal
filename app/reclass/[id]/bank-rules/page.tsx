@@ -33,7 +33,7 @@ export default async function BankRulesFromReclassPage({
 
   const { data: job } = await service
     .from("reclass_jobs")
-    .select("id, client_link_id, workflow, status")
+    .select("id, client_link_id, workflow, status, date_range_start, date_range_end")
     .eq("id", id)
     .single();
 
@@ -182,6 +182,8 @@ export default async function BankRulesFromReclassPage({
           clientName={clientName}
           proposedRules={proposedRules}
           availableAccounts={availablePnLAccounts}
+          cleanupRangeStart={(job as any).date_range_start || null}
+          cleanupRangeEnd={(job as any).date_range_end || null}
         />
       </div>
     </AppShell>

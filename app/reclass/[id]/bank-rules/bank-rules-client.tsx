@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, ArrowRight, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, ArrowRight, Loader2, Calendar, Flag } from "lucide-react";
 
 interface ProposedRule {
   vendorPattern: string;
@@ -25,6 +26,12 @@ interface Props {
   clientName: string;
   proposedRules: ProposedRule[];
   availableAccounts: AvailableAccount[];
+  /** The cleanup's date range (from the reclass job). Used to ask QBO
+   *  whether there are any Stripe-tagged deposits in that window — if
+   *  zero, we skip the Stripe-recon step entirely and offer a
+   *  do-another-period / mark-complete choice instead. */
+  cleanupRangeStart: string | null;
+  cleanupRangeEnd: string | null;
 }
 
 export function BankRulesFromReclassClient({
@@ -33,7 +40,10 @@ export function BankRulesFromReclassClient({
   clientName,
   proposedRules,
   availableAccounts,
+  cleanupRangeStart,
+  cleanupRangeEnd,
 }: Props) {
+  const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(
     new Set(proposedRules.map((r) => r.vendorPattern))
   );
@@ -51,6 +61,67 @@ export function BankRulesFromReclassClient({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<number | null>(null);
+
+  // Stripe-deposits pre-check: counts QBO deposits flagged as Stripe-origin
+  // in the cleanup's date range. Drives the "skip Stripe recon" shortcut
+  // when zero exist. Null = not yet checked / fail-soft. We fetch lazily
+  // only when the user reaches the Continue stage (created !== null OR
+  // proposedRules.length === 0) so we don't burn QBO API calls on every
+  // page visit.
+  const [depositCheck, setDepositCheck] = useState<{
+    count: number | null;
+    total_amount: number | null;
+    loading: boolean;
+  }>({ count: null, total_amount: null, loading: false });
+
+  // Trigger pre-check only at the "post-bank-rules" moment to keep cost low.
+  const inContinueStage = created !== null || proposedRules.length === 0;
+  useEffect(() => {
+    if (!inContinueStage) return;
+    if (!cleanupRangeStart || !cleanupRangeEnd) return;
+    if (depositCheck.count !== null || depositCheck.loading) return;
+    setDepositCheck((s) => ({ ...s, loading: true }));
+    fetch(
+      `/api/clients/${clientLinkId}/stripe-deposits-check?start=${cleanupRangeStart}&end=${cleanupRangeEnd}`
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setDepositCheck({
+          count: data.count ?? null,
+          total_amount: data.total_amount ?? null,
+          loading: false,
+        });
+      })
+      .catch(() => setDepositCheck((s) => ({ ...s, loading: false })));
+  }, [inContinueStage, clientLinkId, cleanupRangeStart, cleanupRangeEnd, depositCheck.count, depositCheck.loading]);
+
+  async function handleMarkCleanupComplete() {
+    if (
+      !confirm(
+        `Mark ${clientName}'s cleanup complete?\n\n` +
+          `• The client moves to the Completed Accounts list.\n` +
+          `• PDF report stays available; you can reopen anytime.\n` +
+          `• Since there are no Stripe deposits in this window, the Stripe recon step is skipped.`
+      )
+    )
+      return;
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/complete-cleanup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          range_start: cleanupRangeStart || undefined,
+          range_end: cleanupRangeEnd || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      router.push("/clients");
+    } catch (e: any) {
+      setError(e.message || "Failed to mark complete");
+    }
+  }
 
   function setOverride(vendorPattern: string, accountId: string) {
     const account = availableAccounts.find((a) => a.id === accountId);
@@ -115,6 +186,107 @@ export function BankRulesFromReclassClient({
     }
   }
 
+  // Shared "what's next" footer for both empty-state and post-create
+  // panels. Renders either the standard Continue-to-Stripe-Recon CTA
+  // or, when the pre-check confirmed zero Stripe deposits in the
+  // cleanup's date range, a Do-another-period / Mark-cleanup-complete
+  // choice screen. While the pre-check is in flight we show a small
+  // loader; once it resolves we pick the right path.
+  function NextStepFooter() {
+    if (depositCheck.loading) {
+      return (
+        <div className="inline-flex items-center gap-2 text-sm text-ink-slate">
+          <Loader2 size={14} className="animate-spin" />
+          Checking for Stripe deposits in this client&apos;s books…
+        </div>
+      );
+    }
+
+    // Zero deposits + we have a date range we trust → skip recon, offer
+    // the do-another-period / mark-complete choice.
+    if (depositCheck.count === 0 && cleanupRangeStart && cleanupRangeEnd) {
+      const startYear = Number(cleanupRangeStart.split("-")[0]);
+      const previousYear =
+        Number.isFinite(startYear) ? startYear - 1 : null;
+      const otherPeriodHref = previousYear
+        ? `/jobs/new?client=${clientLinkId}` // start a fresh cleanup on a different period
+        : `/jobs/new?client=${clientLinkId}`;
+
+      return (
+        <div className="text-left max-w-md mx-auto space-y-5">
+          <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900 leading-relaxed">
+            <div className="font-bold mb-1">
+              No Stripe deposits in this cleanup window
+            </div>
+            We scanned QBO from <strong>{cleanupRangeStart}</strong> to{" "}
+            <strong>{cleanupRangeEnd}</strong> and found{" "}
+            <strong>zero Stripe-tagged deposits</strong>. Nothing to reconcile
+            for this period — skip the Stripe recon step.
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-semibold text-navy">What now?</div>
+            <Link
+              href={otherPeriodHref}
+              className="w-full inline-flex items-center justify-center gap-2 bg-white hover:bg-gray-50 border border-gray-200 text-navy text-sm font-semibold px-5 py-2.5 rounded-lg"
+            >
+              <Calendar size={16} />
+              Do another period (start a new cleanup)
+              <ArrowRight size={14} />
+            </Link>
+            <button
+              type="button"
+              onClick={handleMarkCleanupComplete}
+              className="w-full inline-flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+            >
+              <Flag size={16} />
+              Mark {clientName}&apos;s cleanup complete
+              <ArrowRight size={14} />
+            </button>
+            <Link
+              href={`/stripe-recon/new?client=${clientLinkId}`}
+              className="block text-xs text-ink-slate underline hover:text-navy text-center pt-1"
+            >
+              Or run Stripe Recon anyway on a different range
+            </Link>
+          </div>
+          {error && (
+            <div className="p-2 rounded-md bg-red-50 border border-red-200 text-xs text-red-800">
+              {error}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Normal path — deposits exist (or we couldn't check, fail-open).
+    return (
+      <>
+        <Link
+          href={`/stripe-recon/new?client=${clientLinkId}`}
+          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-2.5 rounded-lg"
+        >
+          Continue to Stripe Recon{" "}
+          {depositCheck.count !== null && depositCheck.count > 0 && (
+            <span className="opacity-80 text-xs">
+              · {depositCheck.count} Stripe deposit
+              {depositCheck.count === 1 ? "" : "s"} found
+            </span>
+          )}
+          <ArrowRight size={16} />
+        </Link>
+        <div>
+          <Link
+            href="/dashboard"
+            className="text-sm text-ink-slate underline hover:text-navy"
+          >
+            Back to dashboard
+          </Link>
+        </div>
+      </>
+    );
+  }
+
   if (proposedRules.length === 0) {
     return (
       <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-4">
@@ -122,17 +294,7 @@ export function BankRulesFromReclassClient({
           No vendor→account mappings to create rules from — the job had no approved transactions,
           or all vendors were already saved as bank rules.
         </p>
-        <Link
-          href={`/stripe-recon/new?client=${clientLinkId}`}
-          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-2.5 rounded-lg"
-        >
-          Continue to Stripe Recon <ArrowRight size={16} />
-        </Link>
-        <div>
-          <Link href="/dashboard" className="text-sm text-ink-slate underline hover:text-navy">
-            Skip — back to dashboard
-          </Link>
-        </div>
+        <NextStepFooter />
       </div>
     );
   }
@@ -149,17 +311,7 @@ export function BankRulesFromReclassClient({
         <p className="text-ink-slate text-sm max-w-sm mx-auto">
           Future transactions matching these vendors will auto-categorize in QBO.
         </p>
-        <Link
-          href={`/stripe-recon/new?client=${clientLinkId}`}
-          className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white font-semibold px-6 py-2.5 rounded-lg"
-        >
-          Continue to Stripe Recon <ArrowRight size={16} />
-        </Link>
-        <div>
-          <Link href="/dashboard" className="text-sm text-ink-slate underline hover:text-navy">
-            Back to dashboard
-          </Link>
-        </div>
+        <NextStepFooter />
       </div>
     );
   }
