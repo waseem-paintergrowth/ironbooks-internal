@@ -12,6 +12,10 @@ interface ClientLink {
   jurisdiction: string;
   state_province: string | null;
   stripe_connection_status?: string | null;
+  /** When non-null the client's main cleanup cycle has been closed
+   *  out. Still selectable for Stripe-recon (a legitimate delta op),
+   *  but annotated in the dropdown so it's clear. */
+  cleanup_completed_at?: string | null;
 }
 
 interface DateRangePreset {
@@ -28,6 +32,10 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
   const [clientLinkId, setClientLinkId] = useState<string>("");
   const [reclassJobId, setReclassJobId] = useState<string | null>(null);
   const [extendingFromJobId, setExtendingFromJobId] = useState<string | null>(null);
+  // Set when the user came in via the "Upgrade to Stripe API" banner on
+  // a prior qbo_invoice_match recon's review page. Drives the upgrade
+  // banner near the top of the form and pre-selects method=stripe_api.
+  const [upgradeFromJobId, setUpgradeFromJobId] = useState<string | null>(null);
 
   const [datePresetId, setDatePresetId] = useState<string>("fy");
   const [datePresets, setDatePresets] = useState<DateRangePreset[]>([]);
@@ -65,17 +73,21 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
     setMethod(isStripeConnected ? "stripe_api" : "qbo_invoice_match");
   }, [isStripeConnected]);
 
-  // Auto-init from query string (handoff from reclass, or from the
-  // "extend" CTA on a 0-deposit recon review).
+  // Auto-init from query string (handoff from reclass, the "extend"
+  // CTA on a 0-deposit recon, or the "Upgrade to Stripe API" CTA on a
+  // prior qbo-match recon).
   useEffect(() => {
     const cId = searchParams.get("client");
     const rId = searchParams.get("reclass_job_id");
     const sd = searchParams.get("start");
     const ed = searchParams.get("end");
     const ef = searchParams.get("extending_from");
+    const uf = searchParams.get("upgrade_from");
+    const m = searchParams.get("method");
     if (cId && clientLinks.some((c) => c.id === cId)) setClientLinkId(cId);
     if (rId) setReclassJobId(rId);
     if (ef) setExtendingFromJobId(ef);
+    if (uf) setUpgradeFromJobId(uf);
     // Prefill start/end if provided. We mark prefilledFromUrl so the
     // "auto-default to FY preset when datePresets load" effect skips its
     // overwrite for this run.
@@ -83,6 +95,13 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
       setDateRangeStart(sd);
       setDateRangeEnd(ed);
       setPrefilledFromUrl(true);
+    }
+    // Force method=stripe_api when arriving via the upgrade flow.
+    // (Otherwise the default-on-client-select effect would flip it
+    // based on stripe_connection_status, which is also correct, but
+    // explicit is better here.)
+    if (m === "stripe_api") {
+      setMethod("stripe_api");
     }
   }, [searchParams, clientLinks]);
 
@@ -234,6 +253,19 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
           </div>
         )}
 
+        {upgradeFromJobId && (
+          <div className="p-3 rounded-lg bg-purple-50 border border-purple-200 text-xs text-purple-900">
+            ↪ <strong>Upgrading to the Stripe API path.</strong> The previous
+            recon used the QBO-AI matcher. Running this will replace the
+            AI-matched <code className="font-mono">[Ironbooks]</code> lines on
+            each deposit with deterministic charges/fees/customers pulled
+            directly from Stripe.{" "}
+            {selectedClient?.cleanup_completed_at
+              ? "This client's main cleanup is marked complete — re-running the recon is fine; their completion status isn't affected."
+              : ""}
+          </div>
+        )}
+
         {/* Client */}
         <div>
           <label className="block text-sm font-semibold text-navy mb-2">Client</label>
@@ -245,7 +277,7 @@ export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] 
             <option value="">Select a client...</option>
             {clientLinks.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.client_name} ({c.jurisdiction}{c.state_province ? ` · ${c.state_province}` : ""}){c.stripe_connection_status === "connected" ? " · Stripe connected" : ""}
+                {c.client_name} ({c.jurisdiction}{c.state_province ? ` · ${c.state_province}` : ""}){c.stripe_connection_status === "connected" ? " · Stripe connected" : ""}{c.cleanup_completed_at ? " · Cleanup complete" : ""}
               </option>
             ))}
           </select>

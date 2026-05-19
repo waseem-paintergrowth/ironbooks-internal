@@ -66,6 +66,11 @@ export async function POST(request: Request) {
     );
   }
 
+  // method=stripe_api → use Stripe Connect API path (deterministic)
+  // method=qbo_invoice_match (or absent) → AI matcher against QBO invoices
+  const method: "stripe_api" | "qbo_invoice_match" =
+    body.method === "stripe_api" ? "stripe_api" : "qbo_invoice_match";
+
   const { data: job, error } = await service
     .from("stripe_recon_jobs")
     .insert({
@@ -77,6 +82,10 @@ export async function POST(request: Request) {
       jurisdiction: body.jurisdiction,
       state_province: body.state_province || null,
       status: "discovering",
+      // Persist the method so the review page can surface an "upgrade
+      // to Stripe API" banner on prior qbo_invoice_match jobs once the
+      // client connects Stripe later.
+      method,
     } as any)
     .select()
     .single();
@@ -84,11 +93,6 @@ export async function POST(request: Request) {
   if (error || !job) {
     return NextResponse.json({ error: error?.message || "Job creation failed" }, { status: 500 });
   }
-
-  // method=stripe_api → use Stripe Connect API path (deterministic)
-  // method=qbo_invoice_match (or absent) → AI matcher against QBO invoices
-  const method: "stripe_api" | "qbo_invoice_match" =
-    body.method === "stripe_api" ? "stripe_api" : "qbo_invoice_match";
 
   after(async () => {
     try {

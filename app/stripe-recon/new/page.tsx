@@ -11,13 +11,19 @@ export default async function NewStripeReconPage() {
   if (!user) redirect("/auth/login");
 
   const service = createServiceSupabase();
-  // Cleanup-completed clients are hidden — they live in the Completed
-  // Accounts table on /clients with a Reopen button.
+  // Cleanup-completed clients are normally hidden from the picker — they
+  // live in the Completed Accounts table on /clients with a Reopen
+  // button. BUT for the Stripe-recon flow specifically they remain
+  // selectable, because a "secondary" Stripe-API recon is a valid
+  // post-completion delta op once a client connects Stripe: the execute
+  // step is idempotent (strips prior [Ironbooks] lines and rewrites
+  // deterministic ones), so re-running on a completed client doesn't
+  // break their close-out. The form annotates completed clients in the
+  // dropdown so it's obvious.
   const { data: clientLinks } = await service
     .from("client_links")
-    .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status")
+    .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status, cleanup_completed_at")
     .eq("is_active", true)
-    .is("cleanup_completed_at", null)
     .order("client_name");
 
   return (
@@ -28,7 +34,10 @@ export default async function NewStripeReconPage() {
       />
       <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "rules"]} />
       <div className="px-8 py-6 max-w-3xl">
-        <NewStripeReconForm clientLinks={clientLinks || []} />
+        {/* Cast through unknown because cleanup_completed_at lives in
+            migration 19 and the regenerated supabase types haven't been
+            pulled. Runtime shape is correct. */}
+        <NewStripeReconForm clientLinks={(clientLinks as unknown as any[]) || []} />
       </div>
     </AppShell>
   );

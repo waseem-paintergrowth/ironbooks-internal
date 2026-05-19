@@ -4,7 +4,7 @@ import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { CheckCircle2, Loader2 } from "lucide-react";
+import { CheckCircle2, Loader2, Sparkles, ArrowRight } from "lucide-react";
 import { StripeReconReview } from "./review-client";
 import { UnmatchedPanel } from "./unmatched-panel";
 import { MarkCleanupCompleteButton } from "./mark-complete-button";
@@ -23,12 +23,33 @@ export default async function StripeReconReviewPage({
 
   const { data: job } = await service
     .from("stripe_recon_jobs")
-    .select("*, client_links(client_name, jurisdiction, state_province)")
+    .select("*, client_links(id, client_name, jurisdiction, state_province, stripe_connection_status)")
     .eq("id", id)
     .single();
   if (!job) notFound();
 
   const clientLink = (job as any).client_links;
+
+  // "Upgrade to Stripe API" eligibility. Surfaces a prominent banner
+  // when this recon used the QBO-AI matcher AND the client has since
+  // connected Stripe — re-running with method=stripe_api replaces the
+  // AI-matched [Ironbooks] lines on each deposit with deterministic
+  // charges/fees/customers from Stripe. The execute step strips prior
+  // tagged lines before writing fresh ones, so the upgrade is safe.
+  const canUpgradeToStripeApi =
+    job.status === "complete" &&
+    (job as any).method === "qbo_invoice_match" &&
+    clientLink?.stripe_connection_status === "connected";
+
+  const upgradeHref = clientLink?.id
+    ? `/stripe-recon/new?${new URLSearchParams({
+        client: clientLink.id as unknown as string,
+        method: "stripe_api",
+        upgrade_from: id,
+        ...(job.date_range_start ? { start: job.date_range_start as unknown as string } : {}),
+        ...(job.date_range_end ? { end: job.date_range_end as unknown as string } : {}),
+      }).toString()}`
+    : "/stripe-recon/new";
 
   // Still discovering — show loader, auto-refresh
   if (job.status === "discovering" || !job.ai_completed_at) {
@@ -211,6 +232,12 @@ export default async function StripeReconReviewPage({
           completedSteps={["coa", "reclass", "rules"]}
         />
         <div className="px-8 py-6 space-y-6">
+          {canUpgradeToStripeApi && (
+            <UpgradeToStripeApiBanner
+              clientName={clientLink?.client_name || "this client"}
+              href={upgradeHref}
+            />
+          )}
           <UnmatchedPanel
             jobId={id}
             clientLinkId={job.client_link_id as unknown as string}
@@ -240,6 +267,12 @@ export default async function StripeReconReviewPage({
       />
       <WorkflowStepper currentStep="stripe" currentState="active" completedSteps={["coa", "reclass", "rules"]} />
       <div className="px-8 py-6 space-y-6">
+        {canUpgradeToStripeApi && (
+          <UpgradeToStripeApiBanner
+            clientName={clientLink?.client_name || "this client"}
+            href={upgradeHref}
+          />
+        )}
         <StripeReconReview
           job={job as any}
           matches={(matches as any) || []}
@@ -253,5 +286,52 @@ export default async function StripeReconReviewPage({
         />
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * Banner rendered when the current recon used the QBO-AI matcher and
+ * the client has since connected Stripe. One-click "Upgrade to Stripe
+ * API" routes to /stripe-recon/new with method=stripe_api, the same
+ * date range, and an upgrade_from breadcrumb. The execute step is
+ * idempotent (strips prior [Ironbooks] lines before writing fresh
+ * ones) so re-running on the same deposits is safe.
+ */
+function UpgradeToStripeApiBanner({
+  clientName,
+  href,
+}: {
+  clientName: string;
+  href: string;
+}) {
+  return (
+    <div className="rounded-xl bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-200 p-5">
+      <div className="flex items-start gap-3">
+        <div className="p-2 rounded-lg bg-purple-100 flex-shrink-0">
+          <Sparkles size={18} className="text-purple-700" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-bold text-navy">
+            <strong className="text-purple-900">{clientName}</strong> has
+            connected Stripe — upgrade this recon to the deterministic path
+          </h3>
+          <p className="text-xs text-ink-slate mt-1 leading-relaxed">
+            This run used the <strong className="text-navy">QBO invoice matcher</strong> (AI).
+            Now that Stripe is connected, you can re-run with the{" "}
+            <strong className="text-navy">Stripe API</strong> path — exact
+            charges, fees, and customers pulled directly from Stripe with no
+            guessing. The previous AI-matched lines on each deposit are
+            replaced automatically (no duplicates).
+          </p>
+          <Link
+            href={href}
+            className="mt-3 inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+          >
+            <ArrowRight size={14} />
+            Upgrade to Stripe API
+          </Link>
+        </div>
+      </div>
+    </div>
   );
 }
