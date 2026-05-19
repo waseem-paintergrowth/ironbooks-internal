@@ -475,7 +475,15 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
         </div>
       </div>
 
-      <div className="flex justify-end gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <button
+          onClick={() => router.push(`/reclass/new?client=${selected!.id}`)}
+          className="inline-flex items-center gap-2 text-sm font-semibold text-ink-slate hover:text-navy border border-gray-200 hover:border-gray-300 bg-white px-4 py-2.5 rounded-lg transition-colors"
+          title="COA is already done — jump straight to the reclassification step"
+        >
+          <ArrowRight size={15} />
+          COA already done — Skip to Reclass
+        </button>
         <button
           onClick={startJob}
           disabled={!canStart || creating || !selectedPreset}
