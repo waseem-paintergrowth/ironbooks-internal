@@ -10,6 +10,7 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
   const [stats, setStats] = useState<any>(null);
   const [error, setError] = useState<string>("");
   const [elapsed, setElapsed] = useState<number>(0);
+  const [webSearchLog, setWebSearchLog] = useState<string[]>([]);
 
   // Tick the elapsed-time counter (so user sees something moving)
   useEffect(() => {
@@ -29,6 +30,14 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
 
         setStatus(data.status);
         setStats(data.stats);
+
+        // Capture web search progress written to error_message during execution
+        if (data.error_message?.startsWith("[web_search]")) {
+          setWebSearchLog((prev) => {
+            const entry = `${new Date().toLocaleTimeString()} ${data.error_message}`;
+            return prev.includes(entry) ? prev : [...prev, entry];
+          });
+        }
 
         if (data.status === "in_review") {
           window.location.reload();
@@ -149,6 +158,35 @@ export function ReclassDiscoveryPending({ jobId }: { jobId: string }) {
           done={false}
         />
       </div>
+
+      {/* Live web search log — only shown once stage 4 is active */}
+      {(stage === "web_search" || webSearchLog.length > 0) && (
+        <div className="rounded-lg overflow-hidden border border-gray-200 mb-5">
+          <div className="bg-gray-900 px-3 py-2 flex items-center gap-2">
+            <div className="flex gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-red-500" />
+              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500" />
+              <div className="w-2.5 h-2.5 rounded-full bg-green-500" />
+            </div>
+            <span className="text-xs text-gray-400 font-mono ml-1">web_search.log</span>
+            {stage === "web_search" && (
+              <Loader2 size={11} className="ml-auto text-teal animate-spin" />
+            )}
+          </div>
+          <div className="bg-gray-950 px-4 py-3 font-mono text-xs text-green-400 min-h-[60px] max-h-[180px] overflow-y-auto space-y-1">
+            {webSearchLog.length === 0 ? (
+              <span className="text-gray-500">Waiting for first batch...</span>
+            ) : (
+              webSearchLog.map((line, i) => (
+                <div key={i} className="leading-relaxed">
+                  <span className="text-gray-500">{line.split(" ").slice(0, 2).join(" ")} </span>
+                  <span>{line.split(" ").slice(2).join(" ")}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2 text-sm">
         <div className="flex justify-between py-2 border-b border-gray-100">

@@ -872,12 +872,24 @@ async function runFullCategorization(
     console.log(`[reclass] Web-searching ${vendorEntries.length} unique unknown vendors (concurrency=5)...`);
 
     const newBankRules: any[] = [];
+    const totalBatches = Math.ceil(vendorEntries.length / CONCURRENCY);
 
     // Run searches in parallel with a concurrency limit of 5 so we don't
     // blast the Anthropic API and stay well under the function timeout.
     const CONCURRENCY = 5;
     for (let i = 0; i < vendorEntries.length; i += CONCURRENCY) {
+      const batchNum = Math.floor(i / CONCURRENCY) + 1;
       const batch = vendorEntries.slice(i, i + CONCURRENCY);
+      const batchVendorNames = batch.map(([, info]) => info.vendorName);
+
+      // Write live progress to error_message (cleared on success, overwritten on failure)
+      await service
+        .from("reclass_jobs")
+        .update({
+          error_message: `[web_search] Batch ${batchNum}/${totalBatches} • ${batchVendorNames.join(" • ")}`,
+        } as any)
+        .eq("id", jobId);
+
       const results = await Promise.all(
         batch.map(async ([normalized, info]) => {
           try {
@@ -1023,6 +1035,7 @@ async function runFullCategorization(
       unique_vendors_count: uniqueVendors,
       ai_completed_at: new Date().toISOString(),
       warnings: aiResult.warnings.length > 0 ? (aiResult.warnings as any) : null,
+      error_message: null,
     } as any)
     .eq("id", jobId);
 }
