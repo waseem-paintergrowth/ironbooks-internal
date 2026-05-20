@@ -6,12 +6,18 @@ import { ClientCard } from "./client-card";
 import { ClientPanel } from "./client-panel";
 import type { KanbanCard, KanbanBookkeeper, OnboardingStage } from "./types";
 
+// Display order tracks the actual workflow: COA → Reclass → Stripe →
+// BS → Senior review. `awaiting_stripe` sits between Reclass and BS
+// because clients are stuck there waiting for the customer to click
+// the Connect link; `bs_cleanup` is post-stripe per Step 5 of the
+// pipeline; `review` is the final senior-approval bucket.
 const COLUMNS: { key: OnboardingStage; label: string; color: string }[] = [
   { key: "needs_cleanup",       label: "Needs Cleanup",       color: "#64748B" },
   { key: "coa_in_progress",     label: "COA In Progress",     color: "#F59E0B" },
   { key: "reclass_in_progress", label: "Reclass In Progress", color: "#3B82F6" },
-  { key: "review",              label: "Review",              color: "#8B5CF6" },
   { key: "awaiting_stripe",     label: "Awaiting Stripe",     color: "#F97316" },
+  { key: "bs_cleanup",          label: "BS Cleanup",          color: "#0EA5E9" },
+  { key: "review",              label: "Review",              color: "#8B5CF6" },
 ];
 
 interface Props {

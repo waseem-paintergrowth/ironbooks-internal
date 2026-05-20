@@ -212,6 +212,17 @@ function ActionButton({
     return btn("Resend Link", () => onOpen());
   }
 
+  if (stage === "bs_cleanup") {
+    // Continue if there's already a bank_recon_jobs row; otherwise
+    // "Start BS Cleanup" (primary CTA — first thing to do).
+    const inProgress = (card as any).bs_recon_in_progress;
+    return btn(
+      inProgress ? "Continue BS Cleanup →" : "Start BS Cleanup →",
+      () => (window.location.href = `/balance-sheet/${card.id}`),
+      inProgress ? undefined : "primary"
+    );
+  }
+
   // MoM stages
   if (stage === "month_open") {
     return btn("Start This Month →", () => window.location.href = `/reclass/new?client=${card.id}`, "primary");

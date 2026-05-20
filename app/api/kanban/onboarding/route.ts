@@ -12,12 +12,14 @@ import { NextResponse } from "next/server";
  *   page           — 0-indexed page per column (default 0)
  *   limit          — cards per column (default 20, max 50)
  *
- * Stages:
- *   needs_cleanup       no active COA or reclass job
- *   coa_in_progress     active COA job (executing / in_review / failed)
- *   reclass_in_progress active reclass job, no stripe request pending
- *   review              most recent reclass complete, no stripe request
+ * Stages (priority top-down — first matching wins):
  *   awaiting_stripe     stripe_request_sent_at set, not yet connected
+ *   coa_in_progress     active or failed COA job
+ *   reclass_in_progress active or failed reclass job (COA done)
+ *   review              cleanup_review_state='in_review' (senior pending)
+ *   bs_cleanup          reclass done + (stripe done OR not required) +
+ *                       cleanup not yet submitted for review
+ *   needs_cleanup       no active jobs
  */
 export async function GET(request: Request) {
   const supabase = await createServerSupabase();
@@ -78,6 +80,34 @@ export async function GET(request: Request) {
     if (!latestStripeToken.has(t.client_link_id)) latestStripeToken.set(t.client_link_id, t);
   }
 
+  // Most recent stripe-recon job per client — drives the BS-stage
+  // gate ("stripe done OR not required").
+  const stripeReconQuery: any = await (service as any)
+    .from("stripe_recon_jobs")
+    .select("client_link_id, status, created_at")
+    .in("client_link_id", clientIds)
+    .order("created_at", { ascending: false });
+  const stripeReconJobs: any[] = stripeReconQuery.data || [];
+  const latestStripeRecon = new Map<string, any>();
+  for (const j of stripeReconJobs) {
+    if (!latestStripeRecon.has(j.client_link_id))
+      latestStripeRecon.set(j.client_link_id, j);
+  }
+
+  // Most recent bank_recon_jobs per client — used to differentiate
+  // "BS not started" vs "BS in progress" on the kanban card subtitle.
+  const bankReconQuery: any = await (service as any)
+    .from("bank_recon_jobs")
+    .select("client_link_id, status, created_at")
+    .in("client_link_id", clientIds)
+    .order("created_at", { ascending: false });
+  const bankReconJobs: any[] = bankReconQuery.data || [];
+  const latestBankRecon = new Map<string, any>();
+  for (const j of bankReconJobs) {
+    if (!latestBankRecon.has(j.client_link_id))
+      latestBankRecon.set(j.client_link_id, j);
+  }
+
   // Note counts per client
   const { data: noteCounts } = await service
     .from("client_notes")
@@ -112,17 +142,32 @@ export async function GET(request: Request) {
     needs_cleanup: [],
     coa_in_progress: [],
     reclass_in_progress: [],
-    review: [],
     awaiting_stripe: [],
+    bs_cleanup: [],
+    review: [],
   };
 
   for (const client of activeClients) {
     const coa = latestCoa.get(client.id);
     const reclass = latestReclass.get(client.id);
+    const stripeRecon = latestStripeRecon.get(client.id);
+    const bankRecon = latestBankRecon.get(client.id);
     const bk = client.assigned_bookkeeper_id ? bkById.get(client.assigned_bookkeeper_id) : null;
     const stripeConnected = client.stripe_connection_status === "connected";
     const stripePending = client.stripe_connection_status === "pending";
+    const stripeNotRequired = !!(client as any).stripe_not_required;
     const token = latestStripeToken.get(client.id);
+
+    // "Stripe portion of the pipeline is complete" — either explicitly
+    // marked not required, OR the most recent stripe recon finished.
+    const stripeDone =
+      stripeNotRequired ||
+      (stripeRecon && stripeRecon.status === "complete");
+
+    // BS status — if there's already a bank_recon_jobs row we surface
+    // it as "in progress"; otherwise "ready to start." Used in the
+    // card subtitle.
+    const bsInProgress = bankRecon && bankRecon.status !== "complete";
 
     const card = {
       id: client.id,
@@ -136,6 +181,9 @@ export async function GET(request: Request) {
       stripe_request_sent_at: client.stripe_request_sent_at,
       stripe_link_sent_by: token ? (bkById.get(token.created_by)?.full_name ?? null) : null,
       stripe_link_sent_at: token?.created_at ?? null,
+      stripe_not_required: stripeNotRequired,
+      bs_recon_started: !!bankRecon,
+      bs_recon_in_progress: !!bsInProgress,
       due_date: client.due_date,
       note_count: noteCountMap.get(client.id) || 0,
       bookkeeper: bk ? { id: bk.id, full_name: bk.full_name, avatar_url: bk.avatar_url } : null,
@@ -143,34 +191,46 @@ export async function GET(request: Request) {
       latest_reclass_job: reclass ? { id: reclass.id, status: reclass.status } : null,
     };
 
-    // Awaiting stripe takes priority — already sent request, not yet connected
-    if (client.stripe_request_sent_at && !stripeConnected) {
+    // ── PRIORITY 1: senior review (submitted, awaiting admin/lead) ──
+    if ((client as any).cleanup_review_state === "in_review") {
+      columns.review.push(card);
+      continue;
+    }
+
+    // ── PRIORITY 2: awaiting stripe (link sent, not yet connected) ──
+    // Skipped for clients flagged stripe_not_required.
+    if (
+      client.stripe_request_sent_at &&
+      !stripeConnected &&
+      !stripeNotRequired
+    ) {
       columns.awaiting_stripe.push(card);
       continue;
     }
 
-    // Active or failed COA job — failed stays visible in column
+    // ── PRIORITY 3: active or failed COA ──
     if (coa && (ACTIVE_STATUSES.has(coa.status) || coa.status === "failed")) {
       columns.coa_in_progress.push(card);
       continue;
     }
 
-    // Active or failed reclass job (failed stays visible in column)
+    // ── PRIORITY 4: active or failed reclass (COA done) ──
     if (reclass && (ACTIVE_STATUSES.has(reclass.status) || reclass.status === "failed")) {
-      // Only in reclass column if COA is done or skipped
       if (!coa || !ACTIVE_STATUSES.has(coa.status)) {
         columns.reclass_in_progress.push(card);
         continue;
       }
     }
 
-    // Reclass complete → in review
-    if (reclass && reclass.status === "complete") {
-      columns.review.push(card);
+    // ── PRIORITY 5: BS cleanup ──
+    // Reclass done + (Stripe done OR not required). Stays here until
+    // the bookkeeper submits for senior review.
+    if (reclass && reclass.status === "complete" && stripeDone) {
+      columns.bs_cleanup.push(card);
       continue;
     }
 
-    // No active jobs → needs cleanup
+    // ── PRIORITY 6: needs cleanup (no active jobs) ──
     columns.needs_cleanup.push(card);
   }
 
@@ -192,6 +252,13 @@ export async function GET(request: Request) {
 }
 
 function emptyColumns() {
-  const keys = ["needs_cleanup", "coa_in_progress", "reclass_in_progress", "review", "awaiting_stripe"];
+  const keys = [
+    "needs_cleanup",
+    "coa_in_progress",
+    "reclass_in_progress",
+    "awaiting_stripe",
+    "bs_cleanup",
+    "review",
+  ];
   return Object.fromEntries(keys.map((k) => [k, { cards: [], total: 0 }]));
 }

@@ -15,6 +15,11 @@ export interface KanbanCard {
   stripe_request_sent_at: string | null;
   stripe_link_sent_by: string | null;
   stripe_link_sent_at: string | null;
+  stripe_not_required?: boolean;
+  /** True if any bank_recon_jobs row exists for this client. */
+  bs_recon_started?: boolean;
+  /** True if a bank_recon_jobs row exists with non-complete status. */
+  bs_recon_in_progress?: boolean;
   due_date: string | null;
   note_count: number;
   bookkeeper: KanbanBookkeeper | null;
@@ -31,7 +36,8 @@ export type OnboardingStage =
   | "needs_cleanup"
   | "coa_in_progress"
   | "reclass_in_progress"
-  | "review"
-  | "awaiting_stripe";
+  | "awaiting_stripe"
+  | "bs_cleanup"
+  | "review";
 
 export type MomStage = "month_open" | "in_progress" | "review_send" | "month_closed";
