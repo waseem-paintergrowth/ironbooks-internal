@@ -1330,14 +1330,28 @@ export async function executeJob(jobId: string): Promise<{
 
     return { success: errors.length === 0, errors, stats };
   } catch (fatalError: any) {
+    // Log the FULL error + stack trace to Vercel — bare ReferenceErrors like
+    // "accountType is not defined" don't tell us where they came from from the
+    // job's error_message field alone. The stack is what lets us pinpoint
+    // which line/scope had the unbound reference.
+    const stack = fatalError?.stack || "(no stack)";
+    console.error(
+      `[executor ${jobId}] FATAL: ${fatalError?.message || fatalError}\n${stack}`
+    );
+
     await supabase.from("coa_jobs").update({
       status: "failed",
       execution_completed_at: new Date().toISOString(),
       execution_duration_seconds: Math.floor((Date.now() - startTime) / 1000),
-      error_message: fatalError.message,
+      // Include the first stack frame in the persisted message so the UI shows
+      // where it came from without forcing the bookkeeper to dig through logs.
+      error_message: `${fatalError?.message || fatalError} | at ${stack.split("\n")[1]?.trim() || "(unknown)"}`,
     }).eq("id", jobId);
 
-    await logProgress(ctx, "job_failed", fatalError.message);
+    await logProgress(ctx, "job_failed", fatalError?.message || String(fatalError), {
+      stack_first_frame: stack.split("\n")[1]?.trim() || null,
+      stack_full: stack.slice(0, 4000),
+    });
     throw fatalError;
   }
 }
