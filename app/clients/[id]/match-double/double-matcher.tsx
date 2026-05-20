@@ -77,7 +77,32 @@ export function DoubleMatcher({ clientLink }: { clientLink: ClientLink }) {
       .eq("id", clientLink.id);
 
     if (error) {
-      alert(`Failed to save: ${error.message}`);
+      // Translate the most common Postgres errors into plain English.
+      // The legacy single-column unique on double_client_id was swapped
+      // for a composite (double_client_id, qbo_realm_id) in migration
+      // 23 — so the only way this fires now is if the SAME (Double
+      // client + QBO realm) pair is already saved on a different row.
+      const msg = error.message || "";
+      const code = (error as any).code;
+      let friendly: string;
+      if (code === "23505" || /unique constraint|duplicate key/i.test(msg)) {
+        if (/double_qbo_unique/.test(msg)) {
+          friendly =
+            `This Double client is already linked to this exact QBO realm in another Ironbooks record. ` +
+            `Open /clients and search — you'll find an existing row with the same QBO realm ID. ` +
+            `Most likely you accidentally connected the same QBO company twice.`;
+        } else if (/double_client_id/.test(msg)) {
+          friendly =
+            `Heads up — your database still has the legacy single-column unique on double_client_id. ` +
+            `Run migration 23 (scripts/migration_23_double_client_id_composite.sql) in Supabase to allow ` +
+            `one Double client to link to multiple QBO realms (e.g. Baldwin's sole prop + Canadian corp).`;
+        } else {
+          friendly = `Save failed: ${msg}`;
+        }
+      } else {
+        friendly = `Save failed: ${msg}`;
+      }
+      alert(friendly);
       setSaving(false);
       return;
     }
