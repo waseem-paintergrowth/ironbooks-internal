@@ -6,17 +6,25 @@ import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
 import { redirect } from "next/navigation";
 import { BankRulesFromReclassClient } from "./bank-rules-client";
 
-const PNL_TYPES_NORMALIZED = new Set([
+// Account types eligible to be a bank-rule target. P&L types are the
+// dominant case but Equity belongs here too — Owner Draws / Owner
+// Contributions are legitimate categorization destinations (especially
+// for commingled accounts where the client paid personal expenses
+// out of the business). Excluding Equity means Owner Draw never
+// appears in the dropdown even when the reclass step routed
+// transactions there.
+const RECLASS_TARGET_TYPES_NORMALIZED = new Set([
   "income",
   "otherincome",
   "expense",
   "otherexpense",
   "costofgoodssold",
+  "equity",
 ]);
 
-function isPnLAccountType(t: string | null | undefined): boolean {
+function isReclassTargetType(t: string | null | undefined): boolean {
   if (!t) return false;
-  return PNL_TYPES_NORMALIZED.has(t.toLowerCase().replace(/\s+/g, ""));
+  return RECLASS_TARGET_TYPES_NORMALIZED.has(t.toLowerCase().replace(/\s+/g, ""));
 }
 
 export default async function BankRulesFromReclassPage({
@@ -57,37 +65,44 @@ export default async function BankRulesFromReclassPage({
   const clientName = (clientLink as any)?.client_name || "Client";
   const qboRealmId = (clientLink as any)?.qbo_realm_id;
 
-  // Fetch live P&L accounts so the bookkeeper can override any AI-picked target.
-  // Fail-soft: if QBO is unreachable, dropdowns get an empty list and the row
-  // shows the proposed account as a read-only label (current behavior).
+  // Fetch live reclass-target accounts (P&L + Equity) so the bookkeeper
+  // can override any AI-picked target. Fail-soft: if QBO is unreachable,
+  // dropdowns get an empty list and the row shows the proposed account
+  // as a read-only label.
   let availablePnLAccounts: Array<{ id: string; name: string; type: string }> = [];
   if (qboRealmId) {
     try {
       const accessToken = await getValidToken(job.client_link_id, service as any);
       const allAccounts = await fetchAllAccounts(qboRealmId, accessToken);
       const pnl = allAccounts
-        .filter((a) => a.Active !== false && isPnLAccountType(a.AccountType))
+        .filter((a) => a.Active !== false && isReclassTargetType(a.AccountType))
         .map((a) => ({ id: a.Id, name: a.Name, type: a.AccountType }));
       console.log(
-        `[bank-rules ${id}] QBO returned ${allAccounts.length} accounts total, ${pnl.length} P&L active. Account types: ${[...new Set(allAccounts.map((a) => a.AccountType))].join(", ")}`
+        `[bank-rules ${id}] QBO returned ${allAccounts.length} accounts total, ${pnl.length} reclass-target active. Account types: ${[...new Set(allAccounts.map((a) => a.AccountType))].join(", ")}`
       );
       availablePnLAccounts = pnl.sort((a, b) => a.name.localeCompare(b.name));
     } catch (err: any) {
-      console.warn(`[bank-rules ${id}] Could not fetch P&L accounts:`, err.message);
+      console.warn(`[bank-rules ${id}] Could not fetch reclass-target accounts:`, err.message);
     }
   }
 
-  // Include needs_review rows too — the AI mapped them to a target, the
-  // bookkeeper just hasn't explicitly confirmed. Showing them here lets the
-  // bookkeeper opt in/out of creating a bank rule per row. ask_client and
-  // flagged rows are excluded because they don't have a confident target.
+  // Include every decision that came in with a target — even
+  // 'flagged' rows (low AI confidence) and 'ask_client' rows when the
+  // bookkeeper has overridden a target. The row-level `target_name`
+  // filter below drops anything that doesn't have a destination. The
+  // bookkeeper sees flagged rows as candidates and can deselect them
+  // if they don't want a permanent bank rule.
+  //
+  // Before: only auto_approve / approved / needs_review made it here,
+  // which meant contractor e-transfers and other low-confidence
+  // vendors disappeared from this screen entirely.
   const { data: rows } = await service
     .from("reclassifications")
     .select(
       "vendor_name, vendor_pattern_normalized, to_account_id, to_account_name, bookkeeper_override_target_id, bookkeeper_override_target_name, transaction_amount, decision"
     )
     .eq("reclass_job_id", id)
-    .in("decision", ["auto_approve", "approved", "needs_review"])
+    .in("decision", ["auto_approve", "approved", "needs_review", "flagged", "ask_client"])
     .not("vendor_name", "is", null);
 
   type ReclassRow = {
