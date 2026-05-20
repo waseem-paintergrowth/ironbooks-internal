@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
-  Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare,
+  Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -13,6 +13,7 @@ import { StripeConnectModal } from "./StripeConnectModal";
 
 const standardItems = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
+  { href: "/today", label: "Today", icon: Sun },
   { href: "/kanban", label: "Workflow", icon: KanbanSquare },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/templates", label: "Master COA", icon: BookOpen },
