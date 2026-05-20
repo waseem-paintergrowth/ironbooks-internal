@@ -16,6 +16,7 @@ import { fetchAllAccounts, createAccount } from "@/lib/qbo";
 import {
   classifyVendorGroups,
   categorizeAllTransactions,
+  webSearchVendor,
   type ReclassClassification,
   type AvailableAccount,
   type FullCategorizationLine,
@@ -862,12 +863,112 @@ async function runFullCategorization(
   for (const [ref, d] of preMatched) decisionByRef.set(ref, d);
   for (const d of aiResult.decisions) decisionByRef.set(d.ref_id, d);
 
-  // 6.5. WEB SEARCH PHASE — now handled by the chunked /web-search-chunk endpoint.
-  //   Discovery inserts all rows with initial AI decisions, then pauses for the
-  //   bookkeeper to drive web search in chunks of 20 vendors. This prevents the
-  //   entire discovery job from hanging on a slow/stuck web search call, and lets
-  //   the bookkeeper skip or continue at their own pace.
-  //   (No inline web search loop here anymore.)
+  // 6.5. WEB SEARCH PHASE — for any vendor the AI couldn't confidently
+  //   categorize, look it up online and try to upgrade the decision. Runs
+  //   inline (simple, sequential), in batches of 10 vendors processed in
+  //   parallel per batch. Each vendor has a 25s timeout. Whole phase is
+  //   capped at a soft budget so it can't eat the function's runtime.
+  //
+  //   Only searches rows that are:
+  //     - flagged or needs_review
+  //     - low confidence (< 0.7)
+  //     - have a real vendor name (not "Unknown vendor", not empty)
+  //   Skipped for ask_client (peer payments) and skip rows.
+  const WS_BATCH_SIZE = 10;
+  const WS_BUDGET_MS = 5 * 60 * 1000; // 5 min total cap
+  const WS_MAX_VENDORS = 150;
+
+  const refIdToLine = new Map<string, ReclassLine>();
+  for (const l of inScopeLines) {
+    refIdToLine.set(`${l.transaction_id}::${l.line_id}`, l);
+  }
+
+  // Group unknown-but-real-named vendors → all the ref_ids that share them.
+  // Dedupe: one web search per unique vendor name, applied to every row.
+  const vendorToRefIds = new Map<string, string[]>();
+  for (const [refId, decision] of decisionByRef) {
+    if (decision.decision === "ask_client") continue;
+    if (decision.decision === "auto_approve" && decision.confidence >= 0.7) continue;
+    if ((decision.confidence ?? 0) >= 0.7) continue;
+    const line = refIdToLine.get(refId);
+    if (!line) continue;
+    const v = (line.vendor_name || "").trim();
+    if (!v) continue;
+    if (v.toLowerCase() === "unknown vendor") continue;
+    if (v.length < 2) continue;
+    if (!vendorToRefIds.has(v)) vendorToRefIds.set(v, []);
+    vendorToRefIds.get(v)!.push(refId);
+  }
+
+  const uniqueVendors = Array.from(vendorToRefIds.keys()).slice(0, WS_MAX_VENDORS);
+  const totalWsBatches = Math.ceil(uniqueVendors.length / WS_BATCH_SIZE);
+
+  if (uniqueVendors.length > 0) {
+    await setPhase(`web_searching (${uniqueVendors.length} vendors)`);
+    console.log(`[reclass ${jobId}] Web search: ${uniqueVendors.length} unique vendors in ${totalWsBatches} batches`);
+    const wsStart = Date.now();
+
+    for (let i = 0; i < uniqueVendors.length; i += WS_BATCH_SIZE) {
+      const elapsed = Date.now() - wsStart;
+      if (elapsed > WS_BUDGET_MS) {
+        console.log(`[reclass ${jobId}] Web search budget exhausted at ${i} / ${uniqueVendors.length} vendors`);
+        break;
+      }
+
+      const batchVendors = uniqueVendors.slice(i, i + WS_BATCH_SIZE);
+      const batchIdx = Math.floor(i / WS_BATCH_SIZE) + 1;
+
+      // Update progress BEFORE the batch so the UI sees movement
+      await service
+        .from("reclass_jobs")
+        .update({ error_message: `[web_search_progress] ${batchIdx - 1}/${totalWsBatches}` } as any)
+        .eq("id", jobId);
+
+      // Parallel within batch — 10 vendors at once, each with its own 25s timeout
+      const results = await Promise.all(
+        batchVendors.map(async (vendor) => {
+          try {
+            const r = await webSearchVendor({
+              vendorName: vendor,
+              clientCity: clientLink.state_province || undefined,
+              availableAccounts,
+            });
+            return { vendor, result: r };
+          } catch (err: any) {
+            console.warn(`[reclass ${jobId}] Web search failed for "${vendor}": ${err?.message || err}`);
+            return { vendor, result: null };
+          }
+        })
+      );
+
+      // Apply results — upgrade all ref_ids that share the vendor
+      for (const { vendor, result } of results) {
+        if (!result || !result.target_account_id) continue;
+        const refIds = vendorToRefIds.get(vendor) || [];
+        for (const refId of refIds) {
+          const line = refIdToLine.get(refId);
+          if (!line) continue;
+          const absAmount = Math.abs(line.transaction_amount || 0);
+          const newDecision: "auto_approve" | "needs_review" =
+            result.confidence >= 0.80 && absAmount < threshold ? "auto_approve" : "needs_review";
+          decisionByRef.set(refId, {
+            ref_id: refId,
+            target_account_id: result.target_account_id,
+            target_account_name: result.target_account_name,
+            confidence: result.confidence,
+            reasoning: result.reasoning,
+            decision: newDecision,
+          });
+        }
+      }
+    }
+
+    // Final progress write so the UI shows X/X complete momentarily
+    await service
+      .from("reclass_jobs")
+      .update({ error_message: `[web_search_progress] ${totalWsBatches}/${totalWsBatches}` } as any)
+      .eq("id", jobId);
+  }
 
   for (const line of inScopeLines) {
     const refId = `${line.transaction_id}::${line.line_id}`;

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Loader2, AlertCircle, CheckCircle2, Sparkles, Database, RotateCcw, XCircle } from "lucide-react";
+import { Loader2, AlertCircle, CheckCircle2, Sparkles, Search, Database, RotateCcw, XCircle } from "lucide-react";
 
 export function ReclassDiscoveryPending({
   jobId,
@@ -20,6 +20,7 @@ export function ReclassDiscoveryPending({
   const [elapsed, setElapsed] = useState<number>(0);
   const [cancelling, setCancelling] = useState(false);
   const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null);
+  const [wsProgress, setWsProgress] = useState<{ done: number; total: number } | null>(null);
   const [phase, setPhase] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,6 +40,7 @@ export function ReclassDiscoveryPending({
 
         setStats(data.stats);
         if (data.ai_progress) setAiProgress(data.ai_progress);
+        if (data.web_search_progress) setWsProgress(data.web_search_progress);
         if (data.phase !== undefined) setPhase(data.phase);
 
         if (data.status === "in_review") {
@@ -136,15 +138,17 @@ export function ReclassDiscoveryPending({
 
   // Stage detection driven by server-side phase markers (more reliable than
   // elapsed time). Falls back to time-based guess only when no phase yet.
-  function stageFromPhase(p: string | null): "pulling" | "knowledge_base" | "ai" | "saving" {
+  type Stage = "pulling" | "knowledge_base" | "ai" | "web_search" | "saving";
+  function stageFromPhase(p: string | null): Stage {
     if (!p) return aiProgress ? "ai" : elapsed < 5 ? "pulling" : "knowledge_base";
     if (p.startsWith("pulling")) return "pulling";
     if (p.startsWith("fetching_accounts") || p.startsWith("pre_matching")) return "knowledge_base";
     if (p.startsWith("running_ai")) return "ai";
+    if (p.startsWith("web_searching")) return "web_search";
     if (p.startsWith("saving")) return "saving";
     return aiProgress ? "ai" : "knowledge_base";
   }
-  const stage = stageFromPhase(phase);
+  const stage: Stage = stageFromPhase(phase);
 
   // Friendly label for the current phase shown under the active step.
   function phaseLabel(p: string | null): string {
@@ -153,9 +157,17 @@ export function ReclassDiscoveryPending({
     if (p === "fetching_accounts") return "Fetching chart of accounts";
     if (p === "pre_matching") return "Matching against knowledge base + bank rules";
     if (p.startsWith("running_ai")) return `Running AI categorization — ${p.replace("running_ai", "").trim() || "starting"}`;
+    if (p.startsWith("web_searching")) return `Web-searching unknown vendors — ${p.replace("web_searching", "").trim() || ""}`;
     if (p.startsWith("saving")) return `Saving results — ${p.replace("saving", "").trim() || ""}`;
     return p;
   }
+
+  // Right-side counter on the phase banner — shows whichever progress is active.
+  const activeCounter = aiProgress && stage === "ai"
+    ? `Batch ${aiProgress.done} / ${aiProgress.total}`
+    : wsProgress && stage === "web_search"
+      ? `Batch ${wsProgress.done} / ${wsProgress.total}`
+      : null;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-8">
@@ -178,10 +190,8 @@ export function ReclassDiscoveryPending({
       <div className="mb-6 p-3 rounded-lg bg-teal-lighter/50 border border-teal/20 flex items-center gap-2">
         <Loader2 className="animate-spin text-teal flex-shrink-0" size={14} />
         <span className="text-sm font-semibold text-navy">{phaseLabel(phase)}</span>
-        {aiProgress && (
-          <span className="text-xs text-ink-slate ml-auto">
-            Batch {aiProgress.done} / {aiProgress.total}
-          </span>
+        {activeCounter && (
+          <span className="text-xs text-ink-slate ml-auto">{activeCounter}</span>
         )}
       </div>
 
@@ -207,15 +217,15 @@ export function ReclassDiscoveryPending({
         {/* Row 2 */}
         <div className="flex items-start gap-3 py-2.5">
           <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: stage === "ai" || stage === "saving" ? "#D1FAE5" : stage === "knowledge_base" ? "#E8F2F0" : "#F3F4F6" }}>
-            {stage === "ai" || stage === "saving"
+            style={{ backgroundColor: stage === "ai" || stage === "web_search" || stage === "saving" ? "#D1FAE5" : stage === "knowledge_base" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage === "ai" || stage === "web_search" || stage === "saving"
               ? <CheckCircle2 size={16} className="text-green-600" />
               : stage === "knowledge_base"
               ? <Loader2 size={14} className="text-teal animate-spin" />
               : <Database size={14} className="text-ink-light" />}
           </div>
           <div className="flex-1 min-w-0">
-            <div className={`text-sm font-semibold ${stage === "ai" || stage === "saving" ? "text-green-700" : stage === "knowledge_base" ? "text-navy" : "text-ink-light"}`}>
+            <div className={`text-sm font-semibold ${stage === "ai" || stage === "web_search" || stage === "saving" ? "text-green-700" : stage === "knowledge_base" ? "text-navy" : "text-ink-light"}`}>
               2. Knowledge base + bank rules pre-match
             </div>
             <div className="text-xs text-ink-slate mt-0.5">Instant matches for ~200 known vendors + your prior categorizations</div>
@@ -225,15 +235,15 @@ export function ReclassDiscoveryPending({
         {/* Row 3 */}
         <div className="flex items-center gap-3 py-2.5">
           <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: stage === "saving" ? "#D1FAE5" : stage === "ai" ? "#E8F2F0" : "#F3F4F6" }}>
-            {stage === "saving"
+            style={{ backgroundColor: stage === "web_search" || stage === "saving" ? "#D1FAE5" : stage === "ai" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage === "web_search" || stage === "saving"
               ? <CheckCircle2 size={16} className="text-green-600" />
               : stage === "ai"
               ? <Loader2 size={14} className="text-teal animate-spin" />
               : <Sparkles size={14} className="text-ink-light" />}
           </div>
           <div className="flex-1 min-w-0">
-            <div className={`text-sm font-semibold ${stage === "saving" ? "text-green-700" : stage === "ai" ? "text-navy" : "text-ink-light"}`}>
+            <div className={`text-sm font-semibold ${stage === "web_search" || stage === "saving" ? "text-green-700" : stage === "ai" ? "text-navy" : "text-ink-light"}`}>
               3. AI categorization (Claude)
             </div>
             <div className="text-xs text-ink-slate mt-0.5">
@@ -244,19 +254,49 @@ export function ReclassDiscoveryPending({
           </div>
         </div>
 
-      </div>
-
-      {/* Progress bar driven by aiProgress */}
-      {aiProgress && aiProgress.total > 0 && (
-        <div className="mb-5">
-          <div className="w-full bg-gray-100 rounded-full h-2">
-            <div
-              className="bg-teal h-2 rounded-full transition-all"
-              style={{ width: `${Math.round((aiProgress.done / aiProgress.total) * 100)}%` }}
-            />
+        {/* Row 4 — Web search (only for unknown vendors AI couldn't confidently categorize) */}
+        <div className="flex items-center gap-3 py-2.5">
+          <div className="rounded-full w-8 h-8 flex items-center justify-center flex-shrink-0"
+            style={{ backgroundColor: stage === "saving" ? "#D1FAE5" : stage === "web_search" ? "#E8F2F0" : "#F3F4F6" }}>
+            {stage === "saving"
+              ? <CheckCircle2 size={16} className="text-green-600" />
+              : stage === "web_search"
+              ? <Loader2 size={14} className="text-teal animate-spin" />
+              : <Search size={14} className="text-ink-light" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className={`text-sm font-semibold ${stage === "saving" ? "text-green-700" : stage === "web_search" ? "text-navy" : "text-ink-light"}`}>
+              4. Web search for unknown vendors
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5">
+              {wsProgress
+                ? `Batch ${wsProgress.done} of ${wsProgress.total} complete`
+                : "Looks up vendors the AI couldn't confidently identify — 10 per batch in parallel"}
+            </div>
           </div>
         </div>
-      )}
+
+      </div>
+
+      {/* Progress bar — driven by whichever phase is currently active */}
+      {(() => {
+        const active = stage === "web_search" && wsProgress
+          ? wsProgress
+          : stage === "ai" && aiProgress
+            ? aiProgress
+            : null;
+        if (!active || active.total === 0) return null;
+        return (
+          <div className="mb-5">
+            <div className="w-full bg-gray-100 rounded-full h-2">
+              <div
+                className="bg-teal h-2 rounded-full transition-all"
+                style={{ width: `${Math.round((active.done / active.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="space-y-2 text-sm">
         <div className="flex justify-between py-2 border-b border-gray-100">

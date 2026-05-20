@@ -82,37 +82,11 @@ export async function GET(
   const phaseMatch = (job.error_message || "").match(/^\[phase\]\s+(.+)$/);
   if (phaseMatch) phase = phaseMatch[1].trim();
 
-  // Parse web search progress from error_message when paused/running a chunk.
-  // Format: "[web_search_progress] done/total"
+  // Parse web search progress from error_message. Format: "[web_search_progress] done/total"
   let webSearchProgress: { done: number; total: number } | null = null;
   const wsMatch = (job.error_message || "").match(/\[web_search_progress\]\s*(\d+)\/(\d+)/);
   if (wsMatch) {
     webSearchProgress = { done: parseInt(wsMatch[1], 10), total: parseInt(wsMatch[2], 10) };
-  }
-  // While a chunk is actively running (status=executing, ai_completed_at set),
-  // derive progress from live row counts so the spinner shows meaningful numbers.
-  if (!webSearchProgress && job.ai_completed_at && job.status === "executing") {
-    const [searchedRes, remainingRes] = await Promise.all([
-      supabase
-        .from("reclassifications")
-        .select("vendor_name")
-        .eq("reclass_job_id", jobId)
-        .ilike("ai_reasoning", "(web search%")
-        .not("vendor_name", "is", null),
-      supabase
-        .from("reclassifications")
-        .select("vendor_name")
-        .eq("reclass_job_id", jobId)
-        .in("decision", ["flagged", "needs_review"])
-        .lt("ai_confidence", 0.7)
-        .not("ai_reasoning", "ilike", "(web search%")
-        .not("vendor_name", "is", null),
-    ]);
-    const done = new Set(searchedRes.data?.map((r: any) => r.vendor_name)).size;
-    const remaining = new Set(remainingRes.data?.map((r: any) => r.vendor_name)).size;
-    if (done + remaining > 0) {
-      webSearchProgress = { done, total: done + remaining };
-    }
   }
 
   // Only pass error_message to the UI for lines the UI should display.
