@@ -6,27 +6,6 @@ import { fetchAllAccounts, getValidToken } from "@/lib/qbo";
 import { redirect } from "next/navigation";
 import { BankRulesFromReclassClient } from "./bank-rules-client";
 
-// Account types eligible to be a bank-rule target. P&L types are the
-// dominant case but Equity belongs here too — Owner Draws / Owner
-// Contributions are legitimate categorization destinations (especially
-// for commingled accounts where the client paid personal expenses
-// out of the business). Excluding Equity means Owner Draw never
-// appears in the dropdown even when the reclass step routed
-// transactions there.
-const RECLASS_TARGET_TYPES_NORMALIZED = new Set([
-  "income",
-  "otherincome",
-  "expense",
-  "otherexpense",
-  "costofgoodssold",
-  "equity",
-]);
-
-function isReclassTargetType(t: string | null | undefined): boolean {
-  if (!t) return false;
-  return RECLASS_TARGET_TYPES_NORMALIZED.has(t.toLowerCase().replace(/\s+/g, ""));
-}
-
 export default async function BankRulesFromReclassPage({
   params,
 }: {
@@ -65,24 +44,26 @@ export default async function BankRulesFromReclassPage({
   const clientName = (clientLink as any)?.client_name || "Client";
   const qboRealmId = (clientLink as any)?.qbo_realm_id;
 
-  // Fetch live reclass-target accounts (P&L + Equity) so the bookkeeper
-  // can override any AI-picked target. Fail-soft: if QBO is unreachable,
-  // dropdowns get an empty list and the row shows the proposed account
-  // as a read-only label.
+  // Fetch every active account in the COA so the bookkeeper can map a
+  // vendor to anything they want. Previously we filtered to P&L + Equity
+  // only, which dropped Asset / Liability targets (deposit clearing, A/R
+  // adjustments, contractor advances, etc.). Bookkeeper now picks freely.
+  // Fail-soft: if QBO is unreachable, dropdowns get an empty list and the
+  // row shows the proposed account as a read-only label.
   let availablePnLAccounts: Array<{ id: string; name: string; type: string }> = [];
   if (qboRealmId) {
     try {
       const accessToken = await getValidToken(job.client_link_id, service as any);
       const allAccounts = await fetchAllAccounts(qboRealmId, accessToken);
-      const pnl = allAccounts
-        .filter((a) => a.Active !== false && isReclassTargetType(a.AccountType))
-        .map((a) => ({ id: a.Id, name: a.Name, type: a.AccountType }));
+      const active = allAccounts
+        .filter((a) => a.Active !== false)
+        .map((a) => ({ id: a.Id, name: a.Name, type: a.AccountType || "" }));
       console.log(
-        `[bank-rules ${id}] QBO returned ${allAccounts.length} accounts total, ${pnl.length} reclass-target active. Account types: ${[...new Set(allAccounts.map((a) => a.AccountType))].join(", ")}`
+        `[bank-rules ${id}] QBO returned ${allAccounts.length} accounts total, ${active.length} active. Account types: ${[...new Set(allAccounts.map((a) => a.AccountType))].join(", ")}`
       );
-      availablePnLAccounts = pnl.sort((a, b) => a.name.localeCompare(b.name));
+      availablePnLAccounts = active.sort((a, b) => a.name.localeCompare(b.name));
     } catch (err: any) {
-      console.warn(`[bank-rules ${id}] Could not fetch reclass-target accounts:`, err.message);
+      console.warn(`[bank-rules ${id}] Could not fetch accounts:`, err.message);
     }
   }
 
