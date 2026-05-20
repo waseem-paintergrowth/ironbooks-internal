@@ -626,13 +626,20 @@ export async function executeJob(jobId: string): Promise<{
         );
 
         for (const parentName of neededParents) {
-          try {
-            const master = masterByName.get(parentName);
-            // Fall back to "Expense / OtherMiscellaneousExpense" if not found in master
-            // (rare — usually means Claude invented a parent name not in master COA)
-            const accountType = master?.qbo_account_type || "Expense";
-            const accountSubType = master?.qbo_account_subtype || "OtherMiscellaneousExpense";
+          // Resolve type/subtype OUTSIDE the try block so the catch handler
+          // can reference them. Previously this stage crashed the whole
+          // cleanup with `accountType is not defined` whenever QBO
+          // rejected a parent-create — the catch path referenced consts
+          // that were declared inside the try, and JavaScript's
+          // try/catch are separate lexical scopes for let/const.
+          // (Neighborhood Painting Inc, May 2026.)
+          const master = masterByName.get(parentName);
+          // Fall back to "Expense / OtherMiscellaneousExpense" if not found in master
+          // (rare — usually means Claude invented a parent name not in master COA)
+          const accountType = master?.qbo_account_type || "Expense";
+          const accountSubType = master?.qbo_account_subtype || "OtherMiscellaneousExpense";
 
+          try {
             const created = await qbo.createAccount(ctx.realmId, ctx.accessToken, {
               name: parentName,
               accountType,
