@@ -97,20 +97,44 @@ export async function listBalanceSheetAccounts(
   const data: any = await qboRequest(realmId, accessToken, `/query?query=${query}`);
   const all: any[] = data?.QueryResponse?.Account || [];
 
+  // Aggressive exclusion list. Anything tax-payable, suspense, deferred-
+  // revenue, payroll-clearing, or accrued is NOT a "loan" the bookkeeper
+  // reconciles against a lender statement. Without this filter the
+  // landing page surfaces noise like "GST/HST Payable" with no statement
+  // to reconcile against.
   const NON_LOAN_LIABILITY_SUBTYPES = new Set([
+    // Sales tax (US + international variations)
     "SalesTaxPayable",
-    "PayrollClearing",
-    "PayrollTaxPayable",
+    "GlobalTaxPayable",
+    "GlobalTaxSuspense",
     "GSTPayable",
     "HSTPayable",
     "PSTPayable",
     "QSTPayable",
-    "TrustAccountsLiabilities",
-    "DepositsBookedAsCurrentLiabilities",
+    "VATPayable",
+    "VATControl",
+    "VATSuspense",
+    // Payroll-related liabilities
+    "PayrollClearing",
+    "PayrollTaxPayable",
+    "PayrollLiabilities",
+    "FederalIncomeTaxPayable",
+    "StateLocalIncomeTaxPayable",
+    "WorkersCompensationPayable",
+    // Deferred / accrued / suspense
+    "DeferredRevenue",
     "UnearnedRevenue",
-    "ProvisionForObligations",
+    "DepositsBookedAsCurrentLiabilities",
     "AccruedLiabilities",
-    "ShareholderNotesPayable",  // tracked separately; not a bank loan
+    "AccruedHolidayPayable",
+    "AccruedNonCurrentLiabilities",
+    "ProvisionForObligations",
+    "OtherCurrentLiabilities",   // catch-all; usually accruals
+    "TrustAccountsLiabilities",
+    // Shareholder / related-party (tracked elsewhere)
+    "ShareholderNotesPayable",
+    // Generic "other" buckets that aren't lender debt
+    "OtherLongTermLiabilities",
   ]);
 
   return all
@@ -139,6 +163,155 @@ export async function listBalanceSheetAccounts(
       is_active: a.Active !== false,
     }))
     .sort((x, y) => x.name.localeCompare(y.name));
+}
+
+/**
+ * Pull per-account balances as of a specific date via QBO's
+ * BalanceSheet report. The report's leaf rows include both the QBO
+ * account_id and the dollar balance at the requested date — exactly
+ * what reconciliation needs (you can't reconcile a month-old statement
+ * against today's QBO ledger).
+ *
+ * Returns Map<qbo_account_id, balance>. Missing accounts (e.g. zero
+ * balance + suppressed from the report) default to 0 at the caller.
+ */
+export async function fetchBalancesAsOf(
+  realmId: string,
+  accessToken: string,
+  asOfDate: string
+): Promise<Map<string, number>> {
+  const url = `/reports/BalanceSheet?date=${encodeURIComponent(asOfDate)}&accounting_method=Accrual`;
+  let data: any;
+  try {
+    data = await qboRequest<any>(realmId, accessToken, url);
+  } catch (err: any) {
+    console.warn(`[qbo-balance-sheet] BalanceSheet report failed for ${asOfDate}:`, err.message);
+    return new Map();
+  }
+
+  const balances = new Map<string, number>();
+
+  // Walk the nested Rows tree. Leaf rows are `type: 'Data'` with
+  // `ColData: [{ value: <name>, id: <accountId> }, { value: <number> }]`.
+  function walk(node: any) {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n);
+      return;
+    }
+    if (node.type === "Data" && node.ColData) {
+      const cols = node.ColData;
+      const idCol = cols.find((c: any) => c && c.id);
+      const amountCol = cols[cols.length - 1];
+      if (idCol && amountCol && amountCol.value != null) {
+        const amount = Number(String(amountCol.value).replace(/,/g, ""));
+        if (Number.isFinite(amount)) {
+          balances.set(String(idCol.id), amount);
+        }
+      }
+    }
+    if (node.Row) walk(node.Row);
+    if (node.Rows) walk(node.Rows);
+  }
+
+  walk(data?.Rows);
+  return balances;
+}
+
+/**
+ * Pull every QBO transaction that hits a given account over a date
+ * window. Used by the gap analyzer to find likely duplicates / outliers
+ * causing a reconciliation gap.
+ *
+ * QBO doesn't have a clean "all transactions for an account" endpoint;
+ * the closest is the TransactionList report, which returns a flattened
+ * row per posting line. We use that and pull the columns we need.
+ */
+export interface AccountTransaction {
+  txn_id: string;
+  txn_type: string;
+  date: string;
+  doc_number: string | null;
+  customer_or_vendor: string | null;
+  memo: string;
+  amount: number;        // positive = credit, negative = debit (varies by account type)
+  /** Signed delta to the account's balance. We compute via debit/credit columns. */
+  delta: number;
+  cleared: boolean;
+}
+
+export async function fetchAccountTransactions(
+  realmId: string,
+  accessToken: string,
+  qboAccountId: string,
+  startDate: string,
+  endDate: string
+): Promise<AccountTransaction[]> {
+  const url = `/reports/TransactionList?account=${encodeURIComponent(qboAccountId)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&columns=tx_date,txn_type,doc_num,name,memo,subt_nat_amount,subt_nat_home_amount,is_cleared&minorversion=70`;
+  let data: any;
+  try {
+    data = await qboRequest<any>(realmId, accessToken, url);
+  } catch (err: any) {
+    console.warn(`[qbo-balance-sheet] TransactionList failed:`, err.message);
+    return [];
+  }
+
+  const cols: any[] = data?.Columns?.Column || [];
+  const colIndex = new Map<string, number>();
+  cols.forEach((c, i) => {
+    const key = c?.ColTitle || c?.ColType;
+    if (key) colIndex.set(String(key).toLowerCase(), i);
+  });
+  function pick(row: any[], names: string[]): any {
+    for (const n of names) {
+      const i = colIndex.get(n.toLowerCase());
+      if (i !== undefined && row[i] != null) return row[i];
+    }
+    return null;
+  }
+
+  const out: AccountTransaction[] = [];
+  function walk(node: any) {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n);
+      return;
+    }
+    if (node.type === "Data" && node.ColData) {
+      const row = node.ColData.map((c: any) => c?.value ?? "");
+      const idRef = node.ColData.find((c: any) => c?.id);
+      const dateVal = pick(row, ["Date", "tx_date"]);
+      const typeVal = pick(row, ["Transaction Type", "txn_type"]);
+      const docVal = pick(row, ["Num", "doc_num"]);
+      const nameVal = pick(row, ["Name"]);
+      const memoVal = pick(row, ["Memo/Description", "Memo"]);
+      const amtVal = pick(row, [
+        "Amount",
+        "subt_nat_amount",
+        "subt_nat_home_amount",
+      ]);
+      const clearedVal = pick(row, ["Clr", "is_cleared"]);
+
+      const amount = Number(String(amtVal || "0").replace(/[,$ ]/g, ""));
+      if (!Number.isFinite(amount)) return;
+
+      out.push({
+        txn_id: idRef?.id ? String(idRef.id) : "",
+        txn_type: String(typeVal || ""),
+        date: String(dateVal || ""),
+        doc_number: docVal ? String(docVal) : null,
+        customer_or_vendor: nameVal ? String(nameVal) : null,
+        memo: String(memoVal || ""),
+        amount,
+        delta: amount,
+        cleared: String(clearedVal || "").toLowerCase() === "c",
+      });
+    }
+    if (node.Row) walk(node.Row);
+    if (node.Rows) walk(node.Rows);
+  }
+  walk(data?.Rows);
+  return out;
 }
 
 // ───── Undeposited Funds ─────

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Loader2, ArrowRight, RefreshCw, AlertCircle, Sparkles, Wallet,
   CheckCircle2, Save, FileText, Landmark, CreditCard, FileSpreadsheet,
-  HomeIcon,
+  HomeIcon, Search, Send, X, ExternalLink,
 } from "lucide-react";
 
 interface BSAccount {
@@ -34,6 +34,7 @@ interface RowState {
 
 interface Suggestion {
   qbo_account_id: string;
+  account_name: string;
   status: "matched" | "gap" | "no_balance";
   gap: number;
   summary: string;
@@ -44,6 +45,34 @@ interface Suggestion {
     amount: number;
     description: string;
   }>;
+  // Echoed back so the UI can show "QBO as-of date" vs "QBO right now"
+  qbo_balance_at_date?: number;
+  qbo_current_balance?: number;
+}
+
+interface GapTxn {
+  txn_id: string;
+  txn_type: string;
+  date: string;
+  doc_number: string | null;
+  customer_or_vendor: string | null;
+  memo: string;
+  amount: number;
+  cleared: boolean;
+}
+
+interface GapCandidate {
+  txn: GapTxn;
+  weight: number;
+  reasons: string[];
+}
+
+interface GapAnalysis {
+  total_transactions: number;
+  uncleared_count: number;
+  uncleared_total: number;
+  candidates: GapCandidate[];
+  notes: string[];
 }
 
 const CATEGORY_LABELS: Record<Category, string> = {
@@ -89,6 +118,21 @@ export function BalanceSheetLanding({
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<{ recons: number; cats: number } | null>(null);
   const [runningUFAR, setRunningUFAR] = useState(false);
+
+  // Per-row "Investigate Gap" drawer state
+  const [gapOpenFor, setGapOpenFor] = useState<string | null>(null);
+  const [gapLoading, setGapLoading] = useState<string | null>(null);
+  const [gapData, setGapData] = useState<
+    Record<
+      string,
+      { window: { start: string; end: string }; transactions: GapTxn[]; analysis: GapAnalysis }
+    >
+  >({});
+
+  // Per-row "Post JE to QBO" status
+  const [postingJEFor, setPostingJEFor] = useState<string | null>(null);
+  const [postedJEs, setPostedJEs] = useState<Record<string, { qbo_je_id: string; doc_number: string | null }>>({});
+  const [jeErrors, setJEErrors] = useState<Record<string, string>>({});
 
   async function loadAccounts() {
     setLoading(true);
@@ -184,6 +228,106 @@ export function BalanceSheetLanding({
       setError(e.message || "Save failed");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function investigateGap(qboAccountId: string) {
+    const sug = suggestions[qboAccountId];
+    const row = rows[qboAccountId];
+    if (!sug || !row?.as_of_date) return;
+    setGapOpenFor(qboAccountId);
+    if (gapData[qboAccountId]) return; // already loaded
+    setGapLoading(qboAccountId);
+    try {
+      const res = await fetch("/api/balance-sheet/analyze-gap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_link_id: clientLinkId,
+          qbo_account_id: qboAccountId,
+          statement_as_of_date: row.as_of_date,
+          gap_amount: sug.gap,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setGapData((prev) => ({
+        ...prev,
+        [qboAccountId]: {
+          window: json.window,
+          transactions: json.transactions,
+          analysis: json.analysis,
+        },
+      }));
+    } catch (e: any) {
+      setError(e.message || "Gap analysis failed");
+      setGapOpenFor(null);
+    } finally {
+      setGapLoading(null);
+    }
+  }
+
+  async function postJE(qboAccountId: string) {
+    const sug = suggestions[qboAccountId];
+    const row = rows[qboAccountId];
+    if (!sug || !sug.je_lines.length || !row?.as_of_date) return;
+    setPostingJEFor(qboAccountId);
+    setJEErrors((p) => ({ ...p, [qboAccountId]: "" }));
+    try {
+      // Translate je_lines (which have account_hint) to the POST format.
+      // For the account corresponding to this BS row, we already know the
+      // QBO ID. For the OTHER side (Owner Equity / Interest Expense / etc),
+      // we send the hint and let the server resolve.
+      const lines = sug.je_lines.map((l) => {
+        // Match the bank account by name (the hint when category is Personal
+        // is the bank account itself).
+        if (l.account_hint === sug.account_name) {
+          return {
+            qbo_account_id: qboAccountId,
+            side: l.side,
+            amount: l.amount,
+            description: l.description,
+          };
+        }
+        return {
+          account_hint: l.account_hint,
+          side: l.side,
+          amount: l.amount,
+          description: l.description,
+        };
+      });
+
+      const res = await fetch("/api/balance-sheet/post-je", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_link_id: clientLinkId,
+          lines,
+          txn_date: row.as_of_date,
+          memo: `Adjusting entry from BS reconciliation — ${sug.summary}`,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        if (json.unresolved?.length) {
+          const hints = json.unresolved.map((u: any) => u.account_hint).join(", ");
+          throw new Error(
+            `Couldn't auto-match: ${hints}. ${json.reason || ""} Pick the QBO account manually in QBO instead.`
+          );
+        }
+        throw new Error(json.error || `HTTP ${res.status}`);
+      }
+      setPostedJEs((p) => ({
+        ...p,
+        [qboAccountId]: {
+          qbo_je_id: json.qbo_je_id,
+          doc_number: json.doc_number,
+        },
+      }));
+    } catch (e: any) {
+      setJEErrors((p) => ({ ...p, [qboAccountId]: e.message || "JE post failed" }));
+    } finally {
+      setPostingJEFor(null);
     }
   }
 
@@ -380,9 +524,43 @@ export function BalanceSheetLanding({
                         <option value="personal">Personal</option>
                       </select>
 
-                      {/* QBO balance */}
-                      <div className="text-xs font-mono text-ink-slate text-right">
-                        {fmt(a.current_balance)}
+                      {/* QBO balance — show AS-OF the statement date when
+                          we have one, with a small "current" caption for
+                          context. Falls back to current_balance when no
+                          statement date is entered. */}
+                      <div className="text-xs font-mono text-right">
+                        {(() => {
+                          const sug = suggestions[a.qbo_account_id];
+                          const hasAsOf =
+                            sug?.qbo_balance_at_date != null &&
+                            r.as_of_date;
+                          if (hasAsOf) {
+                            return (
+                              <div>
+                                <div className="text-navy">
+                                  {fmt(sug!.qbo_balance_at_date!)}
+                                </div>
+                                <div className="text-[9px] text-ink-light">
+                                  as of {r.as_of_date}
+                                </div>
+                                {sug!.qbo_current_balance != null &&
+                                  Math.abs(
+                                    sug!.qbo_current_balance -
+                                      sug!.qbo_balance_at_date!
+                                  ) > 0.01 && (
+                                    <div className="text-[9px] text-ink-light">
+                                      ({fmt(sug!.qbo_current_balance)} today)
+                                    </div>
+                                  )}
+                              </div>
+                            );
+                          }
+                          return (
+                            <div className="text-ink-slate">
+                              {fmt(a.current_balance)}
+                            </div>
+                          );
+                        })()}
                       </div>
 
                       {/* Statement ending balance */}
@@ -494,6 +672,67 @@ export function BalanceSheetLanding({
                                     ))}
                                   </tbody>
                                 </table>
+
+                                {/* Post-JE action */}
+                                <div className="mt-2 pt-2 border-t border-gray-100">
+                                  {postedJEs[a.qbo_account_id] ? (
+                                    <div className="flex items-center gap-2 text-[11px] text-green-700">
+                                      <CheckCircle2 size={12} />
+                                      Posted to QBO as JE #{postedJEs[a.qbo_account_id].doc_number || postedJEs[a.qbo_account_id].qbo_je_id}
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <button
+                                        onClick={() => postJE(a.qbo_account_id)}
+                                        disabled={postingJEFor === a.qbo_account_id}
+                                        className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark disabled:opacity-60 text-white text-[11px] font-semibold px-3 py-1.5 rounded"
+                                      >
+                                        {postingJEFor === a.qbo_account_id ? (
+                                          <Loader2 size={11} className="animate-spin" />
+                                        ) : (
+                                          <Send size={11} />
+                                        )}
+                                        {postingJEFor === a.qbo_account_id ? "Posting…" : "Post JE to QBO"}
+                                      </button>
+                                      {jeErrors[a.qbo_account_id] && (
+                                        <span className="text-[10px] text-red-700">
+                                          {jeErrors[a.qbo_account_id]}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Investigate-gap link */}
+                            {sug.status === "gap" && (
+                              <div className="mt-2">
+                                <button
+                                  onClick={() => investigateGap(a.qbo_account_id)}
+                                  disabled={gapLoading === a.qbo_account_id}
+                                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-amber-900 hover:text-amber-950 underline disabled:opacity-60"
+                                >
+                                  {gapLoading === a.qbo_account_id ? (
+                                    <Loader2 size={11} className="animate-spin" />
+                                  ) : (
+                                    <Search size={11} />
+                                  )}
+                                  {gapLoading === a.qbo_account_id
+                                    ? "Pulling transactions…"
+                                    : gapOpenFor === a.qbo_account_id
+                                    ? "Hide investigation"
+                                    : "Investigate gap (find the offending transactions)"}
+                                </button>
+
+                                {gapOpenFor === a.qbo_account_id &&
+                                  gapData[a.qbo_account_id] && (
+                                    <GapInvestigation
+                                      data={gapData[a.qbo_account_id]}
+                                      fmt={fmt}
+                                      onClose={() => setGapOpenFor(null)}
+                                    />
+                                  )}
                               </div>
                             )}
                           </div>
@@ -533,6 +772,164 @@ export function BalanceSheetLanding({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Inline gap-investigation drawer. Renders the heuristic analyzer's
+ * ranked candidate list (likely duplicates / outliers / etc.) plus the
+ * full transaction window so the bookkeeper can scan for whatever the
+ * heuristics missed.
+ */
+function GapInvestigation({
+  data,
+  fmt,
+  onClose,
+}: {
+  data: {
+    window: { start: string; end: string };
+    transactions: GapTxn[];
+    analysis: GapAnalysis;
+  };
+  fmt: (n: number) => string;
+  onClose: () => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const { window, transactions, analysis } = data;
+
+  return (
+    <div className="mt-3 bg-white border border-amber-300 rounded-lg p-3">
+      <div className="flex items-start justify-between mb-2">
+        <div>
+          <div className="text-xs font-bold text-amber-900">
+            Gap investigation
+          </div>
+          <div className="text-[10px] text-ink-light">
+            Scanned {analysis.total_transactions} transactions from{" "}
+            <span className="font-mono">{window.start}</span> to{" "}
+            <span className="font-mono">{window.end}</span>.{" "}
+            {analysis.uncleared_count} uncleared totaling {fmt(analysis.uncleared_total)}.
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          className="text-ink-slate hover:text-navy"
+          title="Close"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      {analysis.notes.length > 0 && (
+        <div className="mb-3 p-2 rounded bg-amber-50 border border-amber-200 text-[11px] text-amber-900 space-y-1">
+          {analysis.notes.map((n, i) => (
+            <div key={i}>{n}</div>
+          ))}
+        </div>
+      )}
+
+      {analysis.candidates.length > 0 && (
+        <div className="mb-3">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-ink-slate mb-1.5">
+            Most-likely culprits
+          </div>
+          <div className="space-y-1.5">
+            {analysis.candidates.slice(0, 10).map((c, i) => (
+              <div
+                key={c.txn.txn_id || i}
+                className="rounded border border-gray-200 bg-gray-50 p-2 text-[11px]"
+              >
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-navy">
+                    {c.txn.date}
+                  </span>
+                  <span className="font-mono text-navy">
+                    {fmt(c.txn.amount)}
+                  </span>
+                  <span className="text-ink-slate truncate">
+                    {c.txn.txn_type}
+                    {c.txn.doc_number ? ` #${c.txn.doc_number}` : ""}
+                    {c.txn.customer_or_vendor ? ` · ${c.txn.customer_or_vendor}` : ""}
+                  </span>
+                  {!c.txn.cleared && (
+                    <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-200 text-amber-900 px-1 py-0.5 rounded">
+                      Uncleared
+                    </span>
+                  )}
+                  <span
+                    className="ml-auto text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900 px-1 py-0.5 rounded"
+                    title={`Heuristic weight ${(c.weight * 100).toFixed(0)}%`}
+                  >
+                    {(c.weight * 100).toFixed(0)}%
+                  </span>
+                </div>
+                {c.txn.memo && (
+                  <div className="text-ink-light truncate mt-0.5">
+                    {c.txn.memo}
+                  </div>
+                )}
+                <ul className="mt-1 text-[10px] text-amber-900 list-disc pl-4">
+                  {c.reasons.map((r, j) => (
+                    <li key={j}>{r}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {transactions.length > 0 && (
+        <div>
+          <button
+            onClick={() => setShowAll((v) => !v)}
+            className="text-[11px] font-semibold text-teal hover:text-teal-dark"
+          >
+            {showAll ? "Hide" : "Show"} all {transactions.length} transactions in the window
+          </button>
+          {showAll && (
+            <div className="mt-2 max-h-[280px] overflow-y-auto rounded border border-gray-200">
+              <table className="w-full text-[11px]">
+                <thead className="bg-gray-50 sticky top-0">
+                  <tr className="text-ink-slate text-left">
+                    <th className="px-2 py-1.5 font-semibold">Date</th>
+                    <th className="px-2 py-1.5 font-semibold">Type</th>
+                    <th className="px-2 py-1.5 font-semibold">Name</th>
+                    <th className="px-2 py-1.5 font-semibold">Memo</th>
+                    <th className="px-2 py-1.5 font-semibold text-right">Amount</th>
+                    <th className="px-2 py-1.5 font-semibold text-center">Clr</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transactions.map((t, i) => (
+                    <tr key={t.txn_id || i} className="border-t border-gray-100">
+                      <td className="px-2 py-1 font-mono">{t.date}</td>
+                      <td className="px-2 py-1 text-ink-slate">{t.txn_type}</td>
+                      <td className="px-2 py-1 truncate max-w-[140px]" title={t.customer_or_vendor || ""}>
+                        {t.customer_or_vendor || "—"}
+                      </td>
+                      <td className="px-2 py-1 truncate max-w-[180px] text-ink-light" title={t.memo}>
+                        {t.memo || "—"}
+                      </td>
+                      <td className="px-2 py-1 font-mono text-right">
+                        {fmt(t.amount)}
+                      </td>
+                      <td className="px-2 py-1 text-center">
+                        {t.cleared ? (
+                          <CheckCircle2 size={11} className="text-green-600 inline" />
+                        ) : (
+                          <span className="text-amber-700 text-[10px]">no</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

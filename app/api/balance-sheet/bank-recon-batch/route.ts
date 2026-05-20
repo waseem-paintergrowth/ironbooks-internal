@@ -1,7 +1,10 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 import { getValidToken } from "@/lib/qbo";
-import { listBalanceSheetAccounts } from "@/lib/qbo-balance-sheet";
+import {
+  listBalanceSheetAccounts,
+  fetchBalancesAsOf,
+} from "@/lib/qbo-balance-sheet";
 import {
   suggestJE,
   type AccountCategory,
@@ -62,12 +65,40 @@ export async function POST(request: Request) {
   // Pull live accounts from QBO for current_balance + name + last4.
   // One QBO fetch covers the whole batch.
   let liveAccounts;
+  let asOfBalancesByDate = new Map<string, Map<string, number>>();
   try {
     const accessToken = await getValidToken(clientLinkId, service as any);
     liveAccounts = await listBalanceSheetAccounts(
       (client as any).qbo_realm_id,
       accessToken
     );
+
+    // ── Per-date "balance as of" fetch ──
+    // The QBO `CurrentBalance` on the Account is the ledger balance
+    // RIGHT NOW. For reconciliation against a month-old statement, we
+    // need the QBO balance AS OF the statement date — otherwise the
+    // gap includes a month of uncleared activity and looks scary even
+    // when the books are fine. One BalanceSheet report call per unique
+    // statement_as_of_date in the batch (most batches use the same date).
+    const uniqueDates = new Set<string>();
+    for (const e of entries) {
+      if (e.statement_as_of_date) uniqueDates.add(e.statement_as_of_date);
+    }
+    if (uniqueDates.size > 0) {
+      const results = await Promise.all(
+        Array.from(uniqueDates).map(async (d) => ({
+          date: d,
+          balances: await fetchBalancesAsOf(
+            (client as any).qbo_realm_id,
+            accessToken,
+            d
+          ),
+        }))
+      );
+      for (const r of results) {
+        asOfBalancesByDate.set(r.date, r.balances);
+      }
+    }
   } catch (err: any) {
     return NextResponse.json(
       { error: `QBO fetch failed: ${err?.message || err}` },
@@ -97,13 +128,25 @@ export async function POST(request: Request) {
       });
     }
 
+    // Use AS-OF balance when we have one for the statement date.
+    // Fall back to current_balance only when no date is set OR the
+    // BalanceSheet report failed (zero balance accounts get dropped
+    // from the report — those default to 0 here).
+    const asOfMap = entry.statement_as_of_date
+      ? asOfBalancesByDate.get(entry.statement_as_of_date)
+      : null;
+    const qboBalanceAtDate =
+      entry.statement_as_of_date && asOfMap
+        ? asOfMap.get(entry.qbo_account_id) ?? 0
+        : Number(acc.current_balance);
+
     // 2. Recon insert — only when both balance + date are present
     let gap = 0;
     if (
       entry.statement_ending_balance != null &&
       entry.statement_as_of_date
     ) {
-      gap = Number(entry.statement_ending_balance) - Number(acc.current_balance);
+      gap = Number(entry.statement_ending_balance) - qboBalanceAtDate;
       reconInserts.push({
         client_link_id: clientLinkId,
         bookkeeper_id: user.id,
@@ -114,19 +157,20 @@ export async function POST(request: Request) {
         category: entry.category || null,
         statement_ending_balance: Number(entry.statement_ending_balance),
         statement_as_of_date: entry.statement_as_of_date,
-        qbo_balance_at_date: Number(acc.current_balance),
+        qbo_balance_at_date: qboBalanceAtDate,
         gap_amount: gap,
         status: "created",
         notes: entry.notes || null,
       });
     }
 
-    // 3. JE suggestion (computed for every entry, even ones without
-    //    a statement balance — keeps the UI consistent).
+    // 3. JE suggestion — use the AS-OF balance so the gap math matches
+    //    what the bookkeeper sees in QBO if they pull a BS report at
+    //    the same date.
     const sug = suggestJE({
       category: entry.category || null,
       account_name: acc.name,
-      qbo_balance: Number(acc.current_balance),
+      qbo_balance: qboBalanceAtDate,
       statement_balance: entry.statement_ending_balance ?? null,
       statement_date: entry.statement_as_of_date ?? null,
     });
@@ -134,7 +178,9 @@ export async function POST(request: Request) {
       ...sug,
       qbo_account_id: entry.qbo_account_id,
       account_name: acc.name,
-    });
+      qbo_balance_at_date: qboBalanceAtDate,
+      qbo_current_balance: Number(acc.current_balance),
+    } as any);
   }
 
   // Persist categories (upsert by composite unique).
