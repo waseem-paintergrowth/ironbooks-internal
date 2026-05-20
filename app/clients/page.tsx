@@ -39,7 +39,7 @@ export default async function ClientsPage() {
     supabase
       .from("client_links")
       .select(
-        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by, ask_client_email_created_at, ask_client_email_sent_at, ask_client_email_body, stripe_request_sent_confirmed_at, cleanup_pdf_sent_at"
+        "id, double_client_name, stripe_connection_status, due_date, cleanup_completed_at, cleanup_completed_by, cleanup_range_start, cleanup_range_end, cleanup_completion_note, cleanup_review_state, cleanup_review_submitted_at, cleanup_review_submitted_by, ask_client_email_created_at, ask_client_email_sent_at, ask_client_email_body, stripe_request_sent_confirmed_at, cleanup_pdf_sent_at, stripe_not_required"
       ),
     supabase
       .from("users")
@@ -146,6 +146,7 @@ export default async function ClientsPage() {
   const askEmailBodyById = new Map<string, string | null>();
   const stripeSentConfirmedById = new Map<string, string | null>();
   const pdfSentById = new Map<string, string | null>();
+  const stripeNotRequiredById = new Map<string, boolean>();
   for (const l of linksData) {
     askEmailCreatedById.set(l.id, (l as any).ask_client_email_created_at ?? null);
     askEmailSentById.set(l.id, (l as any).ask_client_email_sent_at ?? null);
@@ -155,6 +156,7 @@ export default async function ClientsPage() {
       (l as any).stripe_request_sent_confirmed_at ?? null
     );
     pdfSentById.set(l.id, (l as any).cleanup_pdf_sent_at ?? null);
+    stripeNotRequiredById.set(l.id, !!(l as any).stripe_not_required);
   }
 
   const enrichedClients = (clientsRes.data || []).map((c) => ({
@@ -173,6 +175,7 @@ export default async function ClientsPage() {
     stripe_request_sent_confirmed_at: c.id
       ? stripeSentConfirmedById.get(c.id) ?? null
       : null,
+    stripe_not_required: c.id ? stripeNotRequiredById.get(c.id) ?? false : false,
     cleanup_completed_at: c.id
       ? completionById.get(c.id)?.cleanup_completed_at ?? null
       : null,

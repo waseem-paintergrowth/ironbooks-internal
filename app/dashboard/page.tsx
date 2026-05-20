@@ -182,7 +182,8 @@ export default async function DashboardPage() {
     // in QBO over the last 3 months who haven't been connected yet. The
     // nightly cron populates these columns; we just read them here. We
     // also exclude already-connected clients defensively (the detector
-    // skips them but a client might have connected since the last scan).
+    // skips them but a client might have connected since the last scan)
+    // AND clients flagged as "doesn't use Stripe" by a bookkeeper.
     service
       .from("client_links")
       .select(
@@ -192,6 +193,7 @@ export default async function DashboardPage() {
       .not("stripe_invite_suggested_at", "is", null)
       .is("stripe_invite_dismissed_at", null)
       .neq("stripe_connection_status", "connected")
+      .eq("stripe_not_required" as any, false)
       .order("stripe_invite_suggested_at", { ascending: false }),
   ]);
 

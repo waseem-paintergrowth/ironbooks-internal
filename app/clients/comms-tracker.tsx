@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Mail, CreditCard, FileText, Sparkles, CheckCircle2, Circle, Copy, Loader2,
+  Mail, CreditCard, FileText, Sparkles, CheckCircle2, Circle, Copy, Loader2, BanIcon, RotateCcw,
 } from "lucide-react";
 import { StripeConnectModal } from "@/components/StripeConnectModal";
 
@@ -18,6 +18,11 @@ export interface CommsTrackerData {
   stripe_request_created_at: string | null; // most recent stripe_connect_tokens.created_at
   stripe_request_sent_confirmed_at: string | null;
   stripe_connection_status: string | null;
+  /** True = bookkeeper has confirmed this client doesn't use Stripe.
+   *  When set, the Stripe row renders as "Not applicable" with a
+   *  small re-enable button; the action buttons and sent checkbox
+   *  are hidden because they don't make sense. */
+  stripe_not_required: boolean;
   // Cleanup PDF
   cleanup_completed_at: string | null;
   cleanup_range_start: string | null;
@@ -62,6 +67,53 @@ export function CommsTracker({
     vendor_count: number;
   } | null>(null);
   const [stripeModalOpen, setStripeModalOpen] = useState(false);
+
+  async function toggleStripeNotRequired(next: boolean) {
+    setBusy("stripe_not_required");
+    setError("");
+    try {
+      if (next) {
+        const reason =
+          window.prompt(
+            `Mark ${data.client_name} as not using Stripe?\n\nOptional: a short reason for the audit log (e.g. "cash-only", "uses Square only").`,
+            ""
+          );
+        // null = user cancelled
+        if (reason === null) {
+          setBusy(null);
+          return;
+        }
+        const res = await fetch(
+          `/api/clients/${data.client_link_id}/stripe-not-required`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason: reason || undefined }),
+          }
+        );
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+        if (json.warning) {
+          // surface the "still connected" warning inline; non-blocking.
+          setError(json.warning);
+        }
+      } else {
+        const res = await fetch(
+          `/api/clients/${data.client_link_id}/stripe-not-required`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.error || `HTTP ${res.status}`);
+        }
+      }
+      router.refresh();
+    } catch (e: any) {
+      setError(e.message || "Toggle failed");
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function toggleSent(field: "ask_client_sent" | "stripe_request_sent" | "cleanup_pdf_sent", next: boolean) {
     setBusy(field);
@@ -177,29 +229,69 @@ export function CommsTracker({
             actionBusy={busy === "ask_client_create"}
             toggleBusy={busy === "ask_client_sent"}
           />
-          <TrackerRow
-            icon={CreditCard}
-            iconColor="#7C3AED"
-            label="Stripe Connect"
-            createdLabel={
-              stripeConnected
-                ? "Connected ✓"
-                : stripeCreated
-                ? `Link generated ${formatAgo(data.stripe_request_created_at!)}`
-                : "No link yet"
-            }
-            createdOk={stripeCreated || stripeConnected}
-            // When the client is already connected, the "sent" question
-            // is moot — show as auto-checked, non-toggleable.
-            sentChecked={stripeConnected || stripeSent}
-            onToggleSent={() =>
-              !stripeConnected && toggleSent("stripe_request_sent", !stripeSent)
-            }
-            disabledToggle={!stripeCreated || stripeConnected}
-            actionLabel="Stripe Link"
-            onAction={() => setStripeModalOpen(true)}
-            toggleBusy={busy === "stripe_request_sent"}
-          />
+          {data.stripe_not_required ? (
+            // "Not applicable" variant — bookkeeper confirmed this
+            // client doesn't use Stripe, suppresses every prompt.
+            <div className="flex items-center gap-2 px-2 py-1.5 rounded-md border bg-gray-100 border-gray-200 opacity-75">
+              <BanIcon
+                size={13}
+                className="flex-shrink-0 text-ink-light"
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] font-bold text-ink-slate truncate line-through">
+                  Stripe Connect
+                </div>
+                <div className="text-[10px] text-ink-light truncate">
+                  Not required for this client
+                </div>
+              </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleStripeNotRequired(false);
+                }}
+                disabled={busy === "stripe_not_required"}
+                className="flex-shrink-0 text-[10px] font-bold uppercase tracking-wider text-teal hover:text-teal-dark disabled:opacity-50 px-1.5 inline-flex items-center gap-1"
+                title="Re-enable Stripe prompts for this client"
+              >
+                {busy === "stripe_not_required" ? (
+                  <Loader2 size={10} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={10} />
+                )}
+                Re-enable
+              </button>
+            </div>
+          ) : (
+            <TrackerRow
+              icon={CreditCard}
+              iconColor="#7C3AED"
+              label="Stripe Connect"
+              createdLabel={
+                stripeConnected
+                  ? "Connected ✓"
+                  : stripeCreated
+                  ? `Link generated ${formatAgo(data.stripe_request_created_at!)}`
+                  : "No link yet"
+              }
+              createdOk={stripeCreated || stripeConnected}
+              sentChecked={stripeConnected || stripeSent}
+              onToggleSent={() =>
+                !stripeConnected && toggleSent("stripe_request_sent", !stripeSent)
+              }
+              disabledToggle={!stripeCreated || stripeConnected}
+              actionLabel="Stripe Link"
+              onAction={() => setStripeModalOpen(true)}
+              toggleBusy={busy === "stripe_request_sent"}
+              extraSecondaryAction={{
+                label: "Not needed",
+                onClick: () => toggleStripeNotRequired(true),
+                busy: busy === "stripe_not_required",
+                title:
+                  "Mark this client as not using Stripe — suppresses every Stripe prompt for them",
+              }}
+            />
+          )}
           <TrackerRow
             icon={FileText}
             iconColor="#2D7A75"
@@ -291,6 +383,7 @@ function TrackerRow({
   actionBusy,
   toggleBusy,
   disabledAction,
+  extraSecondaryAction,
 }: {
   icon: any;
   iconColor: string;
@@ -305,6 +398,14 @@ function TrackerRow({
   actionBusy?: boolean;
   toggleBusy?: boolean;
   disabledAction?: boolean;
+  /** Optional secondary action — small text button. Used by the
+   *  Stripe row's "Not needed" toggle. */
+  extraSecondaryAction?: {
+    label: string;
+    onClick: () => void;
+    busy?: boolean;
+    title?: string;
+  };
 }) {
   const bothDone = createdOk && sentChecked;
   return (
@@ -361,6 +462,20 @@ function TrackerRow({
           className="flex-shrink-0 text-[10px] font-bold uppercase tracking-wider text-teal hover:text-teal-dark disabled:opacity-50 disabled:cursor-not-allowed px-1.5"
         >
           {actionBusy ? "…" : actionLabel}
+        </button>
+      )}
+      {/* Optional secondary action (e.g. "Not needed" for Stripe) */}
+      {extraSecondaryAction && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            extraSecondaryAction.onClick();
+          }}
+          disabled={extraSecondaryAction.busy}
+          title={extraSecondaryAction.title}
+          className="flex-shrink-0 text-[10px] font-semibold text-ink-light hover:text-ink-slate disabled:opacity-50 px-1"
+        >
+          {extraSecondaryAction.busy ? "…" : extraSecondaryAction.label}
         </button>
       )}
     </div>

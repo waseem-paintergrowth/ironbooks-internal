@@ -63,6 +63,7 @@ interface ClientRow {
   ask_client_email_body?: string | null;
   stripe_request_created_at?: string | null;
   stripe_request_sent_confirmed_at?: string | null;
+  stripe_not_required?: boolean;
   cleanup_completed_at?: string | null;
   cleanup_range_start?: string | null;
   cleanup_range_end?: string | null;
@@ -1010,6 +1011,7 @@ function ClientCard({
             stripe_request_sent_confirmed_at:
               client.stripe_request_sent_confirmed_at ?? null,
             stripe_connection_status: client.stripe_connection_status ?? null,
+            stripe_not_required: !!client.stripe_not_required,
             cleanup_completed_at: client.cleanup_completed_at ?? null,
             cleanup_range_start: client.cleanup_range_start ?? null,
             cleanup_range_end: client.cleanup_range_end ?? null,

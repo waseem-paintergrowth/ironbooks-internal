@@ -48,16 +48,22 @@ export async function runStripeInviteDetector(opts?: {
   const result: SweepResult = { scanned: 0, matched: 0, errors: [] };
 
   // Candidate clients: active, have QBO connected, NOT already Stripe-
-  // connected (either null status or a non-connected state), NOT
-  // previously dismissed by a bookkeeper.
-  let q = service
+  // connected, NOT previously dismissed, AND NOT flagged as "doesn't
+  // use Stripe" by a bookkeeper (the stripe_not_required gate).
+  //
+  // Cast the whole builder to `any` because the migration-22 and
+  // migration-27 columns aren't in the regenerated supabase types yet;
+  // chaining with full inference triggers "type instantiation is
+  // excessively deep." Runtime is correct.
+  let q: any = service
     .from("client_links")
     .select(
       "id, client_name, qbo_realm_id, stripe_connection_status, stripe_invite_dismissed_at"
     )
     .eq("is_active", true)
     .not("qbo_realm_id", "is", null)
-    .is("stripe_invite_dismissed_at", null);
+    .is("stripe_invite_dismissed_at", null)
+    .eq("stripe_not_required", false);
   if (opts?.onlyClientLinkId) {
     q = q.eq("id", opts.onlyClientLinkId);
   }

@@ -20,10 +20,14 @@ export default async function NewStripeReconPage() {
   // deterministic ones), so re-running on a completed client doesn't
   // break their close-out. The form annotates completed clients in the
   // dropdown so it's obvious.
+  // Exclude clients flagged as "doesn't use Stripe" — the entire
+  // recon flow is suppressed for them. (Bookkeepers can re-enable from
+  // the comms-tracker on the client card if circumstances change.)
   const { data: clientLinks } = await service
     .from("client_links")
     .select("id, client_name, jurisdiction, state_province, qbo_realm_id, double_client_id, double_client_name, stripe_connection_status, cleanup_completed_at, stripe_has_payouts, stripe_last_payout_at, stripe_payouts_checked_at")
     .eq("is_active", true)
+    .eq("stripe_not_required" as any, false)
     .order("client_name");
 
   return (

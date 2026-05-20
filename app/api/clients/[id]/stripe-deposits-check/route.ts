@@ -42,10 +42,22 @@ export async function GET(
   const service = createServiceSupabase();
   const { data: client } = await service
     .from("client_links")
-    .select("id, qbo_realm_id")
+    .select("id, qbo_realm_id, stripe_not_required")
     .eq("id", clientLinkId)
     .single();
   if (!client) return NextResponse.json({ error: "Client not found" }, { status: 404 });
+
+  // Short-circuit: if the bookkeeper has flagged this client as not
+  // using Stripe, we skip the QBO scan entirely and report 0 deposits.
+  // The Bank Rules pre-check uses count==0 as the cue to render the
+  // "skip Stripe recon" choice screen.
+  if ((client as any).stripe_not_required) {
+    return NextResponse.json({
+      count: 0,
+      total_amount: 0,
+      stripe_not_required: true,
+    });
+  }
 
   let deposits;
   try {
