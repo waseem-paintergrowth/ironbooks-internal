@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import {
   X, MessageSquare, Plus, Trash2, Loader2, Bell, ExternalLink,
-  CheckCircle2, Zap, PauseCircle, UserCheck,
+  CheckCircle2, Zap, PauseCircle, UserCheck, Download,
 } from "lucide-react";
 import type { KanbanCard, KanbanBookkeeper } from "./types";
 
@@ -35,6 +35,40 @@ export function ClientPanel({ card, stage, bookkeepers, canEdit, onClose, onRefr
   const [actionMsg, setActionMsg] = useState("");
   const [stripeUrl, setStripeUrl] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Local optimistic state for the comms checkboxes. The kanban API only
+  // refreshes the underlying `card` prop on the next full board refresh,
+  // so without this the checkbox would visually snap back until then.
+  const [askSent, setAskSent] = useState<boolean>(!!card.ask_client_email_sent_at);
+  const [stripeReqSent, setStripeReqSent] = useState<boolean>(
+    !!card.stripe_request_sent_confirmed_at
+  );
+  const [togglingField, setTogglingField] = useState<string | null>(null);
+
+  async function toggleCommsSent(
+    field: "ask_client_sent" | "stripe_request_sent",
+    next: boolean
+  ) {
+    setTogglingField(field);
+    // Optimistic update — flip immediately, revert on failure.
+    if (field === "ask_client_sent") setAskSent(next);
+    else setStripeReqSent(next);
+    try {
+      const res = await fetch(`/api/clients/${card.id}/comms-tracker`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      onRefresh();
+    } catch {
+      // Revert
+      if (field === "ask_client_sent") setAskSent(!next);
+      else setStripeReqSent(!next);
+    } finally {
+      setTogglingField(null);
+    }
+  }
 
   useEffect(() => {
     fetchNotes();
@@ -229,6 +263,60 @@ export function ClientPanel({ card, stage, bookkeepers, canEdit, onClose, onRefr
               </select>
             </div>
           )}
+
+          {/* Client comms — manual checkboxes for outbound communications.
+              We can detect that the artifact exists (email body generated,
+              Stripe Connect token issued) but can't observe whether the
+              bookkeeper actually sent it; these checkboxes are the source
+              of truth. Idempotent via /comms-tracker. */}
+          <div>
+            <p className="text-xs font-bold text-ink-slate uppercase tracking-wider mb-2">
+              Client comms
+            </p>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-navy hover:text-teal-dark">
+                <input
+                  type="checkbox"
+                  checked={askSent}
+                  disabled={!canEdit || togglingField === "ask_client_sent"}
+                  onChange={(e) => toggleCommsSent("ask_client_sent", e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-teal focus:ring-teal cursor-pointer disabled:opacity-50"
+                />
+                <span className={askSent ? "line-through text-ink-light" : ""}>
+                  Sent client request to identify transactions
+                </span>
+                {togglingField === "ask_client_sent" && (
+                  <Loader2 size={12} className="animate-spin text-ink-slate" />
+                )}
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-navy hover:text-teal-dark">
+                <input
+                  type="checkbox"
+                  checked={stripeReqSent}
+                  disabled={!canEdit || togglingField === "stripe_request_sent"}
+                  onChange={(e) => toggleCommsSent("stripe_request_sent", e.target.checked)}
+                  className="h-4 w-4 rounded border-gray-300 text-teal focus:ring-teal cursor-pointer disabled:opacity-50"
+                />
+                <span className={stripeReqSent ? "line-through text-ink-light" : ""}>
+                  Sent client stripe request
+                </span>
+                {togglingField === "stripe_request_sent" && (
+                  <Loader2 size={12} className="animate-spin text-ink-slate" />
+                )}
+              </label>
+
+              {card.cleanup_pdf_href && (
+                <a
+                  href={card.cleanup_pdf_href}
+                  download
+                  className="mt-1 inline-flex items-center gap-1.5 text-sm font-semibold text-teal hover:text-teal-dark"
+                >
+                  <Download size={13} />
+                  Download Cleanup PDF
+                </a>
+              )}
+            </div>
+          </div>
 
           {/* Quick links */}
           <div>
