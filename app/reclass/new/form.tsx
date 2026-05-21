@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Loader2, AlertCircle, Sparkles, GitMerge, ChevronRight, Layers,
-  Calendar, DollarSign,
+  Calendar, DollarSign, Scale,
 } from "lucide-react";
 
 interface ClientLink {
@@ -41,6 +41,14 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
   const searchParams = useSearchParams();
 
   const [workflow, setWorkflow] = useState<Workflow>(null);
+  // Picker tab — splits the workflow chooser between the day-to-day
+  // reclass options ("standard") and bypass routes that skip reclass
+  // entirely ("advanced", currently just Balance Sheet only).
+  const [pickerTab, setPickerTab] = useState<"standard" | "advanced">("standard");
+  // Inline client picker for the Advanced → Balance Sheet only path,
+  // which navigates straight to /balance-sheet/[id] without creating a
+  // reclass job.
+  const [bsOnlyClientId, setBsOnlyClientId] = useState<string>("");
   const [clientLinkId, setClientLinkId] = useState<string>("");
   const [accounts, setAccounts] = useState<QboAccount[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
@@ -258,6 +266,87 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
   if (!workflow) {
     return (
       <div className="space-y-4">
+        {/* Standard / Advanced tabs. Standard = day-to-day reclass workflows.
+            Advanced = bypass routes that skip reclass entirely (e.g.
+            Balance-Sheet-only for clients where P&L work is already done
+            or was completed manually). */}
+        <div className="inline-flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
+          <button
+            onClick={() => setPickerTab("standard")}
+            className={`px-4 py-1.5 text-sm font-semibold rounded-lg transition-all ${
+              pickerTab === "standard"
+                ? "bg-white text-navy shadow-sm"
+                : "text-ink-slate hover:text-navy"
+            }`}
+          >
+            Standard
+          </button>
+          <button
+            onClick={() => setPickerTab("advanced")}
+            className={`px-4 py-1.5 text-sm font-semibold rounded-lg transition-all ${
+              pickerTab === "advanced"
+                ? "bg-white text-navy shadow-sm"
+                : "text-ink-slate hover:text-navy"
+            }`}
+          >
+            Advanced
+          </button>
+        </div>
+
+        {pickerTab === "advanced" ? (
+          <div className="space-y-4">
+            <p className="text-ink-slate">
+              Bypass routes for clients where the standard reclass pipeline
+              doesn&apos;t apply. Pick a client and jump straight to the work.
+            </p>
+
+            {/* Balance Sheet only — skip COA + reclass entirely and go
+                directly to /balance-sheet/[id]. For clients whose P&L is
+                already clean or was reconciled manually and only the
+                balance sheet remains. */}
+            <div className="w-full flex items-start gap-4 p-6 bg-white rounded-2xl border-2 border-teal text-left shadow-sm">
+              <div className="flex-shrink-0 w-12 h-12 rounded-xl bg-teal flex items-center justify-center">
+                <Scale className="text-white" size={24} />
+              </div>
+              <div className="flex-1">
+                <div className="font-bold text-navy mb-1">Balance Sheet only</div>
+                <div className="text-sm text-ink-slate mb-3">
+                  Skip COA cleanup and reclass — go straight to the BS
+                  Cleanup workflow (account picker, statement balances,
+                  JE suggestions, gap analyzer). Use when the P&L side is
+                  already clean or was finished outside the app.
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={bsOnlyClientId}
+                    onChange={(e) => setBsOnlyClientId(e.target.value)}
+                    className="flex-1 px-3 py-2 rounded-lg border border-gray-200 focus:border-teal focus:outline-none text-sm"
+                  >
+                    <option value="">Select a client...</option>
+                    {clientLinks.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.client_name}
+                        {c.state_province ? ` (${c.jurisdiction} · ${c.state_province})` : ` (${c.jurisdiction})`}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      if (bsOnlyClientId) {
+                        router.push(`/balance-sheet/${bsOnlyClientId}`);
+                      }
+                    }}
+                    disabled={!bsOnlyClientId}
+                    className="px-4 py-2 rounded-lg bg-teal hover:bg-teal-dark text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                  >
+                    Open →
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
         <p className="text-ink-slate">Choose what kind of reclassification you want to run.</p>
 
         <button
@@ -314,6 +403,8 @@ export function NewReclassForm({ clientLinks }: { clientLinks: ClientLink[] }) {
           </div>
           <ChevronRight className="text-ink-slate self-center" size={20} />
         </button>
+          </>
+        )}
       </div>
     );
   }
