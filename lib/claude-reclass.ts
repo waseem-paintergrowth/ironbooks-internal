@@ -474,6 +474,11 @@ No markdown, no preamble. Just the JSON.`;
 
 const FULL_CAT_BATCH_SIZE = 15;
 const BATCH_TIMEOUT_MS = 75_000;
+// Parallel batches per round. Anthropic Opus tier allows 50+ req/min;
+// 3 concurrent keeps us comfortable while cutting wall-clock to 1/3.
+// (Lionetti Painting, May 2026: 83 sequential batches × ~10s = 830s
+// blew past Vercel's 800s cap. Parallel = ~280s.)
+const FULL_CAT_CONCURRENCY = 3;
 
 /**
  * Classify every transaction line against the new COA.
@@ -569,14 +574,23 @@ export async function categorizeAllTransactions(params: {
   const accountById = new Map(params.availableAccounts.map((a) => [a.qbo_account_id, a]));
   const accountByName = new Map(params.availableAccounts.map((a) => [a.account_name.toLowerCase(), a]));
 
-  // Batch through Claude. Simple sequential loop: one call per batch with a
-  // per-batch timeout. If a batch fails for any reason, those lines fall
-  // through to needs_review and we move to the next batch. No retries, no
-  // signal forwarding, no skip handling — just steady forward progress.
+  // Batch through Claude. Batches now run in PARALLEL within a "round" of
+  // FULL_CAT_CONCURRENCY (3) — cuts wall-clock time by ~3× so big clients
+  // (60+ batches) finish inside Vercel's 800s budget. Each batch still has
+  // its own per-call timeout + 529 retry logic; failures inside a batch are
+  // contained and don't abort the round.
   const totalBatches = Math.ceil(linesToClassify.length / FULL_CAT_BATCH_SIZE);
-  for (let i = 0; i < linesToClassify.length; i += FULL_CAT_BATCH_SIZE) {
-    const batch = linesToClassify.slice(i, i + FULL_CAT_BATCH_SIZE);
-    const batchIdx = Math.floor(i / FULL_CAT_BATCH_SIZE) + 1;
+
+  // Per-batch processor — returns its decisions + warnings as locals so the
+  // outer aggregator can merge them after each round. Closes over the
+  // shared compactAccounts / accountBy* lookups.
+  async function processBatch(
+    batch: FullCategorizationLine[],
+    batchIdx: number
+  ): Promise<{ decisions: FullCategorizationDecision[]; warnings: string[] }> {
+    const localDecisions: FullCategorizationDecision[] = [];
+    const localWarnings: string[] = [];
+
     const compactBatch = batch.map((l) => ({
       ref_id: l.ref_id,
       vendor: l.vendor_name,
@@ -618,20 +632,18 @@ Classify each line. Return JSON only.`;
         )
       );
     } catch (err: any) {
-      warnings.push(
+      localWarnings.push(
         `Batch ${batchIdx}/${totalBatches}: ${err?.message || "request failed"}. Lines fall through to needs_review.`
       );
-      if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
-      continue;
+      return { decisions: localDecisions, warnings: localWarnings };
     } finally {
       clearTimeout(timer);
     }
 
     const textBlock = response.content.find((c) => c.type === "text");
     if (!textBlock || textBlock.type !== "text") {
-      warnings.push(`Batch ${batchIdx}/${totalBatches}: no text response from Claude`);
-      if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
-      continue;
+      localWarnings.push(`Batch ${batchIdx}/${totalBatches}: no text response from Claude`);
+      return { decisions: localDecisions, warnings: localWarnings };
     }
     const raw = textBlock.text
       .trim()
@@ -644,9 +656,8 @@ Classify each line. Return JSON only.`;
     try {
       parsed = JSON.parse(raw);
     } catch (err: any) {
-      warnings.push(`Batch ${batchIdx}/${totalBatches}: JSON parse failed (${err.message})`);
-      if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
-      continue;
+      localWarnings.push(`Batch ${batchIdx}/${totalBatches}: JSON parse failed (${err.message})`);
+      return { decisions: localDecisions, warnings: localWarnings };
     }
 
     for (const d of parsed.decisions || []) {
@@ -676,7 +687,7 @@ Classify each line. Return JSON only.`;
         decision = "needs_review";
       }
 
-      allDecisions.push({
+      localDecisions.push({
         ref_id: d.ref_id,
         target_account_id: target_id,
         target_account_name: target_name,
@@ -687,7 +698,31 @@ Classify each line. Return JSON only.`;
       });
     }
 
-    if (params.onProgress) await params.onProgress(batchIdx, totalBatches).catch(() => {});
+    return { decisions: localDecisions, warnings: localWarnings };
+  }
+
+  // Build the list of (batch, batchIdx) tuples up front, then run them in
+  // rounds of FULL_CAT_CONCURRENCY in parallel.
+  const allBatches: Array<{ batch: FullCategorizationLine[]; batchIdx: number }> = [];
+  for (let i = 0; i < linesToClassify.length; i += FULL_CAT_BATCH_SIZE) {
+    allBatches.push({
+      batch: linesToClassify.slice(i, i + FULL_CAT_BATCH_SIZE),
+      batchIdx: Math.floor(i / FULL_CAT_BATCH_SIZE) + 1,
+    });
+  }
+
+  let completedBatches = 0;
+  for (let roundStart = 0; roundStart < allBatches.length; roundStart += FULL_CAT_CONCURRENCY) {
+    const round = allBatches.slice(roundStart, roundStart + FULL_CAT_CONCURRENCY);
+    const results = await Promise.all(round.map((b) => processBatch(b.batch, b.batchIdx)));
+    for (const r of results) {
+      allDecisions.push(...r.decisions);
+      warnings.push(...r.warnings);
+    }
+    completedBatches += round.length;
+    if (params.onProgress) {
+      await params.onProgress(completedBatches, totalBatches).catch(() => {});
+    }
   }
 
   const counts = {
