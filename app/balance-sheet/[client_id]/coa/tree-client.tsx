@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
   Loader2, RefreshCw, ChevronDown, ChevronRight, ArrowRight, AlertTriangle,
   Wallet, CreditCard, FileSpreadsheet, Briefcase, Layers, BookOpen, Landmark,
-  Edit2, Check, X, Plus, Pause, PlayCircle, MoveRight,
+  Edit2, Check, X, Plus, Pause, PlayCircle, MoveRight, List, Send,
 } from "lucide-react";
 
 interface BsCoaAccount {
@@ -44,6 +44,13 @@ interface BsCoaResponse {
  * row. Each row has a "Reclass transactions" link that routes into the
  * existing scrub-mode reclass for that source account.
  */
+interface MoveTargetAccount {
+  id: string;
+  name: string;
+  fullyQualifiedName: string;
+  accountType: string;
+}
+
 export function BsCoaTreeClient({
   clientLinkId,
   clientName,
@@ -56,6 +63,10 @@ export function BsCoaTreeClient({
   const [error, setError] = useState<string>("");
   const [showInactive, setShowInactive] = useState(false);
   const [addModal, setAddModal] = useState<{ type: string } | null>(null);
+  // Lifted: every active QBO account, for the "Move to..." dropdown in
+  // the per-account transaction drawer. Fetched once on mount so the
+  // drawer opens instantly.
+  const [moveTargets, setMoveTargets] = useState<MoveTargetAccount[]>([]);
 
   async function fetchData() {
     setLoading(true);
@@ -74,6 +85,32 @@ export function BsCoaTreeClient({
   useEffect(() => {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientLinkId]);
+
+  // Fetch all active QBO accounts once for the "Move to..." dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/clients/${clientLinkId}/qbo-accounts`);
+        if (!res.ok) return;
+        const body = await res.json();
+        if (cancelled) return;
+        const list: MoveTargetAccount[] = (body.accounts || [])
+          .filter((a: any) => a.id && a.name)
+          .map((a: any) => ({
+            id: a.id,
+            name: a.name,
+            fullyQualifiedName: a.fullyQualifiedName || a.name,
+            accountType: a.accountType || "",
+          }))
+          .sort((x: MoveTargetAccount, y: MoveTargetAccount) =>
+            x.name.localeCompare(y.name)
+          );
+        setMoveTargets(list);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
   }, [clientLinkId]);
 
   // Flatten all groups+children into a single array so AccountRow can build
@@ -161,6 +198,7 @@ export function BsCoaTreeClient({
             clientName={clientName}
             showInactive={showInactive}
             allAccountsFlat={allAccountsFlat}
+            moveTargets={moveTargets}
             onAddClick={(type) => setAddModal({ type })}
             onMutated={fetchData}
           />
@@ -194,6 +232,7 @@ function GroupSection({
   clientName,
   showInactive,
   allAccountsFlat,
+  moveTargets,
   onAddClick,
   onMutated,
 }: {
@@ -202,6 +241,7 @@ function GroupSection({
   clientName: string;
   showInactive: boolean;
   allAccountsFlat: BsCoaAccount[];
+  moveTargets: MoveTargetAccount[];
   onAddClick: (type: string) => void;
   onMutated: () => void;
 }) {
@@ -255,6 +295,7 @@ function GroupSection({
               clientName={clientName}
               showInactive={showInactive}
               allAccountsFlat={allAccountsFlat}
+              moveTargets={moveTargets}
               onMutated={onMutated}
             />
           ))}
@@ -270,6 +311,7 @@ function AccountRow({
   clientName,
   showInactive,
   allAccountsFlat,
+  moveTargets,
   onMutated,
 }: {
   account: BsCoaAccount;
@@ -277,6 +319,7 @@ function AccountRow({
   clientName: string;
   showInactive: boolean;
   allAccountsFlat: BsCoaAccount[];
+  moveTargets: MoveTargetAccount[];
   onMutated: () => void;
 }) {
   const [editing, setEditing] = useState<null | "rename" | "reparent">(null);
@@ -284,6 +327,7 @@ function AccountRow({
   const [rowError, setRowError] = useState<string>("");
   const [newName, setNewName] = useState(account.name);
   const [newParentId, setNewParentId] = useState<string>("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   if (!account.active && !showInactive) return null;
 
@@ -433,13 +477,21 @@ function AccountRow({
 
             {/* Hover action toolbar */}
             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={() => setDrawerOpen(!drawerOpen)}
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold hover:bg-gray-100 ${drawerOpen ? "text-teal bg-teal-lighter" : "text-ink-slate"}`}
+                title="Show recent transactions for this account"
+              >
+                <List size={10} />
+                {drawerOpen ? "Hide" : "Lines"}
+              </button>
               <Link
                 href={reclassHref}
                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-semibold text-teal hover:bg-teal-lighter"
-                title="Open scrub reclass with this as source"
+                title="Open full scrub-reclass workflow with this as source"
               >
                 <ArrowRight size={10} />
-                Reclass
+                Bulk
               </Link>
               <button
                 onClick={() => { setEditing("rename"); setNewName(account.name); setRowError(""); }}
@@ -483,6 +535,20 @@ function AccountRow({
           </>
         )}
       </div>
+      {/* Inline transaction drawer — opens under the row when the
+          bookkeeper clicks the Lines button. Lazy-loads transactions. */}
+      {drawerOpen && (
+        <TransactionDrawer
+          clientLinkId={clientLinkId}
+          account={account}
+          moveTargets={moveTargets}
+          indentPx={indentPx + 24}
+          onMutated={() => {
+            // Refresh top-level tree (balances may have shifted)
+            onMutated();
+          }}
+        />
+      )}
       {account.children.map((child) => (
         <AccountRow
           key={child.id}
@@ -491,6 +557,7 @@ function AccountRow({
           clientName={clientName}
           showInactive={showInactive}
           allAccountsFlat={allAccountsFlat}
+          moveTargets={moveTargets}
           onMutated={onMutated}
         />
       ))}
@@ -505,6 +572,258 @@ function formatCurrency(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+/**
+ * Inline transaction drawer — renders under an expanded AccountRow.
+ * Pulls the last 90 days of lines hitting this account, then offers
+ * a per-line "Move to..." dropdown with a single-line reclass execute.
+ *
+ * For small one-off fixes ("$500 in Undeposited Funds should be
+ * Customer Deposit") this is way faster than the full scrub-reclass
+ * workflow — no review screen, no batch, just pick + go.
+ */
+interface DrawerLine {
+  transaction_id: string;
+  transaction_type: string;
+  line_id: string;
+  sync_token: string;
+  transaction_date: string;
+  transaction_amount: number;
+  vendor_name: string;
+  description: string;
+  private_note: string;
+  is_reconciled: boolean;
+  is_bank_fed: boolean;
+  is_manual_entry: boolean;
+}
+
+function TransactionDrawer({
+  clientLinkId,
+  account,
+  moveTargets,
+  indentPx,
+  onMutated,
+}: {
+  clientLinkId: string;
+  account: BsCoaAccount;
+  moveTargets: MoveTargetAccount[];
+  indentPx: number;
+  onMutated: () => void;
+}) {
+  const [lines, setLines] = useState<DrawerLine[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>("");
+  const [days, setDays] = useState<number>(90);
+  // Per-line state: which target picked + busy/error
+  const [pick, setPick] = useState<Record<string, string>>({});
+  const [linebusy, setLineBusy] = useState<string | null>(null);
+  const [lineError, setLineError] = useState<{ id: string; msg: string } | null>(null);
+  // Track which lines have been successfully moved so we can grey them
+  // out without forcing a full tree refresh between each click.
+  const [moved, setMoved] = useState<Set<string>>(new Set());
+
+  async function load(d: number) {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/clients/${clientLinkId}/bs-coa/transactions/${account.id}?days=${d}&limit=200`
+      );
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setLines(body.lines || []);
+      setMoved(new Set());
+    } catch (e: any) {
+      setError(e?.message || "Failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { load(days); }, [days, account.id, clientLinkId]);
+
+  function lineKey(l: DrawerLine) {
+    return `${l.transaction_id}::${l.line_id}`;
+  }
+
+  async function move(line: DrawerLine) {
+    const key = lineKey(line);
+    const targetId = pick[key];
+    if (!targetId) {
+      setLineError({ id: key, msg: "Pick a target first" });
+      return;
+    }
+    setLineBusy(key);
+    setLineError(null);
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/bs-coa/reclass-line`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transaction_id: line.transaction_id,
+          transaction_type: line.transaction_type,
+          line_id: line.line_id,
+          new_account_id: targetId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setMoved((prev) => new Set(prev).add(key));
+    } catch (e: any) {
+      setLineError({ id: key, msg: e?.message || "Failed" });
+    } finally {
+      setLineBusy(null);
+    }
+  }
+
+  return (
+    <div
+      className="bg-gradient-to-b from-teal-lighter/30 to-white border-b border-gray-100"
+      style={{ paddingLeft: indentPx }}
+    >
+      <div className="px-4 py-3 space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-bold text-navy uppercase tracking-wider">
+            Recent transactions on {account.name}
+          </span>
+          <select
+            value={days}
+            onChange={(e) => setDays(parseInt(e.target.value, 10))}
+            className="text-[11px] px-1.5 py-0.5 rounded border border-gray-200 bg-white"
+            disabled={loading}
+          >
+            <option value={30}>last 30 days</option>
+            <option value={90}>last 90 days</option>
+            <option value={180}>last 6 months</option>
+            <option value={365}>last 12 months</option>
+          </select>
+          {loading && <Loader2 size={11} className="animate-spin text-teal" />}
+          <button
+            onClick={() => load(days)}
+            className="ml-auto inline-flex items-center gap-1 text-[11px] text-ink-slate hover:text-navy"
+          >
+            <RefreshCw size={10} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
+
+        {error && (
+          <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">
+            {error}
+          </div>
+        )}
+
+        {!loading && lines && lines.length === 0 && (
+          <div className="p-4 text-center text-xs text-ink-slate">
+            No transactions hit this account in the last {days} days.
+          </div>
+        )}
+
+        {lines && lines.length > 0 && (
+          <div className="rounded-lg border border-gray-100 bg-white overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 border-b border-gray-100">
+                <tr className="text-left text-ink-slate">
+                  <th className="px-2 py-1.5 font-semibold">Date</th>
+                  <th className="px-2 py-1.5 font-semibold">Vendor / Memo</th>
+                  <th className="px-2 py-1.5 font-semibold">Type</th>
+                  <th className="px-2 py-1.5 font-semibold text-right">Amount</th>
+                  <th className="px-2 py-1.5 font-semibold">Move to</th>
+                  <th className="px-2 py-1.5 font-semibold text-right">Go</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l) => {
+                  const k = lineKey(l);
+                  const isBusy = linebusy === k;
+                  const hasMoved = moved.has(k);
+                  const err = lineError?.id === k ? lineError.msg : null;
+                  return (
+                    <tr
+                      key={k}
+                      className={`border-b border-gray-50 last:border-0 ${hasMoved ? "bg-emerald-50/40 opacity-70" : "hover:bg-gray-50/40"}`}
+                    >
+                      <td className="px-2 py-1.5 text-ink-slate whitespace-nowrap">
+                        {l.transaction_date}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <div className="text-navy">{l.vendor_name || "—"}</div>
+                        {l.description && (
+                          <div className="text-[10px] text-ink-light truncate max-w-xs">{l.description}</div>
+                        )}
+                        <div className="flex gap-1 mt-0.5">
+                          {l.is_reconciled && (
+                            <span className="text-[9px] bg-red-100 text-red-700 px-1 rounded">reconciled</span>
+                          )}
+                          {l.is_bank_fed && (
+                            <span className="text-[9px] bg-blue-100 text-blue-700 px-1 rounded">bank-fed</span>
+                          )}
+                          {l.is_manual_entry && (
+                            <span className="text-[9px] bg-amber-100 text-amber-700 px-1 rounded">manual</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 text-[10px] text-ink-slate">{l.transaction_type}</td>
+                      <td className="px-2 py-1.5 text-right font-mono whitespace-nowrap text-navy">
+                        {formatCurrency(l.transaction_amount)}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {hasMoved ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 font-semibold">
+                            <Check size={10} /> Moved
+                          </span>
+                        ) : (
+                          <select
+                            value={pick[k] || ""}
+                            onChange={(e) => setPick({ ...pick, [k]: e.target.value })}
+                            disabled={l.is_reconciled || isBusy}
+                            className="text-xs px-1.5 py-0.5 rounded border border-gray-200 max-w-[200px] disabled:opacity-50"
+                          >
+                            <option value="">— select target —</option>
+                            {moveTargets
+                              .filter((t) => t.id !== account.id)
+                              .map((t) => (
+                                <option key={t.id} value={t.id}>{t.name}</option>
+                              ))}
+                          </select>
+                        )}
+                        {err && (
+                          <div className="text-[10px] text-red-600 font-semibold mt-0.5">{err}</div>
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 text-right">
+                        {!hasMoved && (
+                          <button
+                            onClick={() => move(l)}
+                            disabled={isBusy || !pick[k] || l.is_reconciled}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-teal hover:bg-teal-dark text-white text-[10px] font-bold disabled:opacity-50"
+                            title={l.is_reconciled ? "Reconciled lines can't be reclassed" : "Push the move to QBO"}
+                          >
+                            {isBusy ? <Loader2 size={9} className="animate-spin" /> : <Send size={9} />}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {moved.size > 0 && (
+              <div className="px-2 py-1.5 bg-emerald-50 border-t border-emerald-100 text-[10px] text-emerald-800 flex items-center justify-between">
+                <span>{moved.size} line{moved.size === 1 ? "" : "s"} moved this session — balances will refresh on next tree reload.</span>
+                <button
+                  onClick={onMutated}
+                  className="text-emerald-900 font-bold hover:text-emerald-700"
+                >
+                  Refresh tree now
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /**
