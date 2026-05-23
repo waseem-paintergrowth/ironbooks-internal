@@ -406,6 +406,30 @@ export function BalanceSheetLanding({
         </div>
       </div>
 
+      {/* Standalone BS COA viewer — see every BS account, not just the
+          bank/cc/loan subset shown below. Scrub-reclass entry per row. */}
+      <div className="rounded-2xl bg-gradient-to-br from-slate-50 to-white border border-slate-200 p-5">
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 rounded-xl bg-slate-100 flex-shrink-0">
+            <FileSpreadsheet size={18} className="text-slate-700" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-bold text-navy">View full Balance Sheet COA</h2>
+            <p className="text-xs text-ink-slate mt-1 leading-relaxed">
+              Live tree of every BS account in QBO — banks, A/R, A/P, fixed assets, all liabilities, equity. Click any row to reclass transactions out of it (e.g. fix what&apos;s stuck in Undeposited Funds, clean up A/R aging, move owner draws).
+            </p>
+          </div>
+          <a
+            href={`/balance-sheet/${clientLinkId}/coa`}
+            className="inline-flex items-center gap-2 bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-2 rounded-lg flex-shrink-0"
+          >
+            <Search size={14} />
+            Open BS COA
+            <ArrowRight size={12} />
+          </a>
+        </div>
+      </div>
+
       {/* Account reconciliation form — the main event */}
       <div className="rounded-2xl bg-white border border-gray-200 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-200 flex items-start justify-between gap-4">
