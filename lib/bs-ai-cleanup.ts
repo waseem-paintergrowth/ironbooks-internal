@@ -100,11 +100,23 @@ interface BsSnapshotAccount {
   parent_name: string | null;
 }
 
+interface PnlTarget {
+  id: string;
+  name: string;
+  account_type: string;
+  account_subtype: string | null;
+}
+
 interface BsSnapshot {
   client_name: string;
   jurisdiction: string;
   state_province: string;
   bs_accounts: BsSnapshotAccount[];
+  /** P&L expense + income + COGS accounts. Claude needs these as valid
+   *  target_account_id values for suspense_reclass fixes (moving items
+   *  out of "Ask My Accountant" into "Paint & Materials" etc). Without
+   *  this list, Claude either invents IDs or returns empty lines. */
+  categorization_targets: PnlTarget[];
   retained_earnings_account: { id: string; name: string } | null;
   bad_debt_account: { id: string; name: string } | null;
   suspect_transactions: Record<string, ReclassLine[]>; // account_id → recent lines
@@ -235,11 +247,31 @@ export async function buildBsSnapshot(params: {
     }
   }
 
+  // P&L accounts — needed as valid targets for suspense_reclass.
+  // Without these in the snapshot, Claude either hallucinates account
+  // IDs or returns empty proposed_fix.lines arrays.
+  const PNL_TYPES = new Set([
+    "Income",
+    "Other Income",
+    "Expense",
+    "Other Expense",
+    "Cost of Goods Sold",
+  ]);
+  const categorizationTargets: PnlTarget[] = allAccounts
+    .filter((a) => a.Active !== false && PNL_TYPES.has(a.AccountType))
+    .map((a) => ({
+      id: a.Id,
+      name: a.Name,
+      account_type: a.AccountType,
+      account_subtype: a.AccountSubType || null,
+    }));
+
   return {
     client_name: params.clientName,
     jurisdiction: params.jurisdiction,
     state_province: params.stateProvince,
     bs_accounts: bsAccounts,
+    categorization_targets: categorizationTargets,
     retained_earnings_account: retainedEarnings
       ? { id: retainedEarnings.Id, name: retainedEarnings.Name }
       : null,
@@ -302,7 +334,77 @@ Your job: identify cleanup issues and propose specific, executable fixes.
 - Risk levels: low (small $, well-understood pattern), medium (medium $ or some ambiguity), high (tax-sensitive, large $, equity touches).
 - ALL fixes that touch Equity, Payroll, Tax, or Owner Draw accounts → risk=high regardless of confidence.
 - Reclass lines: use the exact qbo_transaction_id, qbo_line_id, and qbo_transaction_type from the snapshot. Don't invent them.
+- Reclass lines: new_account_id MUST be one of the IDs from either bs_accounts or categorization_targets in the input. Never invent IDs.
 - Journal entries: must balance (debits = credits). Use proper double-entry — assets+expenses on the debit side typically, liabilities+revenue+equity on the credit side.
+- Journal entries: every line's account_id MUST exist in bs_accounts or categorization_targets. Round amounts to 2 decimals.
+- CRITICAL: if a proposed_fix.lines or proposed_fix.je.lines array would be empty, return flag_for_manual instead. An empty fix is worse than no fix because it appears "executed" while doing nothing.
+- For suspense_reclass: look up the matching target_account in categorization_targets by vendor pattern. If no obvious match exists, use flag_for_manual rather than guessing.
+
+═══ EXAMPLES ═══
+
+Example 1 — OBE has $2,300 plug from migration, RE account exists:
+{
+  "kind": "obe_to_retained_earnings",
+  "account_qbo_id": "<OBE id>",
+  "account_name": "Opening Balance Equity",
+  "description": "Opening Balance Equity has a $2,300 plug from migration that should zero out.",
+  "ai_reasoning": "OBE should be 0 once a company is past its first year. This balance is almost certainly a data-migration plug. Moving to Retained Earnings is the standard fix.",
+  "confidence": 0.97,
+  "risk": "medium",
+  "estimated_impact": 2300,
+  "proposed_fix": {
+    "type": "journal_entry",
+    "je": {
+      "txn_date": "2026-05-21",
+      "private_note": "Zero out OBE migration plug",
+      "lines": [
+        { "posting_type": "Debit",  "amount": 2300.00, "account_id": "<OBE id>", "account_name": "Opening Balance Equity", "description": "Clear OBE" },
+        { "posting_type": "Credit", "amount": 2300.00, "account_id": "<RE id>",  "account_name": "Retained Earnings",       "description": "Reclassify from OBE" }
+      ]
+    }
+  }
+}
+
+Example 2 — Ask My Accountant has a $450 Sherwin-Williams charge:
+{
+  "kind": "suspense_reclass",
+  "account_qbo_id": "<AMA id>",
+  "account_name": "Ask My Accountant",
+  "description": "$450 Sherwin-Williams charge sitting in Ask My Accountant.",
+  "ai_reasoning": "Sherwin-Williams is a paint supplier — belongs in Paint & Materials, not the suspense account.",
+  "confidence": 0.96,
+  "risk": "low",
+  "estimated_impact": 450,
+  "proposed_fix": {
+    "type": "reclass_lines",
+    "lines": [
+      {
+        "qbo_transaction_id": "1234",
+        "qbo_transaction_type": "Expense",
+        "qbo_line_id": "1",
+        "new_account_id": "<Paint & Materials id from categorization_targets>",
+        "new_account_name": "Paint & Materials",
+        "amount": 450.00
+      }
+    ]
+  }
+}
+
+Example 3 — Mystery $1,200 in Suspense, no clear vendor pattern:
+{
+  "kind": "suspense_reclass",
+  "account_qbo_id": "<Suspense id>",
+  "account_name": "Suspense",
+  "description": "$1,200 entry from 'PAYMENT THANK YOU' with no other context.",
+  "ai_reasoning": "No vendor name, no memo, no recognizable pattern. Bookkeeper needs to investigate the source document before reclassifying.",
+  "confidence": 0.4,
+  "risk": "medium",
+  "estimated_impact": 1200,
+  "proposed_fix": {
+    "type": "flag_for_manual",
+    "notes": "Pull the source transaction's original document to identify what this payment was for. Likely a credit card payment or owner contribution but unclear."
+  }
+}
 
 ═══ OUTPUT ═══
 
@@ -362,6 +464,13 @@ export async function analyzeBs(params: {
   const t0 = Date.now();
   const snapshot = await buildBsSnapshot(params);
 
+  // Build a Set of valid account IDs so post-Claude validation can drop
+  // hallucinated IDs without doing N×M scans.
+  const validAccountIds = new Set<string>([
+    ...snapshot.bs_accounts.map((a) => a.id),
+    ...snapshot.categorization_targets.map((t) => t.id),
+  ]);
+
   // Compact the snapshot for the prompt
   const compactSnapshot = {
     client: snapshot.client_name,
@@ -376,6 +485,12 @@ export async function analyzeBs(params: {
       subtype: a.account_subtype,
       balance: Math.round(a.current_balance * 100) / 100,
       parent: a.parent_name,
+    })),
+    categorization_targets: snapshot.categorization_targets.map((t) => ({
+      id: t.id,
+      name: t.name,
+      type: t.account_type,
+      subtype: t.account_subtype,
     })),
     suspect_transactions: Object.fromEntries(
       Object.entries(snapshot.suspect_transactions).map(([acctId, lines]) => [
@@ -425,10 +540,106 @@ ${JSON.stringify(compactSnapshot, null, 2)}`;
     throw new Error(`BS AI analysis failed: ${err?.message || String(err)}`);
   }
 
-  // Validate + sanitize
+  // Validate + sanitize. Filter aggressively: any empty/malformed fix gets
+  // downgraded to flag_for_manual so the bookkeeper doesn't get a
+  // false-positive "executed" badge for an empty operation.
   const issues: Issue[] = [];
+  const validationWarnings: string[] = [];
   for (const i of parsed.issues || []) {
     if (!i.kind || !i.proposed_fix) continue;
+
+    let fix = i.proposed_fix as ProposedFix;
+    const ftype = (fix as any)?.type;
+
+    // Sanitize reclass_lines: drop lines with invalid account IDs or
+    // bad amounts; if nothing remains, convert to flag_for_manual.
+    if (ftype === "reclass_lines") {
+      const rawLines = Array.isArray((fix as any).lines) ? (fix as any).lines : [];
+      const goodLines = rawLines.filter((ln: any) => {
+        if (!ln || !ln.qbo_transaction_id || !ln.qbo_line_id || !ln.new_account_id) return false;
+        if (!validAccountIds.has(String(ln.new_account_id))) {
+          validationWarnings.push(
+            `Dropped reclass line with hallucinated account_id ${ln.new_account_id} (vendor: ${ln.vendor || "?"})`
+          );
+          return false;
+        }
+        const amt = Number(ln.amount);
+        if (!Number.isFinite(amt) || amt === 0) return false;
+        return true;
+      });
+
+      if (goodLines.length === 0) {
+        fix = {
+          type: "flag_for_manual",
+          notes:
+            i.ai_reasoning ||
+            "AI proposed a reclass with no valid lines — review this account manually.",
+        };
+      } else {
+        fix = { type: "reclass_lines", lines: goodLines.map(roundReclassLine) };
+      }
+    }
+
+    // Sanitize journal_entry: validate accounts, balance debits/credits
+    // to 2-decimal precision, drop unbalanced or empty.
+    if (ftype === "journal_entry") {
+      const je = (fix as any).je || {};
+      const rawLines = Array.isArray(je.lines) ? je.lines : [];
+      const goodLines = rawLines
+        .map(roundJeLine)
+        .filter((l: any) => {
+          if (!l || !l.account_id) return false;
+          if (!validAccountIds.has(String(l.account_id))) {
+            validationWarnings.push(
+              `Dropped JE line with hallucinated account_id ${l.account_id}`
+            );
+            return false;
+          }
+          if (!Number.isFinite(l.amount) || l.amount <= 0) return false;
+          if (l.posting_type !== "Debit" && l.posting_type !== "Credit") return false;
+          return true;
+        });
+
+      const debits = goodLines.filter((l: any) => l.posting_type === "Debit");
+      const credits = goodLines.filter((l: any) => l.posting_type === "Credit");
+      const debitSum = debits.reduce((s: number, l: any) => s + l.amount, 0);
+      const creditSum = credits.reduce((s: number, l: any) => s + l.amount, 0);
+
+      if (
+        goodLines.length < 2 ||
+        debits.length === 0 ||
+        credits.length === 0 ||
+        Math.abs(debitSum - creditSum) > 0.02
+      ) {
+        validationWarnings.push(
+          `Dropped malformed JE (${goodLines.length} valid lines, debits=$${debitSum.toFixed(2)} vs credits=$${creditSum.toFixed(2)})`
+        );
+        fix = {
+          type: "flag_for_manual",
+          notes:
+            i.ai_reasoning ||
+            "AI proposed a JE that didn't balance or had invalid accounts — review manually.",
+        };
+      } else {
+        fix = {
+          type: "journal_entry",
+          je: {
+            txn_date: je.txn_date || new Date().toISOString().slice(0, 10),
+            doc_number: je.doc_number,
+            private_note: String(je.private_note || ""),
+            lines: goodLines,
+          },
+        };
+      }
+    }
+
+    if (ftype === "flag_for_manual") {
+      fix = {
+        type: "flag_for_manual",
+        notes: String((fix as any).notes || i.description || ""),
+      };
+    }
+
     issues.push({
       kind: i.kind,
       account_qbo_id: i.account_qbo_id || null,
@@ -438,7 +649,7 @@ ${JSON.stringify(compactSnapshot, null, 2)}`;
       confidence: Math.max(0, Math.min(1, Number(i.confidence) || 0)),
       risk: (["low", "medium", "high"].includes(i.risk) ? i.risk : "high") as Issue["risk"],
       estimated_impact: Math.abs(Number(i.estimated_impact) || 0),
-      proposed_fix: i.proposed_fix,
+      proposed_fix: fix,
     });
   }
 
@@ -446,10 +657,36 @@ ${JSON.stringify(compactSnapshot, null, 2)}`;
     result: {
       issues,
       summary: String(parsed.summary || ""),
-      warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+      warnings: [
+        ...(Array.isArray(parsed.warnings) ? parsed.warnings : []),
+        ...validationWarnings,
+      ],
     },
     snapshot,
     durationMs: Date.now() - t0,
+  };
+}
+
+// Small helpers: enforce 2-decimal precision so we never send 4-decimal
+// floats to QBO and never trip the JE balance check on rounding noise.
+function roundReclassLine(l: any) {
+  return {
+    qbo_transaction_id: String(l.qbo_transaction_id),
+    qbo_transaction_type: String(l.qbo_transaction_type || ""),
+    qbo_line_id: String(l.qbo_line_id),
+    sync_token: l.sync_token ? String(l.sync_token) : undefined,
+    new_account_id: String(l.new_account_id),
+    new_account_name: String(l.new_account_name || ""),
+    amount: Math.round(Number(l.amount) * 100) / 100,
+  };
+}
+function roundJeLine(l: any) {
+  return {
+    posting_type: l?.posting_type,
+    amount: Math.round(Number(l?.amount || 0) * 100) / 100,
+    account_id: String(l?.account_id || ""),
+    account_name: String(l?.account_name || ""),
+    description: String(l?.description || ""),
   };
 }
 

@@ -47,6 +47,31 @@ export async function POST(
 
   const c = client as any;
 
+  // Defensive: kill any zombie "analyzing" run >5 min old before starting
+  // a new one. A function crash mid-Claude-call would otherwise leave the
+  // run stuck in 'analyzing' forever, blocking the UI's analyze CTA.
+  const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  await service
+    .from("bs_ai_fix_runs" as any)
+    .update({
+      status: "failed",
+      error_message:
+        "Analysis did not complete (server timeout or crash). Re-analyze to retry.",
+    } as any)
+    .eq("client_link_id", clientLinkId)
+    .eq("status", "analyzing")
+    .lt("created_at", fiveMinAgo);
+
+  // Cancel any prior 'review' runs for this client — re-analyzing means
+  // the bookkeeper is abandoning whatever decisions they made there.
+  // Keeps the latest-run query unambiguous and prevents stale items from
+  // accumulating across multiple runs.
+  await service
+    .from("bs_ai_fix_runs" as any)
+    .update({ status: "cancelled" } as any)
+    .eq("client_link_id", clientLinkId)
+    .eq("status", "review");
+
   // Create the run row up-front so we have an ID to attach items + status
   const { data: runIns, error: runErr } = await service
     .from("bs_ai_fix_runs" as any)

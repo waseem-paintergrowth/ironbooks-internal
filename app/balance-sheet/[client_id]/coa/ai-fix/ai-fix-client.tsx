@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Sparkles, Loader2, AlertTriangle, CheckCircle2, X, RefreshCw,
-  ChevronDown, ChevronRight, Send, Check, Edit2, AlertCircle,
+  ChevronDown, ChevronRight, Send, Check, AlertCircle, Zap, Clock,
+  ArrowLeft, ArrowRight,
 } from "lucide-react";
 
 interface Run {
@@ -173,6 +174,33 @@ export function BsAiFixClient({
     }
   }
 
+  // Bulk action: apply a decision to every item matching a predicate.
+  async function bulkDecide(predicate: (item: Item) => boolean, decision: string) {
+    const targets = items.filter(predicate);
+    if (targets.length === 0) return;
+    // Optimistic UI — flip locally then sync each to the server
+    setItems((prev) =>
+      prev.map((i) =>
+        predicate(i) ? { ...i, decision, decided_at: new Date().toISOString() } : i
+      )
+    );
+    // Fire all PATCHes in parallel; partial failures are fine
+    const results = await Promise.allSettled(
+      targets.map((t) =>
+        fetch(`/api/clients/${clientLinkId}/bs-ai-fix/${t.run_id}/item/${t.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ decision }),
+        })
+      )
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed > 0) {
+      setError(`${failed} bulk update${failed === 1 ? "" : "s"} failed — refreshing`);
+    }
+    if (run) loadRun(run.id);
+  }
+
   // ── STAGE 1: no run yet, or last run was failed/finalized → show Analyze ──
   const isFresh =
     !run || run.status === "failed" || run.status === "finalized" || run.status === "cancelled";
@@ -229,26 +257,83 @@ export function BsAiFixClient({
 
   // ── STAGE 1.5: analyzing in flight ──
   if (analyzing || (run && run.status === "analyzing")) {
+    // Show a "stuck" escape hatch after 90s — the typical analyze finishes
+    // in 10-30s, so anything past 90s likely means the function crashed
+    // mid-call. The server's stale-run sweep will also catch this in 5min,
+    // but we don't want the UI hostage for that long.
+    const elapsedSec = run
+      ? Math.floor((Date.now() - new Date(run.created_at).getTime()) / 1000)
+      : 0;
+    const stuck = elapsedSec > 90;
     return (
       <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-3">
         <Loader2 className="animate-spin text-teal mx-auto" size={36} />
         <div className="font-semibold text-navy">Analyzing Balance Sheet…</div>
         <p className="text-sm text-ink-slate max-w-md mx-auto">
-          Pulling every BS account + recent transactions on suspect ones, then asking Claude
-          to identify cleanup issues. Typically 10-30 seconds.
+          {stuck
+            ? `This is taking longer than usual (${elapsedSec}s). The Claude call may have hung — you can force a reset and try again.`
+            : "Pulling every BS account + recent transactions on suspect ones, then asking Claude to identify cleanup issues. Typically 10-30 seconds."}
         </p>
+        {stuck && (
+          <button
+            onClick={async () => {
+              // Kicking off a fresh analyze auto-fails any stuck >5min run.
+              // For sub-5min stuck cases, we just retry — the new analyze
+              // creates a new run row even if the old is still 'analyzing'.
+              setAnalyzing(false);
+              setRun(null);
+              setItems([]);
+              await analyze();
+            }}
+            className="inline-flex items-center gap-2 bg-amber-100 hover:bg-amber-200 text-amber-900 font-semibold px-4 py-2 rounded-lg text-sm"
+          >
+            <RefreshCw size={14} />
+            Reset and re-analyze
+          </button>
+        )}
       </div>
     );
   }
 
   // ── STAGE 2 + 3: review + finalize ──
   if (!run) return null;
+
+  // Smart sort: pending first (so the bookkeeper sees what needs work),
+  // within pending by risk (high → low, draws attention to riskiest),
+  // then accepted, then rejected. Within each bucket: highest $ impact first.
+  const decisionOrder: Record<string, number> = {
+    pending: 0,
+    modified: 1,
+    accepted: 2,
+    rejected: 3,
+    executed: 4,
+    failed: 5,
+  };
+  const riskOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  const sortedItems = useMemo(() => {
+    return [...items].sort((a, b) => {
+      const da = decisionOrder[a.decision] ?? 99;
+      const db = decisionOrder[b.decision] ?? 99;
+      if (da !== db) return da - db;
+      // Within same decision bucket, sort by risk asc (high first) then impact desc
+      const ra = riskOrder[a.risk] ?? 99;
+      const rb = riskOrder[b.risk] ?? 99;
+      if (ra !== rb) return ra - rb;
+      return b.estimated_impact - a.estimated_impact;
+    });
+  }, [items]);
+
   const acceptedCount = items.filter((i) =>
     ["accepted", "modified"].includes(i.decision)
   ).length;
+  const pendingCount = items.filter((i) => i.decision === "pending").length;
   const totalAcceptedImpact = items
     .filter((i) => ["accepted", "modified"].includes(i.decision))
     .reduce((s, i) => s + i.estimated_impact, 0);
+  const hoursOld = run.created_at
+    ? (Date.now() - new Date(run.created_at).getTime()) / 3600_000
+    : 0;
+  const isStale = hoursOld > 24 && run.status !== "finalized";
 
   return (
     <div className="space-y-4">
@@ -310,6 +395,80 @@ export function BsAiFixClient({
         </div>
       </div>
 
+      {/* Stale banner — gentle nudge if the analysis is over a day old */}
+      {isStale && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-sm">
+          <Clock size={16} className="text-amber-700 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 text-amber-900">
+            <strong>This analysis is {hoursOld < 48 ? "over a day" : `${Math.round(hoursOld / 24)} days`} old.</strong>{" "}
+            QBO state may have shifted since then. Consider re-analyzing for a fresh read.
+          </div>
+          <button
+            onClick={analyze}
+            disabled={analyzing}
+            className="text-xs font-bold text-amber-700 hover:text-amber-900 px-2 py-1 rounded hover:bg-amber-100 inline-flex items-center gap-1 disabled:opacity-50"
+          >
+            <RefreshCw size={11} />
+            Re-analyze
+          </button>
+        </div>
+      )}
+
+      {/* Bulk action toolbar — only shown when there are still pending items
+          and the run isn't finalized. Big-win for "fix in minutes" UX. */}
+      {pendingCount > 0 && run.status === "review" && (
+        <div className="bg-white rounded-2xl border border-gray-100 p-3 flex items-center gap-2 flex-wrap text-xs">
+          <Zap size={14} className="text-teal flex-shrink-0" />
+          <span className="font-semibold text-navy mr-1">Bulk:</span>
+          <button
+            onClick={() =>
+              bulkDecide(
+                (i) =>
+                  i.decision === "pending" &&
+                  i.risk === "low" &&
+                  i.confidence >= 0.85 &&
+                  i.proposed_fix?.type !== "flag_for_manual",
+                "accepted"
+              )
+            }
+            disabled={finalizing}
+            className="px-2 py-1 rounded bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+            title="Accept every pending item with low risk and ≥85% confidence"
+          >
+            <Check size={11} /> Accept all low-risk
+          </button>
+          <button
+            onClick={() =>
+              bulkDecide(
+                (i) =>
+                  i.decision === "pending" &&
+                  i.proposed_fix?.type === "flag_for_manual",
+                "rejected"
+              )
+            }
+            disabled={finalizing}
+            className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-ink-slate hover:bg-gray-100 font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+            title="Reject everything AI couldn't auto-fix (flag-for-manual items)"
+          >
+            <X size={11} /> Reject all flagged-only
+          </button>
+          <button
+            onClick={() =>
+              bulkDecide((i) => i.decision === "pending" && i.confidence < 0.7, "rejected")
+            }
+            disabled={finalizing}
+            className="px-2 py-1 rounded bg-gray-50 border border-gray-200 text-ink-slate hover:bg-gray-100 font-semibold inline-flex items-center gap-1 disabled:opacity-50"
+            title="Reject every pending item with confidence under 70%"
+          >
+            <X size={11} /> Reject low-confidence
+          </button>
+          <span className="ml-auto text-ink-slate">
+            <strong className="text-navy">{pendingCount}</strong> pending ·{" "}
+            <strong className="text-emerald-700">{acceptedCount}</strong> accepted
+          </span>
+        </div>
+      )}
+
       {/* Issues list */}
       {items.length === 0 ? (
         <div className="p-8 bg-white rounded-2xl border border-gray-100 text-center text-sm text-ink-slate">
@@ -317,21 +476,74 @@ export function BsAiFixClient({
         </div>
       ) : (
         <div className="space-y-2">
-          {items.map((item) => (
-            <IssueCard key={item.id} item={item} onDecide={decide} disabled={finalizing} />
+          {sortedItems.map((item) => (
+            <IssueCard
+              key={item.id}
+              item={item}
+              runCreatedAt={run.created_at}
+              onDecide={decide}
+              disabled={finalizing}
+            />
           ))}
         </div>
       )}
 
-      {/* Finalize bar */}
+      {/* Finalize bar — sticky bottom. Breaks down what's about to happen
+          by fix type so the bookkeeper sees exactly what hits QBO. */}
       {items.length > 0 && run.status !== "finalized" && (
         <div className="sticky bottom-0 bg-white border-2 border-teal rounded-2xl p-4 shadow-lg flex items-center gap-4 flex-wrap">
-          <div className="flex-1 min-w-[200px]">
+          <div className="flex-1 min-w-[260px]">
             <div className="font-bold text-navy">
               Ready to finalize {acceptedCount} {acceptedCount === 1 ? "fix" : "fixes"}
+              {pendingCount > 0 && (
+                <span className="font-normal text-xs text-amber-700 ml-2">
+                  · {pendingCount} still pending
+                </span>
+              )}
             </div>
-            <div className="text-xs text-ink-slate">
-              Total $ impact: ${totalAcceptedImpact.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <div className="text-xs text-ink-slate mt-0.5 flex items-center gap-3 flex-wrap">
+              {(() => {
+                const accepted = items.filter((i) =>
+                  ["accepted", "modified"].includes(i.decision)
+                );
+                const reclassCount = accepted.filter(
+                  (i) => (i.modified_fix || i.proposed_fix)?.type === "reclass_lines"
+                ).length;
+                const jeCount = accepted.filter(
+                  (i) => (i.modified_fix || i.proposed_fix)?.type === "journal_entry"
+                ).length;
+                const flagCount = accepted.filter(
+                  (i) => (i.modified_fix || i.proposed_fix)?.type === "flag_for_manual"
+                ).length;
+                return (
+                  <>
+                    {reclassCount > 0 && (
+                      <span>
+                        <strong className="text-navy">{reclassCount}</strong> line reclass
+                      </span>
+                    )}
+                    {jeCount > 0 && (
+                      <span>
+                        <strong className="text-navy">{jeCount}</strong> journal entries
+                      </span>
+                    )}
+                    {flagCount > 0 && (
+                      <span>
+                        <strong className="text-navy">{flagCount}</strong> manual flags
+                      </span>
+                    )}
+                    <span>
+                      $ impact:{" "}
+                      <strong className="text-navy">
+                        ${totalAcceptedImpact.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </strong>
+                    </span>
+                  </>
+                );
+              })()}
             </div>
           </div>
           <button
@@ -340,7 +552,7 @@ export function BsAiFixClient({
             className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-bold px-5 py-2.5 rounded-lg disabled:opacity-50"
           >
             {finalizing ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            Finalize · push to QBO
+            {finalizing ? "Posting to QBO…" : "Finalize · push to QBO"}
           </button>
         </div>
       )}
@@ -442,10 +654,12 @@ const KIND_LABELS: Record<string, string> = {
 
 function IssueCard({
   item,
+  runCreatedAt,
   onDecide,
   disabled,
 }: {
   item: Item;
+  runCreatedAt: string;
   onDecide: (item: Item, decision: string, modifiedFix?: any) => Promise<void>;
   disabled: boolean;
 }) {
@@ -454,6 +668,15 @@ function IssueCard({
 
   const fix = item.modified_fix || item.proposed_fix;
   const kindLabel = KIND_LABELS[item.kind] || item.kind;
+
+  // Heuristic: an "auto"-accepted item was decided within 60s of the run
+  // being created (the analyze endpoint inserts pre-accepted items at the
+  // tail of the same request). A manual accept happens minutes/hours later.
+  const isAutoAccepted = (() => {
+    if (item.decision !== "accepted" || !item.decided_at) return false;
+    const gapMs = new Date(item.decided_at).getTime() - new Date(runCreatedAt).getTime();
+    return gapMs < 60_000;
+  })();
 
   return (
     <div
@@ -482,6 +705,17 @@ function IssueCard({
               <span className="text-xs text-ink-slate">· {item.account_name}</span>
             )}
             <DecisionBadge decision={item.decision} />
+            {/* Pre-accept transparency: items the AI policy auto-accepted
+                surface a small "auto" badge so the bookkeeper knows it wasn't
+                their own click. Hides once they re-decide manually. */}
+            {isAutoAccepted && (
+              <span
+                className="text-[10px] font-bold uppercase tracking-wider bg-teal-lighter text-teal px-1.5 py-0.5 rounded"
+                title="Auto-accepted by policy (≥95% confidence, low risk, non-tax-sensitive)"
+              >
+                auto
+              </span>
+            )}
           </div>
           <div className="text-xs text-ink-slate mt-0.5">{item.description}</div>
         </div>
@@ -648,20 +882,57 @@ function FixDetails({ fix }: { fix: any }) {
 function FinalizedRunSummary({ run, items }: { run: Run; items: Item[] }) {
   const exec = items.filter((i) => i.decision === "executed").length;
   const failed = items.filter((i) => i.decision === "failed").length;
+  const totalExecutedImpact = items
+    .filter((i) => i.decision === "executed")
+    .reduce((s, i) => s + i.estimated_impact, 0);
+
+  // Pull clientLinkId from URL — the summary card lives in a couple of places
+  const clientLinkId =
+    typeof window !== "undefined"
+      ? window.location.pathname.split("/")[2] || ""
+      : "";
+
   return (
-    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5">
+    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 space-y-3">
       <div className="flex items-start gap-3">
-        <CheckCircle2 className="text-emerald-700 flex-shrink-0 mt-0.5" size={20} />
+        <CheckCircle2 className="text-emerald-700 flex-shrink-0 mt-0.5" size={22} />
         <div className="flex-1">
-          <h3 className="font-bold text-emerald-900">
-            Run finalized {formatAgo(run.finalized_at || run.created_at)}
+          <h3 className="font-bold text-emerald-900 text-base">
+            Cleanup complete · {exec} {exec === 1 ? "fix" : "fixes"} pushed to QBO
           </h3>
           <p className="text-sm text-emerald-800 mt-1">
-            {exec} {exec === 1 ? "fix" : "fixes"} pushed to QBO
-            {failed > 0 && `, ${failed} failed (see per-item errors above)`}.
+            Finalized {formatAgo(run.finalized_at || run.created_at)}.{" "}
+            {totalExecutedImpact > 0 && (
+              <>
+                Total $ impact: ${totalExecutedImpact.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.{" "}
+              </>
+            )}
+            {failed > 0 && (
+              <span className="text-red-700">
+                {failed} {failed === 1 ? "fix" : "fixes"} failed — see per-item errors below.
+              </span>
+            )}
           </p>
         </div>
       </div>
+      {clientLinkId && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            href={`/balance-sheet/${clientLinkId}/coa`}
+            className="inline-flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-semibold px-4 py-2 rounded-lg"
+          >
+            <ArrowLeft size={13} />
+            Back to BS COA viewer
+          </Link>
+          <Link
+            href={`/balance-sheet/${clientLinkId}`}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-900 hover:text-emerald-700 px-3 py-2"
+          >
+            Continue to BS workflow
+            <ArrowRight size={13} />
+          </Link>
+        </div>
+      )}
     </div>
   );
 }

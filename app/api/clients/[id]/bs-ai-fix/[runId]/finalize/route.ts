@@ -113,6 +113,12 @@ export async function POST(
       }
 
       if (fix.type === "reclass_lines") {
+        // Defensive: empty arrays would silently mark "executed" but do
+        // nothing. Catch them here so the bookkeeper sees the failure
+        // rather than a false-positive green checkmark.
+        if (!Array.isArray(fix.lines) || fix.lines.length === 0) {
+          throw new Error("Fix has no reclass lines — nothing to execute");
+        }
         // Validate each line's target account exists + active
         for (const ln of fix.lines) {
           const tgt = accountById.get(ln.new_account_id);
@@ -166,6 +172,9 @@ export async function POST(
       }
 
       if (fix.type === "journal_entry") {
+        if (!fix.je || !Array.isArray(fix.je.lines) || fix.je.lines.length < 2) {
+          throw new Error("JE has fewer than 2 lines — invalid double-entry");
+        }
         // Validate each JE line's account
         for (const jl of fix.je.lines) {
           const tgt = accountById.get(jl.account_id);
