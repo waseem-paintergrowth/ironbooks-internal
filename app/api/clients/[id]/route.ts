@@ -37,6 +37,26 @@ export async function PATCH(
   }
 
   const service = createServiceSupabase();
+
+  // Gate `is_active` flips behind admin/lead role. A bookkeeper toggling
+  // it (intentionally or via a stale UI state) silently hides the client
+  // from the reclass picker, COA picker, kanban, and clients list —
+  // creating exactly the "where did this client go?" support load we
+  // hit with Lionetti Painting. Only admin/lead can archive/reactivate.
+  if ("is_active" in updates) {
+    const { data: profile } = await service
+      .from("users")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+    if (!profile || !["admin", "lead"].includes((profile as any).role)) {
+      return NextResponse.json(
+        { error: "Only admin or lead can change a client's active status" },
+        { status: 403 }
+      );
+    }
+  }
+
   // Capture prior values so the audit log records the before/after diff,
   // not just "Lisa touched this client." Select * (one row, fine) — dynamic
   // column lists trip up the Supabase typed-select.

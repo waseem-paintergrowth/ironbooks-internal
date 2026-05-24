@@ -30,6 +30,7 @@ import {
   MoreHorizontal,
   Sparkle,
   FileSpreadsheet,
+  RotateCcw,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -858,6 +859,18 @@ function ClientRow({
         >
           <ExternalLink size={13} className="text-ink-slate" />
         </a>
+        {/* Reactivate — only visible on archived clients. Admin/lead-gated
+            by the API (PATCH /api/clients/[id]). Bookkeepers will get a
+            403 if they somehow click it. */}
+        {!client.is_active && (
+          <button
+            onClick={() => onUpdate({ is_active: true } as any)}
+            className="p-1.5 rounded hover:bg-green-50 text-ink-slate hover:text-green-600 transition-colors"
+            title="Reactivate client"
+          >
+            <RotateCcw size={13} />
+          </button>
+        )}
         {onDelete && (
           <button
             onClick={onDelete}
@@ -923,6 +936,15 @@ function ClientCard({
             jurisdiction={client.jurisdiction}
             compact
           />
+          {!client.is_active && (
+            <button
+              onClick={() => onUpdate({ is_active: true } as any)}
+              className="p-1 rounded hover:bg-green-50 text-ink-slate hover:text-green-600 transition-colors"
+              title="Reactivate client"
+            >
+              <RotateCcw size={12} />
+            </button>
+          )}
           {onDelete && (
             <button
               onClick={onDelete}
