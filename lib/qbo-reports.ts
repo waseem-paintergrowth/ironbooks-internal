@@ -42,21 +42,26 @@ interface ReportRow {
 // Walk report rows recursively and build two maps:
 //   flat:    label (lowercase) → number value  (Data rows + Section summaries)
 //   items:   label → number  (only leaf Data rows, for line-level display)
+//
+// Each leaf data row in a P&L report carries the QBO account id on its
+// first ColData entry (alongside the .value label). We capture that id
+// so the client portal can drill into account transactions on click.
 function flattenRows(
   rows: ReportRow[],
   flat: Map<string, number> = new Map(),
-  items: { label: string; amount: number; group: string }[] = [],
+  items: { label: string; amount: number; group: string; account_id: string | null }[] = [],
   currentGroup = ""
-): { flat: Map<string, number>; items: { label: string; amount: number; group: string }[] } {
+): { flat: Map<string, number>; items: { label: string; amount: number; group: string; account_id: string | null }[] } {
   for (const row of rows || []) {
     const group = row.group || currentGroup;
 
     if (row.type === "Data" && row.ColData) {
       const label = (row.ColData[0]?.value || "").trim();
+      const accountId = (row.ColData[0] as any)?.id || null;
       const value = parseFloat(row.ColData[1]?.value || "0") || 0;
       if (label) {
         flat.set(label.toLowerCase(), value);
-        items.push({ label, amount: value, group });
+        items.push({ label, amount: value, group, account_id: accountId ? String(accountId) : null });
       }
     }
 
@@ -87,7 +92,7 @@ export interface ProfitLossData {
   /** All meal/entertainment account names and amounts */
   mealsAccounts: { label: string; amount: number }[];
   /** Every line item in the P&L for display */
-  lineItems: { label: string; amount: number; group: string }[];
+  lineItems: { label: string; amount: number; group: string; account_id: string | null }[];
 }
 
 export interface GstHstAccount {

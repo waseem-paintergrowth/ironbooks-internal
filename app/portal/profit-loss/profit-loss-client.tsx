@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, AlertTriangle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronDown, AlertTriangle, X, Loader2, ChevronRight } from "lucide-react";
 import type { ProfitLossData } from "@/lib/qbo-reports";
 
 type RangeKey = "lastMonth" | "thisMonth" | "quarter" | "ytd" | "lastYear";
@@ -46,6 +46,11 @@ export function ProfitLossClient({
   closedSource: "reclass_job_closed" | "cleanup_completed" | "calendar_default";
 }) {
   const [activeRange, setActiveRange] = useState<RangeKey>("lastMonth");
+  const [drillLine, setDrillLine] = useState<{
+    label: string;
+    account_id: string;
+    amount: number;
+  } | null>(null);
   const pl = data[activeRange];
   const range = ranges[activeRange];
 
@@ -140,7 +145,20 @@ export function ProfitLossClient({
                     >
                       {sortedLines.map((l: any, i: number) => {
                         const linePct = pl.totalIncome > 0 ? (l.amount / pl.totalIncome) * 100 : 0;
-                        return <Line key={i} label={l.label} amount={l.amount} pct={linePct} showPct={pl.totalIncome > 0} />;
+                        return (
+                          <Line
+                            key={i}
+                            label={l.label}
+                            amount={l.amount}
+                            pct={linePct}
+                            showPct={pl.totalIncome > 0}
+                            onDrill={
+                              l.account_id
+                                ? () => setDrillLine({ label: l.label, account_id: l.account_id, amount: l.amount })
+                                : undefined
+                            }
+                          />
+                        );
                       })}
                     </Section>
                   );
@@ -168,11 +186,20 @@ export function ProfitLossClient({
       )}
 
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-ink-slate">
-        <strong className="text-navy">New to reading this?</strong> Hover any line for an explanation,
-        or <a href="/portal/ask-ai" className="text-teal-dark font-semibold underline">ask the AI</a>{" "}
+        <strong className="text-navy">Tip:</strong> Click any line to see the underlying transactions —
+        vendor, date, amount, memo. Or{" "}
+        <a href="/portal/ask-ai" className="text-teal-dark font-semibold underline">ask the AI</a>{" "}
         any question about these numbers. The <strong>% inc</strong> column shows each line as a
         percent of total income — useful for spotting which costs are eating into your profit.
       </div>
+
+      {drillLine && (
+        <DrillDownDrawer
+          line={drillLine}
+          range={range}
+          onClose={() => setDrillLine(null)}
+        />
+      )}
     </div>
   );
 }
@@ -228,14 +255,208 @@ function Section({ title, amount, pct, showPct, children }: { title: string; amo
   );
 }
 
-function Line({ label, amount, pct, showPct }: { label: string; amount: number; pct: number; showPct: boolean }) {
+function Line({
+  label, amount, pct, showPct, onDrill,
+}: {
+  label: string; amount: number; pct: number; showPct: boolean;
+  /** Optional drill-down callback. When defined the row is clickable. */
+  onDrill?: () => void;
+}) {
+  const clickable = !!onDrill;
   return (
-    <div className="flex items-center justify-between text-sm py-1">
-      <div className="text-ink-slate">{label}</div>
+    <button
+      type="button"
+      onClick={onDrill}
+      disabled={!clickable}
+      className={`flex w-full items-center justify-between text-sm py-1 px-1 -mx-1 rounded ${
+        clickable
+          ? "cursor-pointer hover:bg-teal/5 group transition-colors"
+          : "cursor-default"
+      }`}
+    >
+      <div className="flex items-center gap-1 text-ink-slate text-left">
+        {clickable && (
+          <ChevronRight
+            size={11}
+            className="text-ink-light group-hover:text-teal-dark transition-colors"
+          />
+        )}
+        <span className={clickable ? "group-hover:text-teal-dark" : ""}>{label}</span>
+      </div>
       <div className="flex items-center gap-6">
         <div className="font-mono text-navy w-20 text-right">{fmtMoney(amount)}</div>
         <div className="text-xs text-ink-light w-12 text-right font-mono">
           {showPct ? (Math.abs(pct) >= 0.5 ? `${pct.toFixed(1)}%` : "—") : "—"}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+// ─── DRILL-DOWN DRAWER ──────────────────────────────────────────────────
+
+interface Transaction {
+  txn_id: string;
+  txn_type: string;
+  date: string;
+  doc_number: string | null;
+  customer_or_vendor: string | null;
+  memo: string;
+  amount: number;
+  delta: number;
+  cleared: boolean;
+}
+
+/**
+ * Slide-out drawer showing every transaction that hit the clicked account
+ * during the active P&L period. Fetches on open; doesn't pre-load.
+ *
+ * Slide-from-right pattern (not a modal) so the client can keep the
+ * P&L visible behind the drawer and visually connect the drill-down
+ * to the line they clicked.
+ */
+function DrillDownDrawer({
+  line,
+  range,
+  onClose,
+}: {
+  line: { label: string; account_id: string; amount: number };
+  range: { label: string; start: string; end: string };
+  onClose: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(
+          `/api/portal/account-transactions?account_id=${encodeURIComponent(line.account_id)}&start=${range.start}&end=${range.end}`
+        );
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        if (cancelled) return;
+        setTransactions(body.transactions || []);
+        setTruncated(!!body.truncated);
+        setTotalCount(body.total_count || 0);
+      } catch (e: any) {
+        if (cancelled) return;
+        setError(e?.message || "Couldn't load transactions");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [line.account_id, range.start, range.end]);
+
+  // ESC to close
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex" onClick={onClose}>
+      <div className="flex-1 bg-black/40" />
+      <div
+        className="w-full max-w-2xl bg-white shadow-xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-4 border-b border-slate-200 flex items-start justify-between">
+          <div className="min-w-0">
+            <div className="text-xs text-ink-slate uppercase tracking-wider font-semibold">
+              Transactions in
+            </div>
+            <h3 className="font-bold text-navy text-lg">{line.label}</h3>
+            <div className="text-xs text-ink-slate mt-0.5">
+              {range.label} · Total: <strong className="text-navy">{fmtMoney(line.amount)}</strong>
+              {totalCount > 0 && (
+                <span className="text-ink-light"> · {totalCount} transaction{totalCount === 1 ? "" : "s"}</span>
+              )}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy flex-shrink-0">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="p-8 text-center text-ink-slate text-sm">
+              <Loader2 size={20} className="animate-spin mx-auto mb-2 text-teal-dark" />
+              Loading transactions…
+            </div>
+          ) : error ? (
+            <div className="m-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800">
+              {error}
+            </div>
+          ) : transactions.length === 0 ? (
+            <div className="p-8 text-center text-sm text-ink-slate">
+              No transactions found for this period. The total may include adjustments
+              or carry-overs not shown as discrete transactions.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-ink-slate sticky top-0">
+                <tr>
+                  <th className="text-left px-4 py-2 font-semibold">Date</th>
+                  <th className="text-left px-4 py-2 font-semibold">Type / #</th>
+                  <th className="text-left px-4 py-2 font-semibold">Payee / Customer</th>
+                  <th className="text-right px-4 py-2 font-semibold">Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {transactions.map((t, i) => (
+                  <tr key={`${t.txn_id || i}`} className="hover:bg-slate-50">
+                    <td className="px-4 py-2 text-xs text-ink-slate whitespace-nowrap">
+                      {t.date}
+                    </td>
+                    <td className="px-4 py-2 text-xs">
+                      <div className="text-navy font-medium">{t.txn_type || "—"}</div>
+                      {t.doc_number && (
+                        <div className="text-ink-light text-[11px]">#{t.doc_number}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-xs">
+                      <div className="text-navy">{t.customer_or_vendor || <span className="text-ink-light italic">—</span>}</div>
+                      {t.memo && (
+                        <div className="text-ink-light text-[11px] truncate max-w-xs" title={t.memo}>
+                          {t.memo}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono text-navy whitespace-nowrap">
+                      {fmtMoney(t.amount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {truncated && (
+            <div className="px-4 py-3 bg-amber-50 border-t border-amber-200 text-xs text-amber-900">
+              Showing the most recent 500 transactions. {totalCount - 500} more not shown —
+              ask your bookkeeper for a full export if you need them.
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-slate-200 bg-slate-50">
+          <div className="text-[11px] text-ink-light">
+            Need to ask about a specific transaction?{" "}
+            <a href="/portal/ask-ai" className="text-teal-dark font-semibold underline">
+              Ask the AI
+            </a>{" "}
+            or reach out to your Ironbooks bookkeeper directly.
+          </div>
         </div>
       </div>
     </div>
