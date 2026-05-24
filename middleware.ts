@@ -95,9 +95,14 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(url);
       }
     } else {
-      // Internal staff: bounce them OUT of /portal/* (the live portal, not
-      // the mockup). They preview via /portal-mockup which stays open.
-      if (isPortal) {
+      // Internal staff: bounce them OUT of /portal/* — UNLESS they have
+      // the impersonation cookie set (admin/lead only path). The portal
+      // layout + resolvePortalContext re-validate everything; middleware
+      // just opens the gate.
+      const isImpersonating =
+        (role === "admin" || role === "lead") &&
+        !!request.cookies.get("snap_impersonate_user_id")?.value;
+      if (isPortal && !isImpersonating) {
         const url = request.nextUrl.clone();
         url.pathname = "/dashboard";
         return NextResponse.redirect(url);

@@ -31,6 +31,7 @@ import {
   Sparkle,
   FileSpreadsheet,
   RotateCcw,
+  Eye,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -1161,6 +1162,34 @@ function ActionsDropdown({
       href: `/tax-audit/${clientId}`,
       icon: Receipt,
       hidden: jurisdiction !== "CA",
+    },
+    {
+      section: "Client portal",
+      label: "View portal as client",
+      onClick: async () => {
+        try {
+          const res = await fetch("/api/admin/impersonate/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ client_link_id: clientId }),
+          });
+          const body = await res.json();
+          if (!res.ok) {
+            if (body.code === "no_portal_user") {
+              if (confirm(`${body.error}\n\nGo to the invite page now?`)) {
+                window.location.href = "/admin/invite-client";
+              }
+              return;
+            }
+            alert(body.error || "Could not start portal session");
+            return;
+          }
+          window.location.href = body.redirect || "/portal";
+        } catch (e: any) {
+          alert(e?.message || "Could not start portal session");
+        }
+      },
+      icon: Eye,
     },
   ];
 

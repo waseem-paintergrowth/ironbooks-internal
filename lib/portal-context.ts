@@ -14,6 +14,7 @@
  */
 import { createServerSupabase, createServiceSupabase } from "./supabase";
 import { getValidToken } from "./qbo";
+import { readImpersonationCookie, clearImpersonationCookie } from "./impersonation";
 
 export interface PortalContext {
   userId: string;
@@ -23,6 +24,14 @@ export interface PortalContext {
   clientName: string;
   qboRealmId: string;
   accessToken: string;
+  /** True when an admin is viewing the portal as this client. Used by the
+   *  layout to render the impersonation banner, and by the AI route to
+   *  skip rate-limit increments. */
+  impersonating: boolean;
+  /** Set only when impersonating — the real admin's identity (for the banner
+   *  + audit log). */
+  realUserId?: string;
+  realUserName?: string;
 }
 
 export class PortalAccessError extends Error {
@@ -50,30 +59,72 @@ export async function resolvePortalContext(): Promise<PortalContext> {
 
   const service = createServiceSupabase();
 
-  // Confirm the user is actually a client
   const { data: profile } = await service
     .from("users")
     .select("role, email, full_name, is_active")
     .eq("id", user.id)
     .single();
-  if ((profile as any)?.role !== "client") {
-    throw new PortalAccessError("Not a portal user", "not_client");
-  }
-  if ((profile as any)?.is_active === false) {
-    throw new PortalAccessError("Account is disabled", "not_client");
+  const actualRole = (profile as any)?.role;
+  const isAdmin = actualRole === "admin" || actualRole === "lead";
+
+  // ─── Impersonation path ───
+  // An admin/lead with the impersonation cookie set is treated as the
+  // target client user for portal data scoping. Cookie is inert if the
+  // signed-in user isn't admin/lead — defense against a leaked cookie.
+  let effectiveUserId = user.id;
+  let impersonating = false;
+  let realUserId: string | undefined;
+  let realUserName: string | undefined;
+
+  if (isAdmin) {
+    const targetUserId = await readImpersonationCookie();
+    if (targetUserId) {
+      // Verify the target is a real client user with an active mapping.
+      // If not, the cookie is stale — clear it and fall through to the
+      // normal admin flow (which will fail not_client and bounce back).
+      const { data: target } = await service
+        .from("users")
+        .select("id, role, is_active, full_name")
+        .eq("id", targetUserId)
+        .single();
+      if ((target as any)?.role === "client" && (target as any)?.is_active !== false) {
+        effectiveUserId = targetUserId;
+        impersonating = true;
+        realUserId = user.id;
+        realUserName = (profile as any)?.full_name || user.email || "Admin";
+      } else {
+        await clearImpersonationCookie();
+      }
+    }
   }
 
-  // Resolve the client mapping
+  // ─── Normal role check (skipped when impersonating because we've already
+  //     verified the target is a client) ───
+  if (!impersonating) {
+    if (actualRole !== "client") {
+      throw new PortalAccessError("Not a portal user", "not_client");
+    }
+    if ((profile as any)?.is_active === false) {
+      throw new PortalAccessError("Account is disabled", "not_client");
+    }
+  }
+
+  // Resolve the (effective) user's client mapping
   const { data: mapping } = await service
     .from("client_users" as any)
     .select("client_link_id, active")
-    .eq("user_id", user.id)
+    .eq("user_id", effectiveUserId)
     .eq("active", true)
     .maybeSingle();
   if (!mapping || !(mapping as any).client_link_id) {
     throw new PortalAccessError("Portal access not provisioned", "no_mapping");
   }
   const clientLinkId = (mapping as any).client_link_id as string;
+
+  // Pull the (effective) client + portal user metadata for the banner
+  const { data: targetProfile } = impersonating
+    ? await service.from("users").select("email, full_name").eq("id", effectiveUserId).single()
+    : { data: profile as any };
 
   // Pull the client details + ensure QBO is connected
   const { data: client } = await service
@@ -103,13 +154,16 @@ export async function resolvePortalContext(): Promise<PortalContext> {
   }
 
   return {
-    userId: user.id,
-    userEmail: (profile as any).email || user.email || "",
-    userFullName: (profile as any).full_name || "",
+    userId: effectiveUserId,
+    userEmail: (targetProfile as any)?.email || "",
+    userFullName: (targetProfile as any)?.full_name || "",
     clientLinkId,
     clientName: (client as any).client_name || "Your Business",
     qboRealmId: (client as any).qbo_realm_id as string,
     accessToken,
+    impersonating,
+    realUserId,
+    realUserName,
   };
 }
 

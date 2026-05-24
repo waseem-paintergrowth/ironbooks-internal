@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react";
 import {
   Search, Mail, CheckCircle2, AlertCircle, Loader2, X,
-  RefreshCw, Clock, UserMinus, Send,
+  RefreshCw, Clock, UserMinus, Send, Eye,
 } from "lucide-react";
 
 interface Client {
@@ -122,6 +122,24 @@ export function InviteClientUI({
       setSuccess(body.message || "Magic link re-sent");
     } catch (e: any) {
       setError(e?.message || "Resend failed");
+    }
+  }
+
+  async function impersonate(userId: string, label: string) {
+    setError("");
+    setSuccess("");
+    try {
+      const res = await fetch("/api/admin/impersonate/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_user_id: userId }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      // Hard-navigate so the impersonation cookie is honored on the next request.
+      window.location.href = body.redirect || "/portal";
+    } catch (e: any) {
+      setError(`Couldn't impersonate ${label}: ${e?.message || "unknown"}`);
     }
   }
 
@@ -342,6 +360,13 @@ export function InviteClientUI({
                     <td className="px-4 py-2 text-right">
                       {m.active ? (
                         <div className="inline-flex gap-1">
+                          <button
+                            onClick={() => impersonate(m.user_id, m.user_email)}
+                            title="View the portal as this client (4h session)"
+                            className="p-1.5 rounded hover:bg-amber-50 text-ink-slate hover:text-amber-700"
+                          >
+                            <Eye size={13} />
+                          </button>
                           <button
                             onClick={() => resend(m.user_email, m.user_full_name, m.client_link_id)}
                             title="Re-send magic link"

@@ -1,68 +1,72 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import {
   Home, FileText, Scale, Wallet, Receipt, MessageSquare,
-  GraduationCap, Settings, LogOut,
+  GraduationCap, Settings,
 } from "lucide-react";
 import { SignOutButton } from "./sign-out-button";
+import { ImpersonationBanner } from "./impersonation-banner";
+import { tryResolvePortalContext } from "@/lib/portal-context";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 
 /**
- * Real client portal shell. Auth-gated: only role='client' with an active
- * client_users mapping gets through. The shell pulls the client's display
- * name so the sidebar identifies which business they're looking at.
+ * Real client portal shell. Auth-gated via resolvePortalContext, which
+ * also honors the admin impersonation cookie. When an admin/lead is
+ * impersonating, the layout shows the orange "you are impersonating"
+ * banner at the very top — unmissable.
  *
- * Differs from /portal-mockup/layout.tsx (the static design preview) by:
- *   - Real auth (middleware sends non-clients away; this layer resolves
- *     the client_link_id from the mapping table)
- *   - Real sign-out (vs the mockup's dead button)
+ * Differs from /portal-mockup/layout.tsx (the static design preview):
+ *   - Real auth (middleware sends non-impersonating non-clients away;
+ *     this layer re-resolves and renders the banner if applicable)
+ *   - Real sign-out
  *   - Live "client_name" lookup
- *   - No "this is a mockup" amber banner
  */
 export default async function PortalLayout({ children }: { children: React.ReactNode }) {
+  // First confirm there's at least a session — bouncing here is friendlier
+  // than letting tryResolvePortalContext throw a generic error.
   const supabase = await createServerSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/auth/login");
 
+  // Pull the actual role so we can detect the "internal staff, NOT
+  // impersonating" case — they shouldn't see the portal at all, kick to
+  // /dashboard. Middleware already does this but the layout double-checks
+  // because layouts get used outside the middleware path too (e.g. RSC).
   const service = createServiceSupabase();
-
-  // Pull the role + client mapping in one shot. Anyone reaching this layout
-  // already passed middleware's role gate, but defense-in-depth.
-  const { data: profile } = await service
+  const { data: actorProfile } = await service
     .from("users")
     .select("role, full_name")
     .eq("id", user.id)
     .single();
-  if ((profile as any)?.role !== "client") {
+  const actorRole = (actorProfile as any)?.role;
+  const isInternal = ["admin", "lead", "bookkeeper", "viewer"].includes(actorRole);
+
+  const ctxResult = await tryResolvePortalContext();
+
+  // Internal staff with no impersonation = wrong place
+  if (isInternal && (!ctxResult.ok || !ctxResult.ctx.impersonating)) {
     redirect("/dashboard");
   }
 
-  const { data: mapping } = await service
-    .from("client_users" as any)
-    .select("client_link_id, active")
-    .eq("user_id", user.id)
-    .eq("active", true)
-    .maybeSingle();
-
-  if (!mapping || !(mapping as any).client_link_id) {
-    // Account exists but no client mapping — show the "still being set up"
-    // state. Avoids a confusing redirect loop when an invite was botched.
+  // Client with no mapping = friendly setup state
+  if (!ctxResult.ok) {
     return (
-      <NoClientMappingState fullName={(profile as any)?.full_name || user.email || ""} />
+      <NoClientMappingState fullName={(actorProfile as any)?.full_name || user.email || ""} />
     );
   }
 
-  const clientLinkId = (mapping as any).client_link_id as string;
-  const { data: client } = await service
-    .from("client_links")
-    .select("client_name")
-    .eq("id", clientLinkId)
-    .single();
-
-  const clientName = (client as any)?.client_name || "Your Business";
+  const { ctx } = ctxResult;
+  const clientName = ctx.clientName;
 
   return (
     <div className="min-h-screen bg-[#FAFAF7]">
+      {ctx.impersonating && (
+        <ImpersonationBanner
+          clientName={clientName}
+          clientUserName={ctx.userFullName || ctx.userEmail || "this user"}
+          realUserName={ctx.realUserName || "Admin"}
+        />
+      )}
       <div className="flex">
         <aside className="w-60 bg-[#0F1F2E] text-white min-h-screen flex flex-col">
           <div className="px-5 py-5 border-b border-white/10">
@@ -89,7 +93,9 @@ export default async function PortalLayout({ children }: { children: React.React
             >
               <Settings size={14} /> Settings
             </Link>
-            <SignOutButton />
+            {/* Don't show client sign-out when impersonating — admin signs
+                out via stop-impersonating + their own /auth/login flow */}
+            {!ctx.impersonating && <SignOutButton />}
           </div>
         </aside>
 
@@ -120,11 +126,6 @@ function NavLink({
   );
 }
 
-/**
- * Shown when an invite was sent but the client_users mapping is missing
- * (or marked inactive). Prevents an infinite redirect loop and tells the
- * user what to do.
- */
 function NoClientMappingState({ fullName }: { fullName: string }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#FAFAF7] px-4">

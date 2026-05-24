@@ -86,24 +86,27 @@ export async function POST(request: Request) {
     ? body.history.slice(-MAX_HISTORY_TURNS * 2)
     : [];
 
-  // 3. Rate limit check
+  // 3. Rate limit check — SKIPPED when an admin is impersonating, so
+  //    testing doesn't burn the client's daily quota.
   const service = createServiceSupabase();
   const today = new Date().toISOString().slice(0, 10);
-  const { data: usage } = await service
-    .from("portal_ai_usage" as any)
-    .select("message_count")
-    .eq("user_id", ctx.userId)
-    .eq("usage_date", today)
-    .maybeSingle();
-  const currentCount = (usage as any)?.message_count ?? 0;
-  if (currentCount >= DEFAULT_DAILY_LIMIT) {
-    return NextResponse.json(
-      {
-        error: `You've used your ${DEFAULT_DAILY_LIMIT} questions for today — the count resets at midnight UTC. If you need to dig deeper, reach out to your bookkeeper.`,
-        code: "rate_limited",
-      },
-      { status: 429 }
-    );
+  if (!ctx.impersonating) {
+    const { data: usage } = await service
+      .from("portal_ai_usage" as any)
+      .select("message_count")
+      .eq("user_id", ctx.userId)
+      .eq("usage_date", today)
+      .maybeSingle();
+    const currentCount = (usage as any)?.message_count ?? 0;
+    if (currentCount >= DEFAULT_DAILY_LIMIT) {
+      return NextResponse.json(
+        {
+          error: `You've used your ${DEFAULT_DAILY_LIMIT} questions for today — the count resets at midnight UTC. If you need to dig deeper, reach out to your bookkeeper.`,
+          code: "rate_limited",
+        },
+        { status: 429 }
+      );
+    }
   }
 
   // 4. Build the financial context (parallel fetch)
@@ -202,7 +205,12 @@ export async function POST(request: Request) {
         controller.close();
 
         // Best-effort usage tally — runs after the stream is closed so it
-        // doesn't slow down the user-visible response.
+        // doesn't slow down the user-visible response. Skipped when
+        // impersonating (admin testing shouldn't accumulate against the
+        // client's quota or telemetry).
+        if (ctx.impersonating) {
+          return;
+        }
         try {
           // Upsert pattern: try insert; on conflict (user_id, usage_date) bump count.
           const { data: existing } = await service
