@@ -1,6 +1,28 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 
+/**
+ * Routing rules (with client portal):
+ *
+ *   Unauthenticated:
+ *     - public routes  → through
+ *     - everything else → /auth/login
+ *
+ *   Authenticated as client (role='client'):
+ *     - /portal/*       → through
+ *     - /auth/login     → /portal
+ *     - anything else   → /portal (no bookkeeper-side routes for clients)
+ *
+ *   Authenticated as internal staff (admin/lead/bookkeeper/viewer):
+ *     - /portal/*       → /dashboard (no client-side routes for staff —
+ *                         they preview via the mockup or impersonation tools)
+ *     - /auth/login     → /dashboard
+ *     - everything else → through
+ *
+ * The role lookup uses the service-role client (RLS bypass) so we can read
+ * `users.role` without depending on a per-row policy.
+ */
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -32,7 +54,6 @@ export async function middleware(request: NextRequest) {
 
   const pathname = request.nextUrl.pathname;
 
-  // Public routes — accessible without auth (clients, not internal staff)
   const publicRoutes = ["/auth/login", "/auth/callback", "/stripe-connect"];
   const isPublic = publicRoutes.some((p) => pathname.startsWith(p));
   const isApi = pathname.startsWith("/api/");
@@ -41,33 +62,76 @@ export async function middleware(request: NextRequest) {
     pathname === "/favicon.ico" ||
     /\.(png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)$/.test(pathname);
 
-  // Redirect to login if not authenticated and not on a public route
-  if (!user && !isPublic && !isApi && !isStatic) {
+  // Portal mockup is open during the design-review phase. Once the real
+  // /portal lands and the mockup is retired, this carve-out comes out.
+  const isPortalMockup = pathname.startsWith("/portal-mockup");
+
+  if (!user && !isPublic && !isApi && !isStatic && !isPortalMockup) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
     return NextResponse.redirect(url);
   }
 
-  // Redirect authenticated users away from login page
   if (user && pathname === "/auth/login") {
+    // Will dispatch to /portal or /dashboard based on role — handled below.
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
+    url.pathname = "/";
     return NextResponse.redirect(url);
   }
 
-  // Redirect root to dashboard
-  if (user && pathname === "/") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    return NextResponse.redirect(url);
+  // Role-gated routing — only meaningful for authenticated users on
+  // non-API, non-static, non-public routes.
+  if (user && !isApi && !isStatic && !isPublic) {
+    const role = await lookupRole(user.id);
+    const isPortal = pathname.startsWith("/portal") && !isPortalMockup;
+    const isRoot = pathname === "/";
+
+    if (role === "client") {
+      // Clients are confined to /portal/* (and the mockup during preview).
+      // Any other route — including / and /dashboard — gets pushed to /portal.
+      if (!isPortal && !isPortalMockup) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/portal";
+        return NextResponse.redirect(url);
+      }
+    } else {
+      // Internal staff: bounce them OUT of /portal/* (the live portal, not
+      // the mockup). They preview via /portal-mockup which stays open.
+      if (isPortal) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/dashboard";
+        return NextResponse.redirect(url);
+      }
+      if (isRoot) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/dashboard";
+        return NextResponse.redirect(url);
+      }
+    }
   }
 
   return supabaseResponse;
 }
 
+/**
+ * Cheap one-shot role lookup. Service client = bypasses RLS so this works
+ * even before per-table client policies are wired up. Cached results are
+ * not worth the complexity at our scale — the round-trip is fast.
+ */
+async function lookupRole(userId: string): Promise<string | null> {
+  try {
+    const svc = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+    const { data } = await svc.from("users").select("role").eq("id", userId).single();
+    return (data as any)?.role ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export const config = {
-  // Skip middleware for Next.js internals, favicon, and all public static assets
-  // (images, fonts, etc.) so they're served without an auth check — required for
-  // logo.png to load in emails/external contexts where there's no session cookie.
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf)$).*)"],
 };
