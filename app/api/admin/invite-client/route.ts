@@ -156,41 +156,44 @@ export async function POST(request: Request) {
         );
       }
     } else {
+      // ── existing user IS already role='client' ──
       userId = (existing as any).id;
       isResend = true;
 
-    // Bump them back to active if they were soft-disabled.
-    if (!(existing as any).is_active) {
-      await service.from("users").update({ is_active: true } as any).eq("id", userId);
-    }
+      // Bump them back to active if they were soft-disabled.
+      if (!(existing as any).is_active) {
+        await service.from("users").update({ is_active: true } as any).eq("id", userId);
+      }
 
-    // Send a fresh magic link. Use the existing user — no new auth.user
-    // record needed. inviteUserByEmail on an existing auth user just
-    // re-sends the magic link in Supabase's current behavior.
-    const { error: inviteErr } = await (service as any).auth.admin.inviteUserByEmail(
-      email,
-      {
-        data: { full_name: fullName, role: "client" },
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
-      }
-    );
-    if (inviteErr) {
-      // Try the generateLink fallback — useful if inviteUserByEmail rejects
-      // on already-confirmed users.
-      const { error: linkErr } = await (service as any).auth.admin.generateLink({
-        type: "magiclink",
-        email,
-        options: {
-          redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
-        },
-      });
-      if (linkErr) {
-        return NextResponse.json(
-          { error: `Resend failed: ${inviteErr.message}` },
-          { status: 500 }
+      // For silent re-creates, we just want to re-ensure their client_users
+      // mapping is active — no email. Skip the inviteUserByEmail entirely.
+      if (sendInvite) {
+        // Send a fresh magic link. inviteUserByEmail on an already-confirmed
+        // auth user fails with "already registered" — fall back to
+        // generateLink which works on confirmed users.
+        const { error: inviteErr } = await (service as any).auth.admin.inviteUserByEmail(
+          email,
+          {
+            data: { full_name: fullName, role: "client" },
+            redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+          }
         );
+        if (inviteErr) {
+          const { error: linkErr } = await (service as any).auth.admin.generateLink({
+            type: "magiclink",
+            email,
+            options: {
+              redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+            },
+          });
+          if (linkErr) {
+            return NextResponse.json(
+              { error: `Resend failed: ${inviteErr.message}` },
+              { status: 500 }
+            );
+          }
+        }
       }
-    }
     } // close the "existing user IS already a client" else branch
   } else {
     // 3a. New account. Two paths depending on send_invite:
