@@ -425,6 +425,204 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
+// ─── A/R: RECENT PAYMENTS + DSO ─────────────────────────────────────────
+
+export interface RecentPayment {
+  payment_id: string;
+  customer_id: string | null;
+  customer_name: string | null;
+  txn_date: string;       // payment date
+  total_amount: number;
+  /** Days from the linked invoice's date to this payment, weighted-avg ready. */
+  days_to_pay: number | null;
+  applied_amount: number; // amount applied to invoices on this payment
+}
+
+/**
+ * Pull Payments from the last `lookbackDays` (default 180), enriched with
+ * the days-to-pay derived from each payment's LinkedTxn → Invoice chain.
+ *
+ * Used by:
+ *   - DSO calculation (weighted avg days_to_pay)
+ *   - "Last paid" timestamp per customer on the A/R portal page
+ *
+ * Each Payment can apply to multiple invoices; days_to_pay is the
+ * earliest-invoice-date diff (i.e. how long was the oldest applied
+ * invoice outstanding when payment arrived).
+ */
+export async function fetchRecentPayments(
+  realmId: string,
+  accessToken: string,
+  lookbackDays = 180
+): Promise<RecentPayment[]> {
+  const since = new Date(Date.now() - lookbackDays * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  const results: RecentPayment[] = [];
+  // We'll need the invoice TxnDate to compute days_to_pay. Two-pass:
+  //  1. Pull Payments in window (with their LinkedTxn → Invoice ids)
+  //  2. Pull those invoices' TxnDates in a batch
+  const payments: any[] = [];
+  let page = 0;
+  const pageSize = 1000;
+  while (true) {
+    const startPosition = page * pageSize + 1;
+    const qbql = `SELECT * FROM Payment WHERE TxnDate >= '${since}' STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`;
+    let data: any;
+    try {
+      data = await qboQuery(realmId, accessToken, qbql);
+    } catch (err: any) {
+      console.warn("[portal-data] Recent Payment query failed:", err.message);
+      break;
+    }
+    const rows: any[] = data?.QueryResponse?.Payment || [];
+    payments.push(...rows);
+    if (rows.length < pageSize) break;
+    page++;
+    if (page > 30) break;
+  }
+
+  const invoiceIds = new Set<string>();
+  for (const p of payments) {
+    for (const line of p.Line || []) {
+      for (const lt of line.LinkedTxn || []) {
+        if (lt.TxnType === "Invoice" && lt.TxnId) invoiceIds.add(String(lt.TxnId));
+      }
+    }
+  }
+
+  const invoiceDateById = new Map<string, string>();
+  if (invoiceIds.size > 0) {
+    const ids = Array.from(invoiceIds);
+    for (let i = 0; i < ids.length; i += 200) {
+      const batch = ids.slice(i, i + 200);
+      const inClause = batch.map((id) => `'${id}'`).join(",");
+      const qbql = `SELECT Id, TxnDate FROM Invoice WHERE Id IN (${inClause})`;
+      try {
+        const data: any = await qboQuery(realmId, accessToken, qbql);
+        for (const inv of data?.QueryResponse?.Invoice || []) {
+          invoiceDateById.set(String(inv.Id), inv.TxnDate);
+        }
+      } catch (err: any) {
+        console.warn("[portal-data] Payment->Invoice lookup failed:", err.message);
+      }
+    }
+  }
+
+  for (const p of payments) {
+    const linkedInvoiceIds: string[] = [];
+    let appliedAmount = 0;
+    for (const line of p.Line || []) {
+      for (const lt of line.LinkedTxn || []) {
+        if (lt.TxnType === "Invoice" && lt.TxnId) linkedInvoiceIds.push(String(lt.TxnId));
+      }
+      if (line.Amount != null) appliedAmount += Number(line.Amount);
+    }
+    // days_to_pay = max(0, payment date - earliest linked invoice date)
+    let daysToPay: number | null = null;
+    if (linkedInvoiceIds.length > 0) {
+      const earliestInvoiceDate = linkedInvoiceIds
+        .map((id) => invoiceDateById.get(id))
+        .filter(Boolean)
+        .sort()[0];
+      if (earliestInvoiceDate) {
+        const days = Math.floor(
+          (new Date(p.TxnDate).getTime() - new Date(earliestInvoiceDate).getTime()) /
+            86_400_000
+        );
+        daysToPay = Math.max(0, days);
+      }
+    }
+    results.push({
+      payment_id: String(p.Id),
+      customer_id: p.CustomerRef?.value || null,
+      customer_name: p.CustomerRef?.name || null,
+      txn_date: p.TxnDate,
+      total_amount: Number(p.TotalAmt || 0),
+      days_to_pay: daysToPay,
+      applied_amount: appliedAmount,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Days Sales Outstanding — weighted average days from invoice date to
+ * payment date, across recent paid invoices. Weighted by payment amount
+ * so a big slow-paying customer matters more than a small fast-paying one.
+ *
+ * Returns null if we don't have enough data (no paid invoices in window).
+ */
+export function computeDSO(payments: RecentPayment[]): number | null {
+  let weightedDays = 0;
+  let totalWeight = 0;
+  for (const p of payments) {
+    if (p.days_to_pay == null || p.applied_amount <= 0) continue;
+    weightedDays += p.days_to_pay * p.applied_amount;
+    totalWeight += p.applied_amount;
+  }
+  if (totalWeight === 0) return null;
+  return Math.round(weightedDays / totalWeight);
+}
+
+/**
+ * Build a per-customer summary blob for the A/R page: last payment date,
+ * total paid in lookback window, contact info merged from QBO Customer.
+ */
+export interface ARCustomerSummary {
+  customer_id: string;
+  display_name: string;
+  email: string | null;
+  phone: string | null;
+  last_payment_date: string | null;
+  last_payment_amount: number | null;
+  total_paid_in_window: number;
+}
+
+export function summarizeCustomersForAR(
+  customers: { id: string; display_name: string; primary_email: string | null; primary_phone?: string | null }[],
+  payments: RecentPayment[]
+): Map<string, ARCustomerSummary> {
+  const byCustomer = new Map<string, ARCustomerSummary>();
+  for (const c of customers) {
+    byCustomer.set(c.id, {
+      customer_id: c.id,
+      display_name: c.display_name,
+      email: c.primary_email,
+      phone: c.primary_phone || null,
+      last_payment_date: null,
+      last_payment_amount: null,
+      total_paid_in_window: 0,
+    });
+  }
+  // Roll up payments
+  for (const p of payments) {
+    if (!p.customer_id) continue;
+    if (!byCustomer.has(p.customer_id)) {
+      // Customer might be inactive — still create an entry so the UI shows
+      // last-payment-date even if contact info is missing
+      byCustomer.set(p.customer_id, {
+        customer_id: p.customer_id,
+        display_name: p.customer_name || "(unknown customer)",
+        email: null,
+        phone: null,
+        last_payment_date: null,
+        last_payment_amount: null,
+        total_paid_in_window: 0,
+      });
+    }
+    const summary = byCustomer.get(p.customer_id)!;
+    summary.total_paid_in_window += p.total_amount;
+    if (!summary.last_payment_date || p.txn_date > summary.last_payment_date) {
+      summary.last_payment_date = p.txn_date;
+      summary.last_payment_amount = p.total_amount;
+    }
+  }
+  return byCustomer;
+}
+
 // ─── AS-OF BALANCE SHEET ────────────────────────────────────────────────
 
 export interface BalanceSheetSummary {

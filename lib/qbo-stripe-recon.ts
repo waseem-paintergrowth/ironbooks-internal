@@ -280,6 +280,8 @@ export interface QBOCustomerLite {
   id: string;
   display_name: string;
   primary_email: string | null;
+  primary_phone?: string | null;
+  notes?: string | null;
 }
 
 /**
@@ -313,6 +315,8 @@ export async function fetchAllCustomers(
         id: c.Id,
         display_name: c.DisplayName || c.CompanyName || c.GivenName || "",
         primary_email: c.PrimaryEmailAddr?.Address || null,
+        primary_phone: c.PrimaryPhone?.FreeFormNumber || null,
+        notes: c.Notes || null,
       });
     }
     if (customers.length < pageSize) break;
