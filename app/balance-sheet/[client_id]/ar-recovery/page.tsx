@@ -1,0 +1,174 @@
+import { AppShell } from "@/components/AppShell";
+import { TopBar } from "@/components/TopBar";
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { redirect, notFound } from "next/navigation";
+import Link from "next/link";
+import { ArrowLeft, Search, ArrowRight, Sparkles, Wallet } from "lucide-react";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * /balance-sheet/[client_id]/ar-recovery
+ *
+ * Landing page for all three A/R recovery tools.
+ * Bookkeeper picks the one that matches the mess in front of her.
+ */
+export default async function ArRecoveryLanding({
+  params,
+}: {
+  params: Promise<{ client_id: string }>;
+}) {
+  const { client_id } = await params;
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/auth/login");
+
+  const service = createServiceSupabase();
+  const { data: client } = await service
+    .from("client_links")
+    .select("id, client_name")
+    .eq("id", client_id)
+    .single();
+  if (!client) notFound();
+
+  // Fail-soft latest-scan badges per tool
+  let ufAuditScan: any = null;
+  let uncatScan: any = null;
+  try {
+    const { data } = await service
+      .from("uf_audit_scans" as any)
+      .select("created_at, status, orphan_count, total_orphan_amount")
+      .eq("client_link_id", client_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    ufAuditScan = data;
+  } catch {}
+  try {
+    const { data } = await service
+      .from("uncat_income_scans" as any)
+      .select("created_at, status, deposits_scanned, total_uncat_amount, exact_single_count, no_match_count")
+      .eq("client_link_id", client_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    uncatScan = data;
+  } catch {}
+
+  return (
+    <AppShell>
+      <TopBar
+        title={`A/R Recovery — ${(client as any).client_name}`}
+        subtitle="Find money that arrived but never got applied to the right invoice — three tools, one toolbox"
+      />
+      <div className="px-8 py-6 max-w-6xl space-y-4">
+        <Link
+          href={`/balance-sheet/${client_id}/coa`}
+          className="inline-flex items-center gap-1 text-sm text-ink-slate hover:text-navy"
+        >
+          <ArrowLeft size={14} />
+          Back to BS COA viewer
+        </Link>
+
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900 max-w-3xl">
+          <strong>Pick the tool that matches your problem:</strong> if money is stuck in
+          Undeposited Funds and never reached the bank → UF Audit. If a customer payment
+          DID reach the bank but isn't applied to their open invoice → Match UF → A/R.
+          If a deposit landed in Uncategorized Income because nobody knew who it was from
+          → Uncategorized Income Recovery.
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-4">
+          {/* UF Audit */}
+          <Link
+            href={`/balance-sheet/${client_id}/uf-audit`}
+            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-amber-500 hover:shadow-md transition group"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-8 h-8 bg-amber-100 text-amber-700 rounded flex items-center justify-center">
+                <Search size={16} />
+              </div>
+              <div className="font-bold text-navy">Undeposited Funds Audit</div>
+            </div>
+            <p className="text-xs text-ink-slate mb-3">
+              Find Receive-Payment entries in Undeposited Funds that have no
+              corresponding bank deposit. Resolve via Owner Draw, Write-off,
+              ask-client email, or manual flag.
+            </p>
+            {ufAuditScan && (
+              <div className="text-[11px] text-amber-700 font-semibold">
+                Last scan: {ufAuditScan.orphan_count || 0} orphan
+                {ufAuditScan.orphan_count === 1 ? "" : "s"} ·{" "}
+                {Number(ufAuditScan.total_orphan_amount || 0).toLocaleString("en-US", {
+                  style: "currency",
+                  currency: "USD",
+                })}
+              </div>
+            )}
+            <div className="text-xs text-teal font-semibold group-hover:underline mt-2 inline-flex items-center gap-1">
+              Open <ArrowRight size={12} />
+            </div>
+          </Link>
+
+          {/* UF → A/R matcher */}
+          <Link
+            href={`/balance-sheet/${client_id}`}
+            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-teal hover:shadow-md transition group"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-8 h-8 bg-teal-light text-teal-dark rounded flex items-center justify-center">
+                <Wallet size={16} />
+              </div>
+              <div className="font-bold text-navy">Match UF → Open A/R</div>
+            </div>
+            <p className="text-xs text-ink-slate mb-3">
+              Take Receive-Payments stuck in UF with a known customer + amount,
+              and apply them to that customer's open invoices. Best when UF
+              just needs to be applied, not investigated.
+            </p>
+            <div className="text-[11px] text-ink-slate italic mb-2">
+              Launches from the main Balance Sheet page → UF → A/R button.
+            </div>
+            <div className="text-xs text-teal font-semibold group-hover:underline mt-2 inline-flex items-center gap-1">
+              Go to BS page <ArrowRight size={12} />
+            </div>
+          </Link>
+
+          {/* Uncategorized Income Recovery */}
+          <Link
+            href={`/balance-sheet/${client_id}/uncat-income-recovery`}
+            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-purple-500 hover:shadow-md transition group"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-8 h-8 bg-purple-100 text-purple-700 rounded flex items-center justify-center">
+                <Sparkles size={16} />
+              </div>
+              <div className="font-bold text-navy">Uncategorized Income Recovery</div>
+              <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded font-semibold">
+                NEW
+              </span>
+            </div>
+            <p className="text-xs text-ink-slate mb-3">
+              Find deposits landed in "Uncategorized Income" because the
+              bookkeeper didn't know the customer. Auto-match to open invoices,
+              Claude infers customer from bank descriptions, one-click apply.
+            </p>
+            {uncatScan && (
+              <div className="text-[11px] text-purple-700 font-semibold">
+                Last scan: {uncatScan.deposits_scanned || 0} deposits ·{" "}
+                {Number(uncatScan.total_uncat_amount || 0).toLocaleString("en-US", {
+                  style: "currency",
+                  currency: "USD",
+                })}{" "}
+                · {uncatScan.exact_single_count || 0} exact match
+              </div>
+            )}
+            <div className="text-xs text-teal font-semibold group-hover:underline mt-2 inline-flex items-center gap-1">
+              Open <ArrowRight size={12} />
+            </div>
+          </Link>
+        </div>
+      </div>
+    </AppShell>
+  );
+}

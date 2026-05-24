@@ -180,12 +180,12 @@ export function BsCoaTreeClient({
           Show inactive
         </label>
         <Link
-          href={`/balance-sheet/${clientLinkId}/uf-audit`}
+          href={`/balance-sheet/${clientLinkId}/ar-recovery`}
           className="ml-auto inline-flex items-center gap-1.5 bg-white border-2 border-amber-500 text-amber-800 hover:bg-amber-50 text-xs font-bold px-3 py-1.5 rounded-lg"
-          title="Find Receive-Payment entries in Undeposited Funds that never deposited to the bank — deterministic, group by customer, bulk JE"
+          title="A/R Recovery toolkit: UF Audit, UF→A/R matcher, Uncat Income Recovery"
         >
           <Search size={12} />
-          UF Audit
+          A/R Recovery
         </Link>
         <Link
           href={`/balance-sheet/${clientLinkId}/coa/ai-fix`}
