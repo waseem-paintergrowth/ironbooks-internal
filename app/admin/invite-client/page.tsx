@@ -35,11 +35,19 @@ export default async function InviteClientPage() {
   }
 
   // Pull active clients for the picker
-  const { data: clients } = await service
+  const { data: clientsRaw } = await service
     .from("client_links")
     .select("id, client_name, jurisdiction, state_province, client_email")
     .eq("is_active", true)
     .order("client_name");
+
+  // Pre-compute a suggested owner full name from the company name
+  // (e.g. "Cliff Kranenburg Painting Inc." → "Cliff Kranenburg"). Saves
+  // the admin from re-typing it on every invite.
+  const clients = ((clientsRaw as any[]) || []).map((c) => ({
+    ...c,
+    suggested_full_name: suggestOwnerName(c.client_name),
+  }));
 
   // Pull existing client_users with their user + client_name. We do two
   // queries + manual join — simpler than fighting the Supabase typed
@@ -90,10 +98,81 @@ export default async function InviteClientPage() {
       />
       <div className="px-8 py-6 max-w-5xl">
         <InviteClientUI
-          clients={(clients as any[]) || []}
+          clients={clients}
           existingMappings={enrichedMappings}
         />
       </div>
     </AppShell>
   );
+}
+
+/**
+ * Heuristic: extract a likely owner name from a business name.
+ *
+ * Strategy:
+ *   1. Strip common business suffixes (Inc, LLC, Corp, etc.)
+ *   2. Strip industry-specific descriptive words (Painting, Construction, etc.)
+ *   3. Strip connectors (and, &, the)
+ *   4. If 2-3 tokens remain AND each looks like a proper name → join + return
+ *   5. Otherwise return null (admin types it manually)
+ *
+ * Examples:
+ *   "Cliff Kranenburg Painting Inc." → "Cliff Kranenburg"
+ *   "Hudson Construction LLC"         → null (Hudson alone could be a name OR a city)
+ *   "Smith & Jones Builders"          → "Smith Jones"  (acceptable)
+ *   "Camellia Painting Pros"          → null (1 token isn't enough)
+ *   "ACME Roofing"                    → null (ACME isn't title-case)
+ */
+function suggestOwnerName(companyName: string | null | undefined): string | null {
+  if (!companyName) return null;
+
+  const STRIP = new Set(
+    [
+      // Legal suffixes
+      "inc", "inc.", "incorporated",
+      "llc", "l.l.c.", "l.l.c",
+      "corp", "corp.", "corporation",
+      "ltd", "ltd.", "limited",
+      "llp", "l.l.p.", "l.l.p",
+      "lp", "l.p.",
+      "co", "co.", "company",
+      "pllc", "pc", "p.c.", "pa", "p.a.",
+      // Industry / descriptor words common in painting/construction clients
+      "painting", "painters", "paints",
+      "construction", "contractors", "contracting", "contractor",
+      "builders", "building", "build",
+      "services", "service",
+      "group", "holdings", "enterprises", "industries",
+      "pros", "professional", "professionals",
+      "solutions", "renovations", "renovation",
+      "remodeling", "remodel",
+      "homes", "home",
+      "design", "designs",
+      "studio", "studios",
+      "the",
+      "and", "&",
+    ].map((s) => s.toLowerCase())
+  );
+
+  // Tokenize on whitespace + commas
+  const tokens = companyName
+    .split(/[\s,]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  // Filter out business-word tokens (case-insensitive, allow trailing punctuation)
+  const kept = tokens.filter((t) => {
+    const normalized = t.toLowerCase().replace(/[.,]+$/, "");
+    return !STRIP.has(normalized);
+  });
+
+  if (kept.length < 2 || kept.length > 3) return null;
+
+  // Every token must look like a proper-noun name: starts with uppercase letter,
+  // followed by lowercase letters (allowing apostrophe / hyphen mid-name).
+  // Filters out acronyms like "ACME" and weird-cased tokens.
+  const looksLikeName = (token: string) => /^[A-Z][a-zA-Z'-]+$/.test(token);
+  if (!kept.every(looksLikeName)) return null;
+
+  return kept.join(" ");
 }

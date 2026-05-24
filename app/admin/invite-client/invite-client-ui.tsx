@@ -12,6 +12,8 @@ interface Client {
   jurisdiction: string;
   state_province: string | null;
   client_email: string | null;
+  /** Server-side heuristic name extracted from client_name. May be null. */
+  suggested_full_name: string | null;
 }
 
 interface Mapping {
@@ -66,10 +68,26 @@ export function InviteClientUI({
     );
   }, [existingMappings, listSearch]);
 
-  // Auto-fill email from client_email when a client is picked
+  // Auto-fill email + name from client_links data when a client is picked.
+  // Always overwrites (vs only-when-empty) so picking a different client
+  // doesn't leave stale data from a previous selection. Admin can still
+  // edit before sending.
+  const [emailPrefilled, setEmailPrefilled] = useState(false);
+  const [namePrefilled, setNamePrefilled] = useState(false);
   function pickClient(c: Client) {
     setClientId(c.id);
-    if (c.client_email && !email) setEmail(c.client_email);
+    if (c.client_email) {
+      setEmail(c.client_email);
+      setEmailPrefilled(true);
+    } else {
+      setEmailPrefilled(false);
+    }
+    if (c.suggested_full_name) {
+      setFullName(c.suggested_full_name);
+      setNamePrefilled(true);
+    } else {
+      setNamePrefilled(false);
+    }
   }
 
   async function submit(e: React.FormEvent) {
@@ -260,25 +278,55 @@ export function InviteClientUI({
         {/* Email + name */}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">Email</label>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">Email</label>
+              {emailPrefilled && (
+                <span className="text-[9px] font-bold bg-teal-light text-teal-dark px-1.5 py-0.5 rounded">
+                  PULLED — VERIFY
+                </span>
+              )}
+            </div>
             <input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (emailPrefilled) setEmailPrefilled(false);
+              }}
               placeholder="owner@business.com"
-              className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+              className={`mt-1 w-full px-3 py-2 text-sm border rounded-lg ${
+                emailPrefilled ? "border-teal/40 bg-teal/5" : "border-slate-200"
+              }`}
             />
           </div>
           <div>
-            <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">Full name</label>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">Full name</label>
+              {namePrefilled && (
+                <span className="text-[9px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">
+                  GUESSED — VERIFY
+                </span>
+              )}
+            </div>
             <input
               value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
+              onChange={(e) => {
+                setFullName(e.target.value);
+                if (namePrefilled) setNamePrefilled(false);
+              }}
               placeholder="Jane Smith"
-              className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg"
+              className={`mt-1 w-full px-3 py-2 text-sm border rounded-lg ${
+                namePrefilled ? "border-amber-300 bg-amber-50" : "border-slate-200"
+              }`}
             />
           </div>
         </div>
+        {(emailPrefilled || namePrefilled) && (
+          <div className="text-[11px] text-ink-light -mt-1">
+            {emailPrefilled && <>📧 Email pulled from this client's record. </>}
+            {namePrefilled && <>👤 Name guessed from the company name — double-check before sending.</>}
+          </div>
+        )}
 
         {/* Silent-create checkbox. Defaults off so the common case still
             sends the magic-link email. */}
