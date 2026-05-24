@@ -39,9 +39,11 @@ export function InviteClientUI({
   const [clientId, setClientId] = useState("");
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
+  const [silent, setSilent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [lastCreatedUserId, setLastCreatedUserId] = useState<string | null>(null);
   const [clientSearch, setClientSearch] = useState("");
   const [listSearch, setListSearch] = useState("");
 
@@ -74,6 +76,7 @@ export function InviteClientUI({
     e.preventDefault();
     setError("");
     setSuccess("");
+    setLastCreatedUserId(null);
     if (!clientId || !email || !fullName) {
       setError("All fields required.");
       return;
@@ -87,20 +90,46 @@ export function InviteClientUI({
           email: email.trim(),
           full_name: fullName.trim(),
           client_link_id: clientId,
+          send_invite: !silent,
         }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      setSuccess(body.message || "Invite sent");
-      setEmail("");
-      setFullName("");
-      setClientId("");
-      // Quick-and-dirty refresh — server-rendered list lives one route up
-      window.location.reload();
+      setSuccess(body.message || "Done");
+      // For silent creates, surface the user_id so admin can jump straight
+      // into impersonation without scrolling to find them in the table.
+      if (silent && body.user_id) {
+        setLastCreatedUserId(body.user_id);
+        // Don't reload — let the admin click "View portal now"
+        setEmail("");
+        setFullName("");
+        setClientId("");
+      } else {
+        setEmail("");
+        setFullName("");
+        setClientId("");
+        window.location.reload();
+      }
     } catch (e: any) {
       setError(e?.message || "Invite failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function viewAsNewUser() {
+    if (!lastCreatedUserId) return;
+    try {
+      const res = await fetch("/api/admin/impersonate/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_user_id: lastCreatedUserId }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      window.location.href = body.redirect || "/portal";
+    } catch (e: any) {
+      setError(e?.message || "Couldn't start portal session");
     }
   }
 
@@ -251,6 +280,24 @@ export function InviteClientUI({
           </div>
         </div>
 
+        {/* Silent-create checkbox. Defaults off so the common case still
+            sends the magic-link email. */}
+        <label className="flex items-start gap-2 text-xs text-ink-slate cursor-pointer">
+          <input
+            type="checkbox"
+            checked={silent}
+            onChange={(e) => setSilent(e.target.checked)}
+            className="mt-0.5 rounded border-slate-300"
+          />
+          <span>
+            <strong className="text-navy">Create silently — don't send the email</strong>
+            <span className="block text-[11px] text-ink-light">
+              The account is provisioned but no magic link goes out. Use for testing — you'll
+              be able to impersonate the user immediately to walk the portal.
+            </span>
+          </span>
+        </label>
+
         {error && (
           <div className="p-3 bg-red-50 border border-red-200 rounded text-sm text-red-800 flex items-start gap-2">
             <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
@@ -263,7 +310,18 @@ export function InviteClientUI({
         {success && (
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-800 flex items-start gap-2">
             <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0" />
-            <div className="flex-1">{success}</div>
+            <div className="flex-1">
+              <div>{success}</div>
+              {lastCreatedUserId && (
+                <button
+                  type="button"
+                  onClick={viewAsNewUser}
+                  className="mt-2 inline-flex items-center gap-1 px-3 py-1 bg-amber-500 text-white text-xs font-bold rounded hover:bg-amber-600"
+                >
+                  <Eye size={11} /> View portal as this user now
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -273,7 +331,7 @@ export function InviteClientUI({
           className="px-4 py-2 bg-teal text-white rounded-lg text-sm font-semibold hover:bg-teal-dark disabled:opacity-50 inline-flex items-center gap-2"
         >
           {loading ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-          {loading ? "Sending…" : "Send invite"}
+          {loading ? (silent ? "Creating…" : "Sending…") : (silent ? "Create silently" : "Send invite")}
         </button>
       </form>
 

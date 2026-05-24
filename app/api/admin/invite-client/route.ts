@@ -48,6 +48,10 @@ export async function POST(request: Request) {
   const email = (body.email || "").trim().toLowerCase();
   const fullName = (body.full_name || "").trim();
   const clientLinkId = body.client_link_id;
+  // When false: provision the account silently (no email sent). Used for
+  // testing — admin can immediately impersonate the user to walk the
+  // portal. Default true preserves the original invite-and-email behavior.
+  const sendInvite: boolean = body.send_invite !== false;
 
   if (!email || !fullName || !clientLinkId) {
     return NextResponse.json(
@@ -127,18 +131,38 @@ export async function POST(request: Request) {
       }
     }
   } else {
-    // 3a. New invite via Supabase Auth Admin API
-    const { data: authResponse, error: inviteErr } = await (service as any).auth.admin
-      .inviteUserByEmail(email, {
-        data: { full_name: fullName, role: "client" },
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+    // 3a. New account. Two paths depending on send_invite:
+    //   - true  → inviteUserByEmail sends the magic-link email
+    //   - false → createUser with email_confirm:true creates the auth row
+    //             silently. The user can still later log in via "send me a
+    //             magic link" on /auth/login when we're ready.
+    let authResponse: any;
+    if (sendInvite) {
+      const { data, error: inviteErr } = await (service as any).auth.admin
+        .inviteUserByEmail(email, {
+          data: { full_name: fullName, role: "client" },
+          redirectTo: `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/auth/callback`,
+        });
+      if (inviteErr || !data?.user) {
+        return NextResponse.json(
+          { error: inviteErr?.message || "Invite failed" },
+          { status: 500 }
+        );
+      }
+      authResponse = data;
+    } else {
+      const { data, error: createErr } = await (service as any).auth.admin.createUser({
+        email,
+        email_confirm: true,
+        user_metadata: { full_name: fullName, role: "client" },
       });
-
-    if (inviteErr || !authResponse?.user) {
-      return NextResponse.json(
-        { error: inviteErr?.message || "Invite failed" },
-        { status: 500 }
-      );
+      if (createErr || !data?.user) {
+        return NextResponse.json(
+          { error: createErr?.message || "Silent create failed" },
+          { status: 500 }
+        );
+      }
+      authResponse = data;
     }
     userId = authResponse.user.id;
 
@@ -203,7 +227,9 @@ export async function POST(request: Request) {
 
   // 5. Audit log
   await service.from("audit_log").insert({
-    event_type: isResend ? "client_invite_resent" : "client_invited",
+    event_type: isResend
+      ? "client_invite_resent"
+      : sendInvite ? "client_invited" : "client_silent_created",
     user_id: user.id,
     request_payload: {
       client_link_id: clientLinkId,
@@ -211,6 +237,7 @@ export async function POST(request: Request) {
       invited_email: email,
       invited_full_name: fullName,
       resend: isResend,
+      silent: !sendInvite,
     } as any,
   });
 
@@ -218,9 +245,12 @@ export async function POST(request: Request) {
     ok: true,
     user_id: userId,
     resend: isResend,
+    silent: !sendInvite,
     message: isResend
       ? `Magic link re-sent to ${email}`
-      : `Invite sent to ${email}`,
+      : sendInvite
+        ? `Invite sent to ${email}`
+        : `Account created silently for ${email} (no email sent)`,
   });
 }
 
