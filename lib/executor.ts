@@ -923,23 +923,111 @@ export async function executeJob(jobId: string): Promise<{
           continue;
         }
 
-        // Resolve the target account's QBO ID by name (case-insensitive)
-        const targetAccount = postRenameByName.get(action.new_name.trim().toLowerCase());
-        if (!targetAccount) {
-          pendingFailures.push({
-            intended_action: "rename",
-            account_id: action.qbo_account_id,
-            account_name: action.current_name || "Unknown",
-            request_body: { merge_target: action.new_name },
-            qbo_error: `Target account "${action.new_name}" not found in QBO after rename stage`,
-            account_snapshot: null,
-          });
-          await logActionResult(ctx, action.id, "manual_cleanup_required", {
-            name: action.current_name,
-            reason: `Merge target "${action.new_name}" not found — may need to be created manually`,
-          });
-          continue;
+        // ─── Resolve the target account ───
+        // Priority order:
+        //   1. action.new_qbo_account_id — if explicitly captured at action-
+        //      creation time, this is the source of truth. Name collisions
+        //      can't bite us.
+        //   2. Name lookup, BUT only if exactly ONE account matches.
+        //      If two or more share the name (e.g. "Software" alone AND
+        //      "General Operating Expenses:Software" as a leaf, OR
+        //      "QuickBooks Payroll" both at root and under Payroll Expenses),
+        //      fail loud — the bookkeeper has to disambiguate.
+        //
+        // The old code used a Map keyed by lowercased name, which silently
+        // picked whichever the Map happened to hold last. This caused the
+        // "we selected QuickBooks Payroll but it landed in Software" class
+        // of bug.
+        let targetAccount: any;
+        let targetResolveReason = "";
+
+        if (action.new_qbo_account_id) {
+          targetAccount = postRenameById.get(action.new_qbo_account_id);
+          targetResolveReason = `stored target ID ${action.new_qbo_account_id}`;
+          if (!targetAccount) {
+            pendingFailures.push({
+              intended_action: "rename",
+              account_id: action.qbo_account_id,
+              account_name: action.current_name || "Unknown",
+              request_body: { merge_target_id: action.new_qbo_account_id, merge_target_name: action.new_name },
+              qbo_error: `Target account ID ${action.new_qbo_account_id} ("${action.new_name}") not found in QBO`,
+              account_snapshot: null,
+            });
+            await logActionResult(ctx, action.id, "manual_cleanup_required", {
+              name: action.current_name,
+              reason: `Stored target account ID ${action.new_qbo_account_id} no longer exists — manual re-pick needed`,
+            });
+            continue;
+          }
+        } else {
+          // Name lookup with ambiguity detection
+          const wantName = action.new_name.trim().toLowerCase();
+          const candidates: any[] = [];
+          for (const acct of postRenameById.values()) {
+            const a = acct as any;
+            if (
+              String(a.Name || "").trim().toLowerCase() === wantName ||
+              String(a.FullyQualifiedName || "").trim().toLowerCase() === wantName
+            ) {
+              candidates.push(a);
+            }
+          }
+          if (candidates.length === 0) {
+            pendingFailures.push({
+              intended_action: "rename",
+              account_id: action.qbo_account_id,
+              account_name: action.current_name || "Unknown",
+              request_body: { merge_target: action.new_name },
+              qbo_error: `Target account "${action.new_name}" not found in QBO after rename stage`,
+              account_snapshot: null,
+            });
+            await logActionResult(ctx, action.id, "manual_cleanup_required", {
+              name: action.current_name,
+              reason: `Merge target "${action.new_name}" not found — may need to be created manually`,
+            });
+            continue;
+          }
+          if (candidates.length > 1) {
+            const detail = candidates
+              .map((c: any) => `${c.Id}=${c.FullyQualifiedName} (${c.AccountType})`)
+              .join("; ");
+            pendingFailures.push({
+              intended_action: "rename",
+              account_id: action.qbo_account_id,
+              account_name: action.current_name || "Unknown",
+              request_body: { merge_target: action.new_name, candidates: detail },
+              qbo_error: `Ambiguous merge target — multiple accounts match "${action.new_name}": ${detail}. Re-pick with an exact account ID.`,
+              account_snapshot: null,
+            });
+            await logActionResult(ctx, action.id, "manual_cleanup_required", {
+              name: action.current_name,
+              reason: `Multiple accounts match "${action.new_name}" — bookkeeper must disambiguate`,
+            });
+            await logProgress(ctx, "merge_target_ambiguous",
+              `⚠ Skipped merge of "${action.current_name}" — target name "${action.new_name}" matches ${candidates.length} accounts: ${detail}`,
+              { source: action.current_name, target_name: action.new_name, candidates: detail }
+            );
+            continue;
+          }
+          targetAccount = candidates[0];
+          targetResolveReason = `unique name match "${action.new_name}"`;
         }
+
+        // Always log the resolved target — visible in the live job feed so
+        // any wrong-category bug is debuggable without grepping logs.
+        const ta = targetAccount as any;
+        await logProgress(ctx, "merge_target_resolved",
+          `Merge "${action.current_name}" → ${ta.FullyQualifiedName || ta.Name} (ID ${ta.Id} · ${ta.AccountType}). Resolved via ${targetResolveReason}.`,
+          {
+            source_name: action.current_name,
+            source_id: action.qbo_account_id,
+            target_name: ta.Name,
+            target_id: ta.Id,
+            target_fully_qualified: ta.FullyQualifiedName,
+            target_account_type: ta.AccountType,
+            resolved_via: action.new_qbo_account_id ? "stored_id" : "name_lookup",
+          }
+        );
 
         const sourceAccount = postRenameById.get(action.qbo_account_id) as any;
         if (!sourceAccount) {

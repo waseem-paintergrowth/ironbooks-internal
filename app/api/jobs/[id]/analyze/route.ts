@@ -269,12 +269,20 @@ export async function POST(
     // separate per-card workflow on the live execution / report screen.
     const actions = analysis.suggestions.map((s, idx) => {
       const isSuppressed = s.qbo_account_id && suppressedActionAccountIds.has(s.qbo_account_id);
+      // If the target already exists in QBO at analyze-time, capture its
+      // stable QBO ID so the executor doesn't have to re-resolve by name
+      // (which can collide on subaccounts and post-rename moves — caused
+      // the "we picked QuickBooks Payroll but it landed in Software" bug).
+      const targetInQbo = s.target_master_account
+        ? qboByName.get(String(s.target_master_account).toLowerCase().trim())
+        : null;
       return {
         job_id: jobId,
         qbo_account_id: s.qbo_account_id,
         current_name: s.current_name,
         action: isSuppressed ? "flag" : s.action,
         new_name: s.target_master_account || null,
+        new_qbo_account_id: targetInQbo ? targetInQbo.Id : null,
         ai_confidence: s.confidence,
         ai_reasoning: s.reasoning,
         ai_suggested_target: s.target_master_account || null,
