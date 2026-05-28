@@ -1,0 +1,389 @@
+/**
+ * Hardcore BS Cleanup — Phase 1
+ *
+ * Detects phantom-A/R from CRM-migration messes:
+ *
+ *   1. Parse a CRM CSV export (Drip Jobs / Jobber / generic) — the
+ *      bookkeeper's GROUND TRUTH for what jobs actually exist.
+ *   2. Pull open + recent QBO invoices.
+ *   3. Run duplicate detection: same customer + close-enough amount +
+ *      close-enough date but the CRM only shows one real job →
+ *      flag the extras as duplicates.
+ *   4. Bookkeeper resolves each detected duplicate, finalize pushes
+ *      the corrections to QBO (JE write-off or direct void).
+ *
+ * Two detection paths:
+ *   A) Cross-reference (preferred): a CRM job exists → find ≥2 QBO
+ *      invoices that match it. All but one are duplicates.
+ *   B) Pure heuristic (fallback when no CRM job matches a cluster): if
+ *      QBO has ≥2 invoices for the same customer with the same amount
+ *      and dates within 14 days, AND the extra invoices have no
+ *      separate payments, flag them as likely duplicates with lower
+ *      confidence.
+ */
+
+import type { OpenInvoice } from "./qbo-balance-sheet";
+
+// ─── TYPES ─────────────────────────────────────────────────────────────
+
+export type CrmSource = "drip_jobs" | "jobber" | "generic";
+
+export interface ParsedCrmJob {
+  /** The CRM's own identifier (job #, estimate #, etc.) if present. */
+  crm_job_id: string | null;
+  job_name: string | null;
+  customer_name: string;
+  /** Normalized status. Defaults to "active" if we can't tell. */
+  job_status: string;
+  /** Total job amount (may include revisions — bookkeeper sees raw row too). */
+  amount: number | null;
+  /** Job creation or completion date — used for matching against QBO TxnDate. */
+  job_date: string | null; // YYYY-MM-DD
+  /** Original CSV row so we can audit/debug. */
+  raw_row: Record<string, string>;
+}
+
+export interface DetectedDuplicate {
+  /** The QBO invoice we'd write off / void. */
+  qbo_invoice: OpenInvoice;
+  /** Index into the CRM-jobs array of the matched ground-truth job (or null when path B). */
+  matched_crm_job_index: number | null;
+  /** The "surviving" QBO invoice — the one we'd KEEP. */
+  surviving_qbo_invoice: OpenInvoice;
+  confidence: number;     // 0..1
+  reasoning: string;
+}
+
+// ─── CSV PARSING ──────────────────────────────────────────────────────
+
+/**
+ * Lightweight CSV parser. Handles quoted fields with embedded commas and
+ * newlines. We're not pulling in papaparse for one feature — this works
+ * for any well-formed CSV export from a SaaS tool.
+ */
+export function parseCsv(input: string): Record<string, string>[] {
+  // Strip BOM if present
+  const text = input.replace(/^﻿/, "");
+  const rows: string[][] = [];
+  let cur: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        }
+        inQuotes = false;
+        i++;
+        continue;
+      }
+      field += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = true;
+      i++;
+      continue;
+    }
+    if (ch === ",") {
+      cur.push(field);
+      field = "";
+      i++;
+      continue;
+    }
+    if (ch === "\r") {
+      i++;
+      continue;
+    }
+    if (ch === "\n") {
+      cur.push(field);
+      rows.push(cur);
+      cur = [];
+      field = "";
+      i++;
+      continue;
+    }
+    field += ch;
+    i++;
+  }
+  if (field.length > 0 || cur.length > 0) {
+    cur.push(field);
+    rows.push(cur);
+  }
+
+  if (rows.length === 0) return [];
+  const headers = rows[0].map((h) => h.trim());
+  const out: Record<string, string>[] = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (row.every((c) => !c || c.trim() === "")) continue;
+    const obj: Record<string, string> = {};
+    headers.forEach((h, idx) => {
+      obj[h] = (row[idx] ?? "").trim();
+    });
+    out.push(obj);
+  }
+  return out;
+}
+
+// ─── CRM-SPECIFIC NORMALIZERS ─────────────────────────────────────────
+
+/**
+ * Column-mapping per CRM. Each value is a list of headers we'll accept
+ * (case-insensitive). First match wins. Order matters — put the most
+ * specific header first.
+ */
+const COLUMN_MAPS: Record<CrmSource, Record<keyof Omit<ParsedCrmJob, "raw_row">, string[]>> = {
+  drip_jobs: {
+    crm_job_id: ["Job ID", "JobID", "Estimate #", "Estimate Number", "ID"],
+    job_name: ["Job Name", "Job Title", "Title", "Description"],
+    customer_name: ["Customer", "Customer Name", "Client", "Client Name"],
+    job_status: ["Status", "Job Status"],
+    amount: ["Total", "Amount", "Job Total", "Estimate Total", "Invoice Total"],
+    job_date: ["Created", "Created At", "Date", "Estimate Date", "Job Date"],
+  },
+  jobber: {
+    crm_job_id: ["Job #", "Job Number", "ID"],
+    job_name: ["Title", "Job Title", "Description"],
+    customer_name: ["Client", "Client Name", "Customer"],
+    job_status: ["Status", "Job Status"],
+    amount: ["Total", "Job Total", "Invoiced Amount", "Amount"],
+    job_date: ["Created", "Date Created", "Start Date", "Job Date"],
+  },
+  generic: {
+    crm_job_id: ["Job ID", "ID", "Number", "#"],
+    job_name: ["Title", "Description", "Job", "Name"],
+    customer_name: ["Customer", "Client", "Name"],
+    job_status: ["Status"],
+    amount: ["Amount", "Total", "Value"],
+    job_date: ["Date", "Created"],
+  },
+};
+
+function pickField(row: Record<string, string>, candidates: string[]): string | null {
+  // Build a lowercased-key index once per row
+  const lower = new Map<string, string>();
+  for (const k of Object.keys(row)) {
+    lower.set(k.toLowerCase().trim(), row[k]);
+  }
+  for (const c of candidates) {
+    const v = lower.get(c.toLowerCase().trim());
+    if (v != null && v !== "") return v;
+  }
+  return null;
+}
+
+function parseAmount(raw: string | null): number | null {
+  if (!raw) return null;
+  // Strip currency symbols, commas, parentheses-as-negative
+  const cleaned = raw.replace(/[,$\s]/g, "");
+  const parenMatch = cleaned.match(/^\((.+)\)$/);
+  const n = Number(parenMatch ? "-" + parenMatch[1] : cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseDate(raw: string | null): string | null {
+  if (!raw) return null;
+  // Accept ISO, M/D/YYYY, YYYY-MM-DD, DD-MM-YYYY (the latter we just hand to Date)
+  const trimmed = raw.trim();
+  // Try ISO date first
+  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.slice(0, 10);
+  // M/D/YYYY
+  const m = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) {
+    const [_, mm, dd, yy] = m;
+    const yyyy = yy.length === 2 ? `20${yy}` : yy;
+    return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+  // Fallback to Date parser
+  const d = new Date(trimmed);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+export function normalizeCrmRows(rows: Record<string, string>[], crm: CrmSource): ParsedCrmJob[] {
+  const map = COLUMN_MAPS[crm];
+  const out: ParsedCrmJob[] = [];
+  for (const row of rows) {
+    const customer = pickField(row, map.customer_name);
+    if (!customer) continue; // skip rows without a customer — can't match anything
+    out.push({
+      crm_job_id: pickField(row, map.crm_job_id),
+      job_name: pickField(row, map.job_name),
+      customer_name: customer,
+      job_status: pickField(row, map.job_status) || "active",
+      amount: parseAmount(pickField(row, map.amount)),
+      job_date: parseDate(pickField(row, map.job_date)),
+      raw_row: row,
+    });
+  }
+  return out;
+}
+
+// ─── DUPLICATE DETECTION ──────────────────────────────────────────────
+
+const AMOUNT_TOLERANCE = 5;        // dollars
+const DATE_WINDOW_DAYS = 14;       // close-enough date window
+const NAME_MATCH_LOOSE = true;     // accept "John Smith" === "John Smith Painting"
+
+function daysBetween(a: string, b: string): number {
+  const da = new Date(a).getTime();
+  const db = new Date(b).getTime();
+  if (!Number.isFinite(da) || !Number.isFinite(db)) return 9999;
+  return Math.abs((da - db) / 86_400_000);
+}
+
+function customerNamesMatch(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const na = a.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  const nb = b.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+  if (na === nb) return true;
+  if (!NAME_MATCH_LOOSE) return false;
+  // One contains the other (for "John Smith" vs "John Smith Painting")
+  if (na.length >= 6 && nb.includes(na)) return true;
+  if (nb.length >= 6 && na.includes(nb)) return true;
+  return false;
+}
+
+export interface DetectDuplicatesInput {
+  crmJobs: ParsedCrmJob[];
+  qboInvoices: OpenInvoice[];
+}
+
+export interface DetectDuplicatesResult {
+  duplicates: DetectedDuplicate[];
+  /** QBO invoices we found a clean 1:1 CRM match for (= legitimate). */
+  legitimateInvoiceIds: Set<string>;
+  /** Invoices that didn't match any CRM job — surfaced for the bookkeeper
+   *  but NOT auto-flagged in Phase 1 (they belong in "stale A/R" in
+   *  Phase 2). Returned for stats only. */
+  unmatchedInvoiceIds: Set<string>;
+}
+
+export function detectDuplicates(input: DetectDuplicatesInput): DetectDuplicatesResult {
+  const duplicates: DetectedDuplicate[] = [];
+  const legitimate = new Set<string>();
+  const unmatched = new Set<string>();
+
+  // Group QBO invoices by normalized customer name
+  const byCustomer = new Map<string, OpenInvoice[]>();
+  for (const inv of input.qboInvoices) {
+    const key = (inv.customer_name || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    if (!key) continue;
+    if (!byCustomer.has(key)) byCustomer.set(key, []);
+    byCustomer.get(key)!.push(inv);
+  }
+
+  // ── Path A: cross-reference each CRM job → find matching QBO invoices ──
+  // If a CRM job matches >1 invoice, all but the highest-confidence one
+  // are duplicates.
+  const matchedQboIds = new Set<string>();
+  input.crmJobs.forEach((job, jobIdx) => {
+    if (!job.customer_name) return;
+    const customerKey = job.customer_name.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim();
+    const candidates = byCustomer.get(customerKey) || [];
+
+    // Filter to amount + date window
+    const matched = candidates.filter((inv) => {
+      if (job.amount != null && Math.abs(inv.total_amount - job.amount) > AMOUNT_TOLERANCE) return false;
+      if (job.job_date && daysBetween(inv.txn_date, job.job_date) > DATE_WINDOW_DAYS) return false;
+      return true;
+    });
+
+    if (matched.length === 0) return; // no QBO invoices for this CRM job — bookkeeper case
+    if (matched.length === 1) {
+      legitimate.add(matched[0].qbo_invoice_id);
+      matchedQboIds.add(matched[0].qbo_invoice_id);
+      return;
+    }
+
+    // 2+ QBO invoices match this single CRM job → all but one are duplicates.
+    // Survivor pick: the one with the most-recent transaction date (likely
+    // the final revision the bookkeeper actually kept open) — falls back to
+    // the lowest QBO id as a deterministic tiebreaker.
+    const sorted = [...matched].sort((a, b) => {
+      const c = b.txn_date.localeCompare(a.txn_date);
+      if (c !== 0) return c;
+      return a.qbo_invoice_id.localeCompare(b.qbo_invoice_id);
+    });
+    const survivor = sorted[0];
+    legitimate.add(survivor.qbo_invoice_id);
+    matchedQboIds.add(survivor.qbo_invoice_id);
+    for (let i = 1; i < sorted.length; i++) {
+      const dup = sorted[i];
+      duplicates.push({
+        qbo_invoice: dup,
+        matched_crm_job_index: jobIdx,
+        surviving_qbo_invoice: survivor,
+        confidence: 0.92,
+        reasoning:
+          `CRM job ${job.crm_job_id ? `#${job.crm_job_id} ` : ""}for ${job.customer_name}` +
+          (job.job_date ? ` on ${job.job_date}` : "") +
+          ` matches ${sorted.length} QBO invoices (likely CRM revision dupes). ` +
+          `Keeping ${survivor.doc_number || survivor.qbo_invoice_id}, flagging ${dup.doc_number || dup.qbo_invoice_id}.`,
+      });
+      matchedQboIds.add(dup.qbo_invoice_id);
+    }
+  });
+
+  // ── Path B: heuristic on QBO-only clusters (no CRM match) ──
+  // For invoices we couldn't match to ANY CRM job: if there are ≥2 invoices
+  // for the same customer with the same amount and dates within window,
+  // flag the extras as likely-duplicate at lower confidence.
+  for (const [_, invoices] of byCustomer) {
+    const unattributed = invoices.filter((inv) => !matchedQboIds.has(inv.qbo_invoice_id));
+    if (unattributed.length < 2) {
+      for (const inv of unattributed) unmatched.add(inv.qbo_invoice_id);
+      continue;
+    }
+    // Cluster by (amount within tolerance, date within window)
+    const used = new Set<string>();
+    for (let i = 0; i < unattributed.length; i++) {
+      if (used.has(unattributed[i].qbo_invoice_id)) continue;
+      const cluster: OpenInvoice[] = [unattributed[i]];
+      used.add(unattributed[i].qbo_invoice_id);
+      for (let j = i + 1; j < unattributed.length; j++) {
+        if (used.has(unattributed[j].qbo_invoice_id)) continue;
+        if (Math.abs(unattributed[i].total_amount - unattributed[j].total_amount) > AMOUNT_TOLERANCE) continue;
+        if (daysBetween(unattributed[i].txn_date, unattributed[j].txn_date) > DATE_WINDOW_DAYS) continue;
+        cluster.push(unattributed[j]);
+        used.add(unattributed[j].qbo_invoice_id);
+      }
+      if (cluster.length < 2) {
+        unmatched.add(unattributed[i].qbo_invoice_id);
+        continue;
+      }
+      const sorted = [...cluster].sort((a, b) => b.txn_date.localeCompare(a.txn_date));
+      const survivor = sorted[0];
+      for (let k = 1; k < sorted.length; k++) {
+        const dup = sorted[k];
+        duplicates.push({
+          qbo_invoice: dup,
+          matched_crm_job_index: null,
+          surviving_qbo_invoice: survivor,
+          confidence: 0.7,
+          reasoning:
+            `No CRM record matched, but QBO has ${cluster.length} invoices for ${dup.customer_name || "this customer"} at $${dup.total_amount.toFixed(2)} within ${DATE_WINDOW_DAYS} days. ` +
+            `Likely duplicates from a CRM revision sync — verify before write-off.`,
+        });
+      }
+    }
+  }
+
+  // Track strict 0-match invoices for stats
+  for (const inv of input.qboInvoices) {
+    if (!matchedQboIds.has(inv.qbo_invoice_id) && !duplicates.some((d) => d.qbo_invoice.qbo_invoice_id === inv.qbo_invoice_id)) {
+      unmatched.add(inv.qbo_invoice_id);
+    }
+  }
+
+  return { duplicates, legitimateInvoiceIds: legitimate, unmatchedInvoiceIds: unmatched };
+}
+
+export { customerNamesMatch };

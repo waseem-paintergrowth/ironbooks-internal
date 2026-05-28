@@ -3,7 +3,7 @@ import { TopBar } from "@/components/TopBar";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Search, ArrowRight, Sparkles, Wallet } from "lucide-react";
+import { ArrowLeft, Search, ArrowRight, Sparkles, Wallet, Flame } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -163,6 +163,31 @@ export default async function ArRecoveryLanding({
                 · {uncatScan.exact_single_count || 0} exact match
               </div>
             )}
+            <div className="text-xs text-teal font-semibold group-hover:underline mt-2 inline-flex items-center gap-1">
+              Open <ArrowRight size={12} />
+            </div>
+          </Link>
+
+          {/* Hardcore BS Cleanup — Phase 1 (duplicate invoices from CRM migration) */}
+          <Link
+            href={`/balance-sheet/${client_id}/hardcore-cleanup`}
+            className="block p-5 bg-white border-2 border-slate-200 rounded-lg hover:border-red-500 hover:shadow-md transition group"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-8 h-8 bg-red-100 text-red-700 rounded flex items-center justify-center">
+                <Flame size={16} />
+              </div>
+              <div className="font-bold text-navy">Hardcore BS Cleanup</div>
+              <span className="text-[10px] px-1.5 py-0.5 bg-red-100 text-red-800 rounded font-semibold">
+                NEW
+              </span>
+            </div>
+            <p className="text-xs text-ink-slate mb-3">
+              For CRM-migration messes (Drip Jobs → Jobber, etc.) where QBO has 3-4 phantom
+              invoices per real job. Upload the CRM job report, SNAP cross-references against
+              QBO open A/R, flags duplicates, pushes JE write-offs (closed periods) or voids
+              (open periods) to QBO.
+            </p>
             <div className="text-xs text-teal font-semibold group-hover:underline mt-2 inline-flex items-center gap-1">
               Open <ArrowRight size={12} />
             </div>

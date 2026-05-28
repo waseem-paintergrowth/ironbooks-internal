@@ -1,0 +1,94 @@
+import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { NextResponse } from "next/server";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * POST /api/clients/[id]/hardcore-cleanup/[runId]/resolve
+ *
+ * Bulk-set resolution on a list of items. Used by single-row picker and
+ * "accept all duplicates" bulk action.
+ *
+ * Body: {
+ *   item_ids: string[],
+ *   resolution: "pending"|"je_writeoff"|"direct_void"|"keep"|"manual",
+ *   resolution_target_account_id?: string,
+ *   resolution_target_account_name?: string,
+ *   resolution_notes?: string,
+ * }
+ */
+export async function POST(
+  request: Request,
+  context: { params: Promise<{ id: string; runId: string }> }
+) {
+  const { id: clientLinkId, runId } = await context.params;
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const service = createServiceSupabase();
+  const { data: client } = await service
+    .from("client_links")
+    .select("id, assigned_bookkeeper_id")
+    .eq("id", clientLinkId)
+    .single();
+  if (!client) return NextResponse.json({ error: "Client not found" }, { status: 404 });
+
+  const { data: actor } = await service
+    .from("users")
+    .select("role")
+    .eq("id", user.id)
+    .single();
+  const isSenior = ["admin", "lead"].includes((actor as any)?.role || "");
+  const isOwner = (client as any).assigned_bookkeeper_id === user.id;
+  if (!isOwner && !isSenior) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const body = await request.json().catch(() => ({} as any));
+  const itemIds: string[] = Array.isArray(body.item_ids) ? body.item_ids : [];
+  if (itemIds.length === 0) {
+    return NextResponse.json({ error: "item_ids required" }, { status: 400 });
+  }
+  const allowed = new Set(["pending", "je_writeoff", "direct_void", "keep", "manual"]);
+  if (!allowed.has(body.resolution)) {
+    return NextResponse.json({ error: `Invalid resolution: ${body.resolution}` }, { status: 400 });
+  }
+  // je_writeoff requires a target account
+  if (body.resolution === "je_writeoff" && !body.resolution_target_account_id) {
+    return NextResponse.json(
+      { error: "je_writeoff requires resolution_target_account_id (Bad Debt / similar)" },
+      { status: 400 }
+    );
+  }
+
+  const updates: any = {
+    resolution: body.resolution,
+    resolution_target_account_id: body.resolution_target_account_id || null,
+    resolution_target_account_name: body.resolution_target_account_name || null,
+    resolution_notes: body.resolution_notes || null,
+    resolved_by: body.resolution === "pending" ? null : user.id,
+    resolved_at: body.resolution === "pending" ? null : new Date().toISOString(),
+  };
+
+  const { error: updErr, count } = await service
+    .from("hardcore_cleanup_items" as any)
+    .update(updates as any, { count: "exact" })
+    .eq("run_id", runId)
+    .in("id", itemIds);
+
+  if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
+
+  // Refresh aggregate count on the run
+  const { count: resolvedCount } = await service
+    .from("hardcore_cleanup_items" as any)
+    .select("id", { count: "exact", head: true })
+    .eq("run_id", runId)
+    .neq("resolution", "pending");
+  await service
+    .from("hardcore_cleanup_runs" as any)
+    .update({ duplicates_resolved: resolvedCount || 0 } as any)
+    .eq("id", runId);
+
+  return NextResponse.json({ ok: true, updated: count || 0 });
+}
