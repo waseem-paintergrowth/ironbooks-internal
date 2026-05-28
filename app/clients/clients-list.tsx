@@ -32,6 +32,7 @@ import {
   FileSpreadsheet,
   RotateCcw,
   Eye,
+  Flame,
 } from "lucide-react";
 import { CleanupReportModal } from "@/components/CleanupReportModal";
 
@@ -1155,6 +1156,14 @@ function ActionsDropdown({
       label: "A/R Recovery toolkit",
       href: `/balance-sheet/${clientId}/ar-recovery`,
       icon: Wallet,
+    },
+    {
+      // Logan-style mess: CRM CSV upload + duplicate-invoice detection,
+      // JE write-off / void straight to QBO. Distinct from A/R Recovery
+      // because it requires bookkeeper to bring CRM ground truth.
+      label: "Hardcore BS Cleanup",
+      href: `/balance-sheet/${clientId}/hardcore-cleanup`,
+      icon: Flame,
     },
     {
       section: "Compliance",
