@@ -1,6 +1,4 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken, fetchAllAccounts } from "@/lib/qbo";
-import { createBankRule } from "@/lib/qbo-rules";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -161,16 +159,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // ──────────────────── PUSH TO QBO ────────────────────
-  // Up to this point we've only written to the local bank_rules table —
-  // every row is pushed_to_qbo=false. Historically the from-reclass flow
-  // STOPPED here, which is exactly why LT Woodworks saw "X bank rules
-  // created" but found nothing in QBO. Now we push synchronously, mark
-  // success per row, and return both counts in the response.
+  // ──────────────────── ACTIVATE LOCALLY ────────────────────
+  // We used to try to push these rules to QBO via /bankrule, but Intuit's
+  // public API does NOT support creating bank rules (every POST returns
+  // "Operation bankrule is not supported"). Instead, rules go ACTIVE in
+  // SNAP's daily-recon engine, which applies them to new transactions and
+  // posts the reclass to QBO via the supported endpoint.
   //
-  // Per-rule failures are non-fatal — the row stays at pushed_to_qbo=false
-  // and surfaces on the next bank-rules screen visit, where the bookkeeper
-  // can retry just the failed ones.
+  // End result for the bookkeeper is the same — categorized transactions
+  // in QBO — just a different mechanism. See /api/rules/execute for the
+  // other half of this fix.
   const upsertedRows = (upserted || []) as Array<{
     id: string;
     vendor_pattern: string;
@@ -181,113 +179,38 @@ export async function POST(request: Request) {
     tax_code_ref: string | null;
   }>;
 
-  // Only push rows that aren't already in QBO. ON CONFLICT can return an
-  // existing row that was previously pushed — re-pushing creates a
-  // duplicate in QBO. Defensive filter prevents that.
-  const needsPush = upsertedRows.filter(
-    (r) => !r.pushed_to_qbo && !r.qbo_rule_id
-  );
-
-  let pushed = 0;
-  const pushErrors: string[] = [];
-
-  if (needsPush.length > 0) {
-    let accessToken: string;
-    try {
-      accessToken = await getValidToken(client_link_id, service as any);
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-      const friendly = /invalid_grant|token refresh failed|Incorrect Token type/i.test(msg)
-        ? "QBO connection is no longer valid. Reconnect QBO from the client's Settings → QuickBooks page, then re-open this Bank Rules step to push the saved rules."
-        : `QBO token error: ${msg}`;
-      // Local rules already saved; just report the push failure.
-      return NextResponse.json({
-        created: upsertedRows.length,
-        rules: upsertedRows,
-        pushed: 0,
-        push_failed: needsPush.length,
-        push_errors: [friendly],
-      });
-    }
-
-    // Resolve target_account_name → QBO account id.
-    let qboAccounts: Awaited<ReturnType<typeof fetchAllAccounts>>;
-    try {
-      const { data: clientLink } = await service
-        .from("client_links")
-        .select("qbo_realm_id")
-        .eq("id", client_link_id)
-        .single();
-      const realmId = (clientLink as any)?.qbo_realm_id;
-      if (!realmId) throw new Error("Client missing qbo_realm_id");
-      qboAccounts = await fetchAllAccounts(realmId, accessToken);
-    } catch (err: any) {
-      return NextResponse.json({
-        created: upsertedRows.length,
-        rules: upsertedRows,
-        pushed: 0,
-        push_failed: needsPush.length,
-        push_errors: [`Couldn't fetch QBO accounts: ${err.message}`],
-      });
-    }
-
-    const accountByName = new Map<string, (typeof qboAccounts)[number]>(
-      qboAccounts.map((a) => [a.Name, a])
-    );
-
-    const { data: clientLinkAgain } = await service
-      .from("client_links")
-      .select("qbo_realm_id")
-      .eq("id", client_link_id)
-      .single();
-    const realmId = (clientLinkAgain as any).qbo_realm_id as string;
-
-    for (const rule of needsPush) {
-      try {
-        const account = accountByName.get(rule.target_account_name);
-        if (!account) {
-          throw new Error(
-            `Target account "${rule.target_account_name}" not found in QBO (may have been renamed/inactivated after the cleanup)`
-          );
-        }
-
-        const matchType: "Contains" | "StartsWith" | "Is" =
-          rule.match_type === "STARTSWITH" || rule.match_type === "startswith"
-            ? "StartsWith"
-            : rule.match_type === "IS" || rule.match_type === "is"
-            ? "Is"
-            : "Contains";
-
-        const created = await createBankRule(realmId, accessToken, {
-          name: `Ironbooks: ${rule.vendor_pattern}`,
-          vendorPattern: rule.vendor_pattern,
-          matchType,
-          targetAccountId: account.Id,
-          taxCodeId: rule.tax_code_ref || undefined,
-        });
-
-        await service
-          .from("bank_rules")
-          .update({
-            qbo_rule_id: created.Id,
-            pushed_to_qbo: true,
-            status: "pushed",
-          } as any)
-          .eq("id", rule.id);
-
-        pushed++;
-      } catch (e: any) {
-        pushErrors.push(`${rule.vendor_pattern}: ${e?.message || String(e)}`);
-      }
-    }
+  // Mark every just-upserted "approved" row as active in our engine.
+  const idsToActivate = upsertedRows.map((r) => r.id);
+  if (idsToActivate.length > 0) {
+    await service
+      .from("bank_rules")
+      .update({ status: "active", pushed_to_qbo: false } as any)
+      .in("id", idsToActivate);
   }
+
+  await service.from("audit_log").insert({
+    event_type: "bank_rules_activated",
+    user_id: user.id,
+    request_payload: {
+      reclass_job_id,
+      client_link_id,
+      rules_activated: idsToActivate.length,
+      vendor_patterns: upsertedRows.map((r) => r.vendor_pattern),
+      source: "from_reclass",
+    } as any,
+  });
 
   return NextResponse.json({
     created: upsertedRows.length,
     rules: upsertedRows,
-    pushed,
-    push_failed: needsPush.length - pushed,
-    push_errors: pushErrors,
+    pushed: idsToActivate.length,    // legacy key kept for UI compat
+    activated: idsToActivate.length,
+    push_failed: 0,
+    push_errors: [],
+    message:
+      `${idsToActivate.length} rule${idsToActivate.length === 1 ? "" : "s"} activated in SNAP's daily-recon engine. ` +
+      `New transactions matching these patterns will categorize automatically when they sync. ` +
+      `(QBO's public API doesn't support creating native bank rules — this is the supported alternative.)`,
   });
 }
 
