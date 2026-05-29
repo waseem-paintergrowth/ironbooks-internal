@@ -1,4 +1,6 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
+import { getValidToken, fetchAllAccounts } from "@/lib/qbo";
+import { createBankRule } from "@/lib/qbo-rules";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -159,5 +161,136 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ created: upserted?.length ?? rulesToUpsert.length, rules: upserted ?? [] });
+  // ──────────────────── PUSH TO QBO ────────────────────
+  // Up to this point we've only written to the local bank_rules table —
+  // every row is pushed_to_qbo=false. Historically the from-reclass flow
+  // STOPPED here, which is exactly why LT Woodworks saw "X bank rules
+  // created" but found nothing in QBO. Now we push synchronously, mark
+  // success per row, and return both counts in the response.
+  //
+  // Per-rule failures are non-fatal — the row stays at pushed_to_qbo=false
+  // and surfaces on the next bank-rules screen visit, where the bookkeeper
+  // can retry just the failed ones.
+  const upsertedRows = (upserted || []) as Array<{
+    id: string;
+    vendor_pattern: string;
+    match_type: string | null;
+    target_account_name: string;
+    pushed_to_qbo: boolean | null;
+    qbo_rule_id: string | null;
+    tax_code_ref: string | null;
+  }>;
+
+  // Only push rows that aren't already in QBO. ON CONFLICT can return an
+  // existing row that was previously pushed — re-pushing creates a
+  // duplicate in QBO. Defensive filter prevents that.
+  const needsPush = upsertedRows.filter(
+    (r) => !r.pushed_to_qbo && !r.qbo_rule_id
+  );
+
+  let pushed = 0;
+  const pushErrors: string[] = [];
+
+  if (needsPush.length > 0) {
+    let accessToken: string;
+    try {
+      accessToken = await getValidToken(client_link_id, service as any);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const friendly = /invalid_grant|token refresh failed|Incorrect Token type/i.test(msg)
+        ? "QBO connection is no longer valid. Reconnect QBO from the client's Settings → QuickBooks page, then re-open this Bank Rules step to push the saved rules."
+        : `QBO token error: ${msg}`;
+      // Local rules already saved; just report the push failure.
+      return NextResponse.json({
+        created: upsertedRows.length,
+        rules: upsertedRows,
+        pushed: 0,
+        push_failed: needsPush.length,
+        push_errors: [friendly],
+      });
+    }
+
+    // Resolve target_account_name → QBO account id.
+    let qboAccounts: Awaited<ReturnType<typeof fetchAllAccounts>>;
+    try {
+      const { data: clientLink } = await service
+        .from("client_links")
+        .select("qbo_realm_id")
+        .eq("id", client_link_id)
+        .single();
+      const realmId = (clientLink as any)?.qbo_realm_id;
+      if (!realmId) throw new Error("Client missing qbo_realm_id");
+      qboAccounts = await fetchAllAccounts(realmId, accessToken);
+    } catch (err: any) {
+      return NextResponse.json({
+        created: upsertedRows.length,
+        rules: upsertedRows,
+        pushed: 0,
+        push_failed: needsPush.length,
+        push_errors: [`Couldn't fetch QBO accounts: ${err.message}`],
+      });
+    }
+
+    const accountByName = new Map<string, (typeof qboAccounts)[number]>(
+      qboAccounts.map((a) => [a.Name, a])
+    );
+
+    const { data: clientLinkAgain } = await service
+      .from("client_links")
+      .select("qbo_realm_id")
+      .eq("id", client_link_id)
+      .single();
+    const realmId = (clientLinkAgain as any).qbo_realm_id as string;
+
+    for (const rule of needsPush) {
+      try {
+        const account = accountByName.get(rule.target_account_name);
+        if (!account) {
+          throw new Error(
+            `Target account "${rule.target_account_name}" not found in QBO (may have been renamed/inactivated after the cleanup)`
+          );
+        }
+
+        const matchType: "Contains" | "StartsWith" | "Is" =
+          rule.match_type === "STARTSWITH" || rule.match_type === "startswith"
+            ? "StartsWith"
+            : rule.match_type === "IS" || rule.match_type === "is"
+            ? "Is"
+            : "Contains";
+
+        const created = await createBankRule(realmId, accessToken, {
+          name: `Ironbooks: ${rule.vendor_pattern}`,
+          vendorPattern: rule.vendor_pattern,
+          matchType,
+          targetAccountId: account.Id,
+          taxCodeId: rule.tax_code_ref || undefined,
+        });
+
+        await service
+          .from("bank_rules")
+          .update({
+            qbo_rule_id: created.Id,
+            pushed_to_qbo: true,
+            status: "pushed",
+          } as any)
+          .eq("id", rule.id);
+
+        pushed++;
+      } catch (e: any) {
+        pushErrors.push(`${rule.vendor_pattern}: ${e?.message || String(e)}`);
+      }
+    }
+  }
+
+  return NextResponse.json({
+    created: upsertedRows.length,
+    rules: upsertedRows,
+    pushed,
+    push_failed: needsPush.length - pushed,
+    push_errors: pushErrors,
+  });
 }
+
+// QBO writes are sequential with rate-limit waits; budget for moderately
+// large rule sets (50+ vendors) without hitting Vercel's default cap.
+export const maxDuration = 300;

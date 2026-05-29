@@ -61,6 +61,14 @@ export function BankRulesFromReclassClient({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<number | null>(null);
+  // QBO push outcome — populated after a real create (not a skip). Drives
+  // the "X of Y pushed to QBO" copy on the success screen and surfaces any
+  // per-rule push errors so the bookkeeper isn't blind to a silent partial.
+  const [pushOutcome, setPushOutcome] = useState<{
+    pushed: number;
+    failed: number;
+    errors: string[];
+  } | null>(null);
 
   // Stripe-deposits pre-check: counts QBO deposits flagged as Stripe-origin
   // in the cleanup's date range. Drives the "skip Stripe recon" shortcut
@@ -178,6 +186,14 @@ export function BankRulesFromReclassClient({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to create bank rules");
       setCreated(data.created);
+      // The endpoint pushes to QBO inline now. Capture the outcome so the
+      // success screen tells the truth — anything else and we repeat the
+      // LT Woodworks confusion where rules were "created" but never landed.
+      setPushOutcome({
+        pushed: typeof data.pushed === "number" ? data.pushed : 0,
+        failed: typeof data.push_failed === "number" ? data.push_failed : 0,
+        errors: Array.isArray(data.push_errors) ? data.push_errors : [],
+      });
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -303,30 +319,68 @@ export function BankRulesFromReclassClient({
     // when the bookkeeper clicked "Skip without creating" — celebrating
     // "0 bank rules created" would be confusing.
     const skipped = created === 0;
+    const pushed = pushOutcome?.pushed ?? 0;
+    const pushFailed = pushOutcome?.failed ?? 0;
+    const pushErrors = pushOutcome?.errors ?? [];
+    const allPushed = !skipped && pushFailed === 0 && pushed === created;
+    const somePushed = !skipped && pushed > 0 && pushFailed > 0;
+    const nonePushed = !skipped && pushed === 0 && pushFailed > 0;
+
+    // Pick icon/colour based on the QBO push outcome, not just the local
+    // upsert. A row that exists in Supabase but not in QBO is half-done —
+    // the bookkeeper needs to see that distinction.
+    const iconCfg = skipped
+      ? { bg: "bg-gray-100", color: "text-ink-slate" }
+      : nonePushed
+      ? { bg: "bg-red-100", color: "text-red-600" }
+      : somePushed
+      ? { bg: "bg-amber-100", color: "text-amber-600" }
+      : { bg: "bg-emerald-100", color: "text-emerald-600" };
+
     return (
       <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center space-y-4">
         <div className="flex justify-center">
-          <div
-            className={`w-16 h-16 rounded-full flex items-center justify-center ${
-              skipped ? "bg-gray-100" : "bg-emerald-100"
-            }`}
-          >
-            <CheckCircle2
-              className={skipped ? "text-ink-slate" : "text-emerald-600"}
-              size={32}
-            />
+          <div className={`w-16 h-16 rounded-full flex items-center justify-center ${iconCfg.bg}`}>
+            <CheckCircle2 className={iconCfg.color} size={32} />
           </div>
         </div>
         <h2 className="text-2xl font-bold text-navy">
           {skipped
             ? "Bank rules step skipped"
-            : `${created} bank rule${created === 1 ? "" : "s"} created`}
+            : allPushed
+            ? `${created} bank rule${created === 1 ? "" : "s"} pushed to QBO`
+            : nonePushed
+            ? `${created} rule${created === 1 ? "" : "s"} saved — QBO push failed`
+            : `${pushed} of ${created} bank rules pushed to QBO`}
         </h2>
-        <p className="text-ink-slate text-sm max-w-sm mx-auto">
+        <p className="text-ink-slate text-sm max-w-md mx-auto">
           {skipped
             ? "No rules created from this reclass — moving on to the next step."
-            : "Future transactions matching these vendors will auto-categorize in QBO."}
+            : allPushed
+            ? "Future transactions matching these vendors will auto-categorize in QBO."
+            : nonePushed
+            ? "Rules are saved locally but couldn't be pushed to QBO. Fix the issue below and re-open this Bank Rules step — unpushed rules will be retried."
+            : `${pushFailed} rule${pushFailed === 1 ? "" : "s"} couldn't be pushed to QBO. They're saved locally and will be retried next time you open this step.`}
         </p>
+
+        {pushErrors.length > 0 && (
+          <div className="max-w-md mx-auto bg-red-50 border border-red-200 rounded-lg p-3 text-left">
+            <div className="text-xs font-bold text-red-800 mb-1">
+              Push errors ({pushErrors.length})
+            </div>
+            <ul className="text-[11px] text-red-700 space-y-0.5 max-h-32 overflow-auto">
+              {pushErrors.slice(0, 10).map((msg, i) => (
+                <li key={i} className="leading-snug">• {msg}</li>
+              ))}
+              {pushErrors.length > 10 && (
+                <li className="italic text-red-600">
+                  …{pushErrors.length - 10} more
+                </li>
+              )}
+            </ul>
+          </div>
+        )}
+
         <NextStepFooter />
       </div>
     );
