@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ArrowRight, Loader2, Calendar, Flag } from "lucide-react";
+import { CheckCircle2, ArrowRight, Loader2, Calendar, Flag, Download } from "lucide-react";
 
 interface ProposedRule {
   vendorPattern: string;
@@ -347,20 +347,12 @@ export function BankRulesFromReclassClient({
         <h2 className="text-2xl font-bold text-navy">
           {skipped
             ? "Bank rules step skipped"
-            : allPushed
-            ? `${created} bank rule${created === 1 ? "" : "s"} pushed to QBO`
-            : nonePushed
-            ? `${created} rule${created === 1 ? "" : "s"} saved — QBO push failed`
-            : `${pushed} of ${created} bank rules pushed to QBO`}
+            : `${created} bank rule${created === 1 ? "" : "s"} active in SNAP`}
         </h2>
         <p className="text-ink-slate text-sm max-w-md mx-auto">
           {skipped
             ? "No rules created from this reclass — moving on to the next step."
-            : allPushed
-            ? "Future transactions matching these vendors will auto-categorize in QBO."
-            : nonePushed
-            ? "Rules are saved locally but couldn't be pushed to QBO. Fix the issue below and re-open this Bank Rules step — unpushed rules will be retried."
-            : `${pushFailed} rule${pushFailed === 1 ? "" : "s"} couldn't be pushed to QBO. They're saved locally and will be retried next time you open this step.`}
+            : "SNAP's daily-recon engine applies these rules to new transactions and posts the categorization to QBO automatically. (QBO's public API doesn't support creating bank rules — see the download below to add them to QBO's native Rules tab too.)"}
         </p>
 
         {pushErrors.length > 0 && (
@@ -378,6 +370,29 @@ export function BankRulesFromReclassClient({
                 </li>
               )}
             </ul>
+          </div>
+        )}
+
+        {/* QBO import file — the manual-upload workaround for QBO's
+            unsupported /bankrule API. Downloads an .xls that Lisa drops
+            into QBO via Banking → Rules → ⋮ → Import Rules. SNAP's
+            daily-recon engine keeps applying these rules in parallel,
+            so this is additive — bookkeeper gets QBO-native rules AND
+            the SNAP backstop. */}
+        {!skipped && created > 0 && (
+          <div className="max-w-md mx-auto pt-2">
+            <a
+              href={`/api/rules/export-qbo/${clientLinkId}`}
+              download
+              className="inline-flex items-center gap-2 text-sm font-semibold text-teal hover:text-teal-dark border border-teal/30 hover:border-teal bg-teal-lighter/50 hover:bg-teal-lighter px-4 py-2 rounded-lg transition-colors"
+            >
+              <Download size={16} />
+              Download .xls for QBO import
+            </a>
+            <p className="text-[11px] text-ink-slate mt-2 leading-snug">
+              Upload this in QuickBooks under <strong>Banking → Rules → ⋮ → Import Rules</strong>{" "}
+              to add them natively in QBO. SNAP will keep applying them automatically either way.
+            </p>
           </div>
         )}
 

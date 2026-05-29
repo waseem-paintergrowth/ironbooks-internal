@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, X, Flag, Loader2, ArrowRight, AlertTriangle, Zap, DollarSign } from "lucide-react";
+import { Check, X, Flag, Loader2, ArrowRight, AlertTriangle, Zap, DollarSign, Download } from "lucide-react";
 import type { Database } from "@/lib/database.types";
 
 type Rule = Database["public"]["Tables"]["bank_rules"]["Row"];
@@ -82,7 +82,7 @@ export function RulesReviewClient({
       return;
     }
 
-    if (!confirm(`Push ${counts.approved} approved rules to QuickBooks for ${clientLink.client_name}?`)) {
+    if (!confirm(`Activate ${counts.approved} approved rules for ${clientLink.client_name}? SNAP will start applying them to new transactions and posting categorizations to QBO automatically.`)) {
       return;
     }
 
@@ -97,10 +97,10 @@ export function RulesReviewClient({
     setExecuting(false);
 
     if (result.success) {
-      alert(`✓ Pushed ${result.pushed} rules to QBO`);
+      alert(`✓ ${result.activated ?? result.pushed} rules activated in SNAP. Download the .xls below if you also want them in QBO's native Rules tab.`);
       router.refresh();
     } else {
-      alert(`Pushed ${result.pushed}, failed ${result.failed}:\n${result.errors?.join("\n")}`);
+      alert(`Activated ${result.pushed ?? 0}, failed ${result.failed ?? 0}:\n${result.errors?.join("\n") || result.error}`);
     }
   }
 
@@ -118,14 +118,26 @@ export function RulesReviewClient({
 
       {isComplete && (
         <div className="rounded-xl p-4 mb-5 bg-green-50 border border-green-200">
-          <div className="flex items-center gap-3">
-            <Check size={20} className="text-green-600" />
-            <div>
-              <h3 className="font-bold text-sm text-navy">Rules pushed to QuickBooks</h3>
-              <p className="text-xs text-ink-slate">
-                Bank rules are live. New matching transactions will auto-categorize.
-              </p>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-3">
+              <Check size={20} className="text-green-600 mt-0.5 shrink-0" />
+              <div>
+                <h3 className="font-bold text-sm text-navy">Rules active in SNAP</h3>
+                <p className="text-xs text-ink-slate">
+                  SNAP applies these rules to new transactions and posts the categorization to QBO.
+                  Want them in QBO&apos;s native Rules tab too? Download below and import.
+                </p>
+              </div>
             </div>
+            <a
+              href={`/api/rules/export-qbo/${clientLink.id}`}
+              download
+              className="shrink-0 inline-flex items-center gap-2 text-xs font-semibold text-teal hover:text-teal-dark border border-teal/40 hover:border-teal bg-white px-3 py-2 rounded-lg transition-colors"
+              title="Download QBO-compatible .xls — upload in QBO under Banking → Rules → ⋮ → Import Rules"
+            >
+              <Download size={14} />
+              Download .xls for QBO
+            </a>
           </div>
         </div>
       )}
@@ -203,7 +215,7 @@ export function RulesReviewClient({
             className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
           >
             {executing ? <Loader2 className="animate-spin" size={16} /> : <ArrowRight size={16} />}
-            {executing ? "Pushing to QBO..." : `Push ${counts.approved} Rules to QBO`}
+            {executing ? "Activating..." : `Activate ${counts.approved} Rules in SNAP`}
           </button>
         </div>
       )}
