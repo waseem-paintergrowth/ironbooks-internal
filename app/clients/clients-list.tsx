@@ -538,18 +538,24 @@ function ClientRow({
       }`}
       style={{ gridTemplateColumns: "1.4fr 0.8fr 1fr 0.9fr 0.8fr 0.8fr 1fr 0.9fr 0.4fr" }}
     >
-      <div className="flex items-center gap-3 min-w-0">
-        <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 w-9 h-9 bg-teal-light text-teal">
+      <Link
+        href={`/clients/${client.id}`}
+        className="flex items-center gap-3 min-w-0 group"
+        title={`Open ${client.client_name || "client"} profile`}
+      >
+        <div className="rounded-lg flex items-center justify-center font-bold text-sm flex-shrink-0 w-9 h-9 bg-teal-light text-teal group-hover:bg-teal group-hover:text-white transition-colors">
           {(client.client_name || "?").charAt(0)}
         </div>
         <div className="min-w-0">
-          <div className="font-semibold text-sm text-navy truncate">{client.client_name}</div>
+          <div className="font-semibold text-sm text-navy truncate group-hover:text-teal transition-colors">
+            {client.client_name}
+          </div>
           <div className="text-xs text-ink-slate flex items-center gap-1">
             <MapPin size={10} />
             {client.jurisdiction}{client.state_province ? ` · ${client.state_province}` : ""}
           </div>
         </div>
-      </div>
+      </Link>
 
       <div className="relative">
         <button
@@ -913,18 +919,24 @@ function ClientCard({
   return (
     <div className="rounded-xl bg-white border border-gray-200 p-4 hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="rounded-lg flex items-center justify-center font-bold text-base flex-shrink-0 w-10 h-10 bg-teal-light text-teal">
+        <Link
+          href={`/clients/${client.id}`}
+          className="flex items-center gap-3 min-w-0 group"
+          title={`Open ${client.client_name || "client"} profile`}
+        >
+          <div className="rounded-lg flex items-center justify-center font-bold text-base flex-shrink-0 w-10 h-10 bg-teal-light text-teal group-hover:bg-teal group-hover:text-white transition-colors">
             {(client.client_name || "?").charAt(0)}
           </div>
           <div className="min-w-0">
-            <div className="font-bold text-sm text-navy truncate">{client.client_name}</div>
+            <div className="font-bold text-sm text-navy truncate group-hover:text-teal transition-colors">
+              {client.client_name}
+            </div>
             <div className="text-xs text-ink-slate flex items-center gap-1">
               <MapPin size={10} />
               {client.jurisdiction}{client.state_province ? ` · ${client.state_province}` : ""}
             </div>
           </div>
-        </div>
+        </Link>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           <span
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"
