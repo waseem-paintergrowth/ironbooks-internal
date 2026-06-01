@@ -163,12 +163,29 @@ const COLUMN_MAPS: Record<CrmSource, Record<keyof Omit<ParsedCrmJob, "raw_row">,
     job_date: ["Created", "Date Created", "Start Date", "Job Date", "Date"],
   },
   generic: {
-    crm_job_id: ["Job ID", "ID", "Number", "#", "Proposal Name", "Invoice #"],
-    job_name: ["Title", "Description", "Job", "Name", "Proposal Name"],
-    customer_name: ["Customer", "Client", "Name"],
-    job_status: ["Status"],
-    amount: ["Amount", "Total", "Value"],
-    job_date: ["Date", "Created"],
+    // QBO A/R Aging Detail uses "Num" / "Doc Num". QBO Open Invoices uses
+    // "Transaction Type" + "Num". Customer column in QBO exports is most
+    // commonly "Name" (singular, A/R Aging) or "Customer" (Open Invoices).
+    // "Source Name" appears on QBO Transaction Detail by Account. "Customer:Job"
+    // is QBO's old "name:sub-customer" composite.
+    crm_job_id: ["Job ID", "ID", "Number", "#", "Num", "Doc Num", "Proposal Name", "Invoice #", "Document Number"],
+    job_name: ["Title", "Description", "Memo", "Memo/Description", "Job", "Proposal Name"],
+    customer_name: [
+      "Customer",
+      "Customer Name",
+      "Client",
+      "Client Name",
+      "Name",
+      "Source Name",
+      "Customer:Job",
+      "Customer/Project",
+      "Project",
+      "Bill To",
+      "Payer",
+    ],
+    job_status: ["Status", "Type", "Transaction Type"],
+    amount: ["Amount", "Total", "Open Balance", "Balance", "Value"],
+    job_date: ["Date", "Created", "Transaction Date", "Txn Date", "Due Date"],
   },
 };
 

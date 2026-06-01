@@ -124,8 +124,21 @@ export async function POST(
     }
     const crmJobs = normalizeCrmRows(rawRows, crmSource);
     if (crmJobs.length === 0) {
+      // Surface the actual headers we found PLUS a sample of the first
+      // populated row's data so Mike/Lisa can see exactly what we're
+      // parsing. The generic "expected Customer/Client/Name" message left
+      // them guessing — this one shows reality.
+      const detectedHeaders = Object.keys(rawRows[0] || {});
+      const sample = rawRows.slice(0, 3).map((r) => {
+        const filled = Object.entries(r).filter(([, v]) => v && String(v).trim());
+        return filled.map(([k, v]) => `${k}="${String(v).slice(0, 40)}"`).join(", ");
+      });
       throw new Error(
-        `CSV parsed ${rawRows.length} rows but none had a customer name. Check your column headers — expected "Customer", "Client", or similar.`
+        `CSV parsed ${rawRows.length} rows but none had a recognizable customer name column. ` +
+        `Detected headers: ${detectedHeaders.length > 0 ? detectedHeaders.map((h) => `"${h}"`).join(", ") : "(none)"}. ` +
+        `Expected one of: "Customer", "Customer Name", "Client", "Client Name", "Name", "Source Name", "Customer:Job". ` +
+        `Sample of first row: ${sample[0] || "(empty)"}. ` +
+        `If your customer column has a different header, send Mike the header name to add it to the alias list.`
       );
     }
 
