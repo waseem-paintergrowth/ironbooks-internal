@@ -288,6 +288,274 @@ export interface InternalSummary {
   }>;
 }
 
+// ─── CLIENT PROGRESS FLOW ──────────────────────────────────────────────
+
+/** Per-stage status: drives the colored card in the flow chart. */
+export type ProgressStageStatus =
+  | "complete"     // all good (emerald)
+  | "in_progress"  // started but not done (amber)
+  | "blocked"      // failed / stuck (red)
+  | "not_started"; // gray
+
+export interface ProgressStage {
+  key: "setup" | "coa" | "reclass" | "rules" | "recon" | "maintenance";
+  label: string;
+  status: ProgressStageStatus;
+  /** One-line summary rendered under the label. */
+  detail: string;
+  /** Where clicking the card sends the bookkeeper. null = no useful link. */
+  href: string | null;
+}
+
+export interface ClientProgress {
+  stages: ProgressStage[];
+  /** 0-100 % of stages that are "complete". Useful for a top-line "X% set up". */
+  percentComplete: number;
+}
+
+/**
+ * Snapshot the client's lifecycle for the Overview tab's flow chart.
+ * Returns a stable 6-stage progression. Each stage's status reflects
+ * the most-recent SNAP-side state, not point-in-time accuracy — we want
+ * the bookkeeper to see "this client needs X next", not perfect telemetry.
+ */
+export async function fetchClientProgress(
+  service: SupabaseClient,
+  clientLinkId: string,
+  clientLink: {
+    qbo_realm_id: string | null;
+    industry: string | null;
+    double_client_id: string | null;
+  }
+): Promise<ClientProgress> {
+  const stages: ProgressStage[] = [];
+
+  // ── 1. Setup ────────────────────────────────────────────────────────
+  // Setup = QBO connected + industry set + Double matched. Missing any
+  // of these blocks downstream features. We don't require Portal since
+  // many clients don't get a portal user.
+  const setupChecks = [
+    { name: "QBO", ok: !!clientLink.qbo_realm_id },
+    { name: "Industry", ok: !!clientLink.industry },
+    {
+      name: "Double",
+      ok:
+        !!clientLink.double_client_id &&
+        !clientLink.double_client_id.startsWith("pending_"),
+    },
+  ];
+  const setupOkCount = setupChecks.filter((c) => c.ok).length;
+  const setupMissing = setupChecks.filter((c) => !c.ok).map((c) => c.name);
+  stages.push({
+    key: "setup",
+    label: "Setup",
+    status:
+      setupOkCount === setupChecks.length
+        ? "complete"
+        : setupOkCount === 0
+        ? "not_started"
+        : "in_progress",
+    detail:
+      setupOkCount === setupChecks.length
+        ? "QBO + industry + Double linked"
+        : `Missing: ${setupMissing.join(", ")}`,
+    href: `/clients/${clientLinkId}`, // stays on profile; matcher reachable from here
+  });
+
+  // ── 2. COA Cleanup ──────────────────────────────────────────────────
+  // Done when ≥1 coa_job has status='complete'. "In progress" if there's
+  // an open job. "Blocked" if there's a failed one.
+  const { data: coaJobs } = await service
+    .from("coa_jobs")
+    .select("id, status, created_at")
+    .eq("client_link_id", clientLinkId)
+    .order("created_at", { ascending: false });
+
+  const coaList = (coaJobs || []) as any[];
+  const coaComplete = coaList.filter((j) => j.status === "complete").length;
+  const coaOpen = coaList.filter(
+    (j) => j.status === "in_review" || j.status === "executing"
+  ).length;
+  const coaFailed = coaList.filter((j) => j.status === "failed").length;
+  stages.push({
+    key: "coa",
+    label: "COA Cleanup",
+    status: coaFailed > 0
+      ? "blocked"
+      : coaOpen > 0
+      ? "in_progress"
+      : coaComplete > 0
+      ? "complete"
+      : "not_started",
+    detail:
+      coaComplete > 0
+        ? `${coaComplete} cleanup${coaComplete === 1 ? "" : "s"} done${coaOpen > 0 ? ` · ${coaOpen} in review` : ""}`
+        : coaOpen > 0
+        ? `${coaOpen} in progress`
+        : coaFailed > 0
+        ? `${coaFailed} failed — needs retry`
+        : "Not started",
+    href: coaList[0] ? `/jobs/${coaList[0].id}/review` : `/clients`,
+  });
+
+  // ── 3. Reclass / Categorization ─────────────────────────────────────
+  // Same logic as COA. Note: reclass_jobs status includes
+  // "web_search_paused" which counts as in-progress.
+  const { data: reclassJobs } = await service
+    .from("reclass_jobs")
+    .select("id, status, created_at")
+    .eq("client_link_id", clientLinkId)
+    .order("created_at", { ascending: false });
+
+  const rcList = (reclassJobs || []) as any[];
+  const rcComplete = rcList.filter((j) => j.status === "complete").length;
+  const rcOpen = rcList.filter(
+    (j) =>
+      j.status === "in_review" ||
+      j.status === "executing" ||
+      j.status === "web_search_paused"
+  ).length;
+  const rcFailed = rcList.filter((j) => j.status === "failed").length;
+  stages.push({
+    key: "reclass",
+    label: "Reclass",
+    status: rcFailed > 0
+      ? "blocked"
+      : rcOpen > 0
+      ? "in_progress"
+      : rcComplete > 0
+      ? "complete"
+      : "not_started",
+    detail:
+      rcComplete > 0
+        ? `${rcComplete} job${rcComplete === 1 ? "" : "s"} done${rcOpen > 0 ? ` · ${rcOpen} in review` : ""}`
+        : rcOpen > 0
+        ? `${rcOpen} in progress`
+        : rcFailed > 0
+        ? `${rcFailed} failed — investigate`
+        : "Not started",
+    href: rcList[0] ? `/reclass/${rcList[0].id}/review` : `/reclass/new?client=${clientLinkId}`,
+  });
+
+  // ── 4. Bank Rules ───────────────────────────────────────────────────
+  // Done = ≥1 active rule. We don't require a magic threshold (e.g. "10
+  // rules") because different clients have different vendor mix.
+  const { count: activeRulesCount } = await service
+    .from("bank_rules")
+    .select("id", { count: "exact", head: true })
+    .eq("client_link_id", clientLinkId)
+    .eq("status", "active");
+  const { count: pendingRulesCount } = await service
+    .from("bank_rules")
+    .select("id", { count: "exact", head: true })
+    .eq("client_link_id", clientLinkId)
+    .eq("status", "pending");
+  const { data: latestDiscovery } = await service
+    .from("rule_discovery_jobs")
+    .select("id")
+    .eq("client_link_id", clientLinkId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const active = activeRulesCount ?? 0;
+  const pending = pendingRulesCount ?? 0;
+  stages.push({
+    key: "rules",
+    label: "Bank Rules",
+    status: pending > 0
+      ? "in_progress"
+      : active > 0
+      ? "complete"
+      : "not_started",
+    detail:
+      active > 0
+        ? `${active} active${pending > 0 ? ` · ${pending} pending review` : ""}`
+        : pending > 0
+        ? `${pending} pending approval`
+        : "No rules yet",
+    href: latestDiscovery
+      ? `/rules/${(latestDiscovery as any).id}/review`
+      : `/clients`,
+  });
+
+  // ── 5. Daily Recon ──────────────────────────────────────────────────
+  // "Active" = client_links.daily_recon_paused is false/null AND we've
+  // seen ≥1 audit log entry mentioning recon for this client recently.
+  // The audit-log check guards against "we set up recon but nothing fires"
+  // — the gap surfaced in the LT Woodworks investigation (task #46).
+  const dailyReconPaused = (clientLink as any).daily_recon_paused === true;
+  const { count: recentReconCount } = await service
+    .from("audit_log")
+    .select("id", { count: "exact", head: true })
+    .filter("request_payload->>client_link_id", "eq", clientLinkId)
+    .ilike("event_type", "%recon%")
+    .gte("occurred_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString());
+
+  const reconFired = (recentReconCount ?? 0) > 0;
+  stages.push({
+    key: "recon",
+    label: "Daily Recon",
+    status: dailyReconPaused
+      ? "blocked"
+      : reconFired
+      ? "complete"
+      : active > 0
+      ? "in_progress" // rules exist but recon hasn't fired yet
+      : "not_started",
+    detail: dailyReconPaused
+      ? "Paused — needs unpause"
+      : reconFired
+      ? `Active · fired in last 14d`
+      : active > 0
+      ? "Rules ready but engine hasn't fired"
+      : "Needs active rules first",
+    href: `/clients/${clientLinkId}`,
+  });
+
+  // ── 6. Maintenance / Month Close ────────────────────────────────────
+  // "Done" if any reclass_job has month_closed_at within last 35 days
+  // (a calendar month + slack). The 35-day window stops a long-ago close
+  // from masking a current backlog.
+  const thirtyFiveDaysAgo = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString();
+  // Cast the whole chain to `any` because month_closed_at is missing from
+  // the stale generated types — the column is real (used by other API
+  // routes) but TS can't see it without a types regen.
+  const recentCloseRes: any = await (service as any)
+    .from("reclass_jobs")
+    .select("month_closed_at")
+    .eq("client_link_id", clientLinkId)
+    .not("month_closed_at", "is", null)
+    .gte("month_closed_at", thirtyFiveDaysAgo)
+    .order("month_closed_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const recentCloseRow = recentCloseRes?.data;
+  const closedRecently = !!recentCloseRow?.month_closed_at;
+  stages.push({
+    key: "maintenance",
+    label: "Month Close",
+    status: closedRecently
+      ? "complete"
+      : rcComplete > 0
+      ? "in_progress" // history of work, but no recent close
+      : "not_started",
+    detail: closedRecently
+      ? `Closed ${new Date(recentCloseRow.month_closed_at).toLocaleDateString()}`
+      : rcComplete > 0
+      ? "No recent month close on file"
+      : "Awaiting reclass first",
+    href: `/clients/${clientLinkId}`,
+  });
+
+  const completed = stages.filter((s) => s.status === "complete").length;
+  return {
+    stages,
+    percentComplete: Math.round((completed / stages.length) * 100),
+  };
+}
+
 export async function fetchInternalSummary(
   service: SupabaseClient,
   clientLinkId: string

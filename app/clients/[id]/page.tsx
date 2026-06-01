@@ -7,6 +7,7 @@ import {
   fetchOutstandingWork,
   fetchRecentActivity,
   fetchInternalSummary,
+  fetchClientProgress,
 } from "@/lib/internal-client-profile";
 import { getValidToken } from "@/lib/qbo";
 import {
@@ -94,7 +95,7 @@ export default async function ClientProfilePage({
       })
     : Promise.resolve(null);
 
-  const [outstanding, activity, summary, accessToken] = await Promise.all([
+  const [outstanding, activity, summary, progress, accessToken] = await Promise.all([
     fetchOutstandingWork(service, id).catch((e) => {
       console.warn(`[client-profile ${id}] outstanding work failed:`, e?.message);
       return null;
@@ -105,6 +106,10 @@ export default async function ClientProfilePage({
     }),
     fetchInternalSummary(service, id).catch((e) => {
       console.warn(`[client-profile ${id}] summary failed:`, e?.message);
+      return null;
+    }),
+    fetchClientProgress(service, id, clientLink).catch((e) => {
+      console.warn(`[client-profile ${id}] progress failed:`, e?.message);
       return null;
     }),
     tokenPromise,
@@ -149,6 +154,7 @@ export default async function ClientProfilePage({
           outstanding,
           activity,
           summary,
+          progress,
         }}
         financials={{
           overview,

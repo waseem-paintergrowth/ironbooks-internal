@@ -20,6 +20,8 @@ import type {
   OutstandingWork,
   ActivityEvent,
   InternalSummary,
+  ClientProgress,
+  ProgressStage,
 } from "@/lib/internal-client-profile";
 import type { OverviewData, BalanceSheetSummary } from "@/lib/portal-data";
 
@@ -47,6 +49,7 @@ interface OverviewBundle {
   outstanding: OutstandingWork | null;
   activity: ActivityEvent[];
   summary: InternalSummary | null;
+  progress: ClientProgress | null;
 }
 
 interface FinancialsBundle {
@@ -197,6 +200,127 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
   );
 }
 
+// ─── PROGRESS FLOW CHART ───────────────────────────────────────────────
+
+function ProgressFlowChart({ progress }: { progress: ClientProgress }) {
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-base font-bold text-navy">Client progress</h2>
+        <div className="text-xs text-ink-slate">
+          <span className="font-bold text-navy">{progress.percentComplete}%</span>{" "}
+          of lifecycle complete
+        </div>
+      </div>
+
+      {/* Top-line progress bar — single horizontal track that fills based
+          on percentComplete. Cheap visual reinforcement of the number,
+          keeps the eye moving across the stage cards below. */}
+      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mb-4">
+        <div
+          className="h-full bg-gradient-to-r from-teal to-emerald-500 transition-all"
+          style={{ width: `${progress.percentComplete}%` }}
+        />
+      </div>
+
+      {/* Stage cards arranged horizontally on desktop with chevron arrows
+          between them so the "flow" reads left-to-right. On narrow screens
+          the cards wrap to a grid and the chevrons hide — keeps the layout
+          legible without scrollbars. */}
+      <div className="hidden lg:flex items-stretch gap-0">
+        {progress.stages.map((stage, i) => (
+          <div key={stage.key} className="flex items-stretch flex-1 min-w-0">
+            <ProgressStageCard stage={stage} index={i} />
+            {i < progress.stages.length - 1 && (
+              <div className="flex items-center px-1 text-ink-slate/40 shrink-0">
+                <ChevronRight size={18} />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {/* Mobile/tablet fallback — 2-3 column grid, no chevrons */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 lg:hidden">
+        {progress.stages.map((stage, i) => (
+          <ProgressStageCard key={stage.key} stage={stage} index={i} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ProgressStageCard({
+  stage,
+  index,
+}: {
+  stage: ProgressStage;
+  index: number;
+}) {
+  // Color palette per status. Pulled into a map so the inline classes
+  // stay readable + Tailwind's JIT can statically detect every class
+  // (no dynamic concatenation that defeats purge).
+  const styles: Record<
+    ProgressStage["status"],
+    { card: string; pill: string; icon: string; pillText: string }
+  > = {
+    complete: {
+      card: "bg-emerald-50 border-emerald-300 hover:border-emerald-500 hover:shadow-sm",
+      pill: "bg-emerald-600",
+      pillText: "Done",
+      icon: "text-emerald-700",
+    },
+    in_progress: {
+      card: "bg-amber-50 border-amber-300 hover:border-amber-500 hover:shadow-sm",
+      pill: "bg-amber-500",
+      pillText: "In progress",
+      icon: "text-amber-700",
+    },
+    blocked: {
+      card: "bg-red-50 border-red-300 hover:border-red-500 hover:shadow-sm",
+      pill: "bg-red-600",
+      pillText: "Blocked",
+      icon: "text-red-700",
+    },
+    not_started: {
+      card: "bg-gray-50 border-gray-200 hover:border-gray-300",
+      pill: "bg-gray-400",
+      pillText: "Not started",
+      icon: "text-ink-slate",
+    },
+  };
+  const s = styles[stage.status];
+
+  const inner = (
+    <div
+      className={`flex-1 min-w-0 border rounded-xl p-3 transition-all ${s.card}`}
+    >
+      <div className="flex items-center justify-between mb-1.5">
+        <div className={`text-[10px] font-bold uppercase tracking-wide ${s.icon}`}>
+          {String(index + 1).padStart(2, "0")} · {stage.label}
+        </div>
+        <span
+          className={`text-[9px] font-bold uppercase text-white px-1.5 py-0.5 rounded ${s.pill}`}
+        >
+          {s.pillText}
+        </span>
+      </div>
+      <div className="text-xs text-navy/90 leading-snug line-clamp-2">
+        {stage.detail}
+      </div>
+    </div>
+  );
+
+  // Cards are interactive when there's a meaningful destination; falls
+  // back to a plain div for "stay here" or unclickable stages.
+  return stage.href ? (
+    <Link href={stage.href} className="flex-1 min-w-0 flex">
+      {inner}
+    </Link>
+  ) : (
+    inner
+  );
+}
+
 // ─── OVERVIEW TAB ──────────────────────────────────────────────────────
 
 function OverviewTab({
@@ -206,10 +330,16 @@ function OverviewTab({
   clientLink: ClientLink;
   overview: OverviewBundle;
 }) {
-  const { outstanding, summary, activity } = overview;
+  const { outstanding, summary, activity, progress } = overview;
 
   return (
     <div className="space-y-6">
+      {/* Progress flow chart — bird's-eye view of where this client is in
+          their SNAP lifecycle. Renders above Outstanding Work so the
+          bookkeeper sees the "where are we" answer before the "what's
+          broken" list. */}
+      {progress && <ProgressFlowChart progress={progress} />}
+
       {/* Outstanding work — top-priority card. If empty we show a positive
           "all clear" state because seeing "0 outstanding items" hidden in
           a corner feels less reassuring than a deliberate empty state. */}
