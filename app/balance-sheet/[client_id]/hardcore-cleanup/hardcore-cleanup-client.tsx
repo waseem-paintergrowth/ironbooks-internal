@@ -96,6 +96,10 @@ export function HardcoreCleanupClient({
   const [finalizing, setFinalizing] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  /** Opens the bulk-account-picker modal — needed when the chart of
+   *  accounts has no auto-detected Bad Debt / Write-off account (the
+   *  Clean Cut Painters case). */
+  const [bulkPickerOpen, setBulkPickerOpen] = useState(false);
   // Default to showing only high-confidence (CRM-confirmed) duplicates.
   // Low-confidence Path B clusters can be false positives — change orders
   // / progress billings the CRM didn't include. Bookkeeper can toggle on.
@@ -353,40 +357,102 @@ export function HardcoreCleanupClient({
 
           {/* Quick-pick toolbar */}
           {pendingCount > 0 && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between gap-3 flex-wrap">
-              <div>
-                <div className="font-bold text-amber-900 text-sm">
-                  {pendingCount} duplicate{pendingCount === 1 ? "" : "s"} need a resolution
-                </div>
-                <div className="text-xs text-amber-700 mt-0.5">
-                  Tip: JE write-off preserves filed-period totals. Direct void only safe for open periods.
-                  {suggestedBadDebt && (
-                    <> Suggested target: <strong>{suggestedBadDebt.name}</strong>.</>
-                  )}
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-amber-900 text-sm">
+                    {pendingCount} duplicate{pendingCount === 1 ? "" : "s"} need a resolution — ${" "}
+                    {fmtMoney(
+                      items
+                        .filter((i) => i.resolution === "pending")
+                        .reduce(
+                          (s, i) => s + Number(i.qbo_invoice_balance || i.qbo_invoice_amount || 0),
+                          0
+                        )
+                    )}{" "}
+                    of phantom A/R
+                  </div>
+                  <div className="text-xs text-amber-700 mt-0.5">
+                    Tip: JE write-off preserves filed-period totals. Direct void only safe for open periods.
+                    {suggestedBadDebt ? (
+                      <> Suggested target: <strong>{suggestedBadDebt.name}</strong>.</>
+                    ) : (
+                      <> No "Bad Debt" account found in QBO — use "Pick account" to choose one (e.g. Owner Equity, Sales Returns).</>
+                    )}
+                  </div>
                 </div>
               </div>
-              {suggestedBadDebt && (
+
+              {/* Bulk-resolution actions — always render the pick-account button
+                  so the workflow doesn't dead-end when the COA has no Bad Debt
+                  account. The suggested-target shortcut still renders when
+                  available for the one-click case. */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {suggestedBadDebt && (
+                  <button
+                    onClick={() => {
+                      const ids = items.filter((i) => i.resolution === "pending").map((i) => i.id);
+                      if (ids.length === 0) return;
+                      if (
+                        !confirm(
+                          `Mark all ${ids.length} pending duplicates as JE write-off → ${suggestedBadDebt.name}? ` +
+                          `You can still change individual rows before finalize.`
+                        )
+                      )
+                        return;
+                      resolveItems(ids, {
+                        resolution: "je_writeoff",
+                        resolution_target_account_id: suggestedBadDebt.id,
+                        resolution_target_account_name: suggestedBadDebt.name,
+                      });
+                    }}
+                    className="px-3 py-1.5 bg-amber-600 text-white text-xs font-bold rounded hover:bg-amber-700"
+                  >
+                    JE write-off all → {suggestedBadDebt.name}
+                  </button>
+                )}
                 <button
-                  onClick={() => {
-                    const ids = items.filter((i) => i.resolution === "pending").map((i) => i.id);
+                  onClick={() => setBulkPickerOpen(true)}
+                  className="px-3 py-1.5 bg-white border border-amber-300 text-amber-900 text-xs font-bold rounded hover:bg-amber-100"
+                >
+                  Bulk write-off → pick account…
+                </button>
+              </div>
+
+              {/* Bulk account picker modal — opens when "Pick account" clicked.
+                  Filtered to P&L + Equity accounts (typical write-off targets).
+                  Type to search by name. Picking resolves all pending in one go. */}
+              {bulkPickerOpen && (
+                <BulkAccountPicker
+                  accounts={accounts}
+                  onClose={() => setBulkPickerOpen(false)}
+                  onPick={(acct) => {
+                    const ids = items
+                      .filter((i) => i.resolution === "pending")
+                      .map((i) => i.id);
+                    setBulkPickerOpen(false);
                     if (ids.length === 0) return;
                     if (
                       !confirm(
-                        `Mark all ${ids.length} pending duplicates as JE write-off → ${suggestedBadDebt.name}? ` +
-                        `You can still change individual rows before finalize.`
+                        `Mark all ${ids.length} pending duplicates as JE write-off → ${acct.name}?\n\n` +
+                        `Total: ${fmtMoney(
+                          items
+                            .filter((i) => i.resolution === "pending")
+                            .reduce(
+                              (s, i) => s + Number(i.qbo_invoice_balance || i.qbo_invoice_amount || 0),
+                              0
+                            )
+                        )}\n\nYou can still change individual rows before finalize.`
                       )
                     )
                       return;
                     resolveItems(ids, {
                       resolution: "je_writeoff",
-                      resolution_target_account_id: suggestedBadDebt.id,
-                      resolution_target_account_name: suggestedBadDebt.name,
+                      resolution_target_account_id: acct.id,
+                      resolution_target_account_name: acct.name,
                     });
                   }}
-                  className="px-3 py-1.5 bg-amber-600 text-white text-xs font-bold rounded hover:bg-amber-700"
-                >
-                  JE write-off all pending → {suggestedBadDebt.name}
-                </button>
+                />
               )}
             </div>
           )}
@@ -414,14 +480,27 @@ export function HardcoreCleanupClient({
               </label>
             )}
             {resolvedCount > 0 && run.status === "review" && (
-              <button
-                onClick={finalize}
-                disabled={finalizing}
-                className="ml-auto px-3 py-1.5 bg-teal text-white rounded text-xs font-bold hover:bg-teal-dark disabled:opacity-60 inline-flex items-center gap-1.5"
-              >
-                {finalizing ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-                {finalizing ? "Posting to QBO…" : `Finalize ${resolvedCount} to QBO`}
-              </button>
+              <div className="ml-auto flex items-center gap-2">
+                {/* Loud warning when finalize would skip pending items. Mike
+                    hit this on Clean Cut — 78 sat pending, 1 was resolved,
+                    Finalize processed just the 1 and looked like a success. */}
+                {pendingCount > 0 && (
+                  <span
+                    className="text-[11px] font-semibold text-red-700 bg-red-50 border border-red-200 px-2 py-1 rounded inline-flex items-center gap-1"
+                    title={`${pendingCount} unresolved items will NOT be processed. Use the bulk write-off above or pick a per-item resolution first.`}
+                  >
+                    ⚠ {pendingCount} still pending — will NOT be processed
+                  </span>
+                )}
+                <button
+                  onClick={finalize}
+                  disabled={finalizing}
+                  className="px-3 py-1.5 bg-teal text-white rounded text-xs font-bold hover:bg-teal-dark disabled:opacity-60 inline-flex items-center gap-1.5"
+                >
+                  {finalizing ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+                  {finalizing ? "Posting to QBO…" : `Finalize ${resolvedCount} to QBO`}
+                </button>
+              </div>
             )}
           </div>
 
@@ -788,5 +867,100 @@ function ItemRow({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Modal account picker for bulk writeoff. Filters to write-off-eligible
+ * accounts (Expense / Equity / Income / COGS), searchable by name. Returns
+ * the picked account via onPick + closes via onClose.
+ *
+ * Built inline to avoid a new shared component — specific enough to this
+ * workflow that lifting it out would be premature. Factor out if a second
+ * caller appears.
+ */
+function BulkAccountPicker({
+  accounts,
+  onPick,
+  onClose,
+}: {
+  accounts: QboAccount[];
+  onPick: (acct: QboAccount) => void;
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState("");
+
+  const eligible = accounts.filter((a) => {
+    const t = (a.accountType || "").toLowerCase();
+    return (
+      t.includes("expense") ||
+      t.includes("equity") ||
+      t.includes("income") ||
+      t.includes("revenue") ||
+      t.includes("cost of goods")
+    );
+  });
+  const filtered = eligible.filter((a) =>
+    a.name.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 bg-black/40 z-40"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div className="fixed inset-0 z-50 flex items-center justify-center px-4 pointer-events-none">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md pointer-events-auto overflow-hidden flex flex-col max-h-[80vh]">
+          <div className="px-5 py-4 border-b border-gray-200">
+            <div className="text-sm font-bold text-navy">
+              Pick account to write off all pending duplicates
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5">
+              JE write-off preserves any closed-period totals. Common picks:
+              Bad Debt, Owner Equity, Sales Returns.
+            </div>
+          </div>
+          <div className="px-4 py-2 border-b border-gray-100">
+            <input
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search accounts…"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg outline-none focus:border-teal"
+            />
+          </div>
+          <div className="flex-1 overflow-auto divide-y divide-gray-100">
+            {filtered.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm text-ink-slate">
+                {search
+                  ? `No accounts match "${search}"`
+                  : "No write-off-eligible accounts in this QBO. Create one in QBO first (e.g. 'Bad Debt' under Expense)."}
+              </div>
+            ) : (
+              filtered.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => onPick(a)}
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-teal-lighter/40 transition-colors"
+                >
+                  <div className="font-semibold text-navy">{a.name}</div>
+                  <div className="text-[11px] text-ink-slate">{a.accountType}</div>
+                </button>
+              ))
+            )}
+          </div>
+          <div className="px-4 py-3 border-t border-gray-200 flex justify-end">
+            <button
+              onClick={onClose}
+              className="text-xs font-semibold text-ink-slate hover:text-navy px-3 py-1.5"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
