@@ -22,7 +22,7 @@
  *      confidence.
  */
 
-import type { OpenInvoice } from "./qbo-balance-sheet";
+import type { OpenInvoice, UFPayment } from "./qbo-balance-sheet";
 
 // ─── TYPES ─────────────────────────────────────────────────────────────
 
@@ -581,3 +581,392 @@ export function detectDuplicates(input: DetectDuplicatesInput): DetectDuplicates
 }
 
 export { customerNamesMatch };
+
+// ════════════════════════════════════════════════════════════════════════════
+// V2 — Unified CRM-Driven Reconciliation
+// ════════════════════════════════════════════════════════════════════════════
+// Mike's vision: the CRM is source of truth. For each completed CRM job,
+// validate both sides of QBO:
+//   (a) A/R: matching QBO invoice exists, no duplicates
+//   (b) UF deposits: a deposit was received covering this job
+// Then surface 4 buckets of "needs action":
+//   1. Duplicates       → existing logic, kept verbatim
+//   2. Missing invoice  → CRM job complete, no QBO invoice (push new one)
+//   3. Unmatched job    → CRM job complete, no UF deposit (still unpaid?)
+//   4. Unmatched UF     → UF deposit, no CRM job (ask client what it's for)
+// Plus a 5th informational bucket:
+//   uf_matches          → CRM job ↔ UF deposit reconciled (1:1 or 1:N)
+//
+// V1 ships the matching engine + UI; QBO writes for missing_invoice and
+// unmatched_uf land in V2.
+
+/** A single CRM job matched to a UF deposit (1:1 or part of an N:1 group). */
+export interface UfMatch {
+  uf_payment_id: string;
+  uf_payment_date: string;
+  uf_payment_amount: number;
+  uf_customer_name: string | null;
+  /** CRM jobs covered by this deposit. Length 1 = 1:1 match. Length > 1 =
+   *  bulk deposit (1 deposit, N jobs summing to amount within tolerance). */
+  crm_job_ids: string[];
+  /** Match quality 0..1. 1.0 = exact amount + same customer + tight date. */
+  confidence: number;
+  /** Why we matched. Surfaced to the bookkeeper. */
+  reasoning: string;
+}
+
+/** A CRM job we couldn't find anything for on the deposit side. */
+export interface UnmatchedJob {
+  crm_job_id: string;
+  customer_name: string;
+  amount: number;
+  job_date: string | null;
+  reasoning: string;
+}
+
+/** A UF deposit with no CRM job match. Candidates for ask-client email. */
+export interface UnmatchedUf {
+  uf_payment_id: string;
+  uf_customer_name: string | null;
+  uf_payment_amount: number;
+  uf_payment_date: string;
+  memo: string;
+  reasoning: string;
+}
+
+/** A CRM job that's complete but has no corresponding QBO invoice. */
+export interface MissingInvoice {
+  crm_job_id: string;
+  customer_name: string;
+  amount: number;
+  job_date: string | null;
+  job_name: string | null;
+  reasoning: string;
+}
+
+export interface ReconcileInput {
+  crmJobs: ParsedCrmJob[];
+  qboInvoices: OpenInvoice[];
+  ufPayments: UFPayment[];
+  /** Window for UF↔job matching. Deposits older than this from the job
+   *  date are considered unrelated. Default 90 days. */
+  ufWindowDays?: number;
+  /** Amount tolerance for UF matches. Default $0.50 — same as duplicate
+   *  detection — keeps the matcher strict. */
+  amountTolerance?: number;
+  /** Max N for bulk-deposit matching. Larger N = exponential search blowup.
+   *  Default 6 covers most real-world cases (one check pays off 2-6 jobs). */
+  maxBulkN?: number;
+}
+
+export interface ReconcileResult extends DetectDuplicatesResult {
+  /** UF deposits successfully matched to one or more CRM jobs. */
+  ufMatches: UfMatch[];
+  /** CRM jobs with no UF deposit found. May still be legitimately unpaid. */
+  unmatchedJobs: UnmatchedJob[];
+  /** UF deposits we couldn't tie to any CRM job. Ask the client. */
+  unmatchedUf: UnmatchedUf[];
+  /** CRM jobs that have no QBO invoice at all. */
+  missingInvoices: MissingInvoice[];
+}
+
+/**
+ * Reconcile a CRM job list against QBO open invoices AND UF deposits.
+ *
+ * Delegates duplicate-invoice detection to the existing detectDuplicates
+ * (so V1 keeps working unchanged) and adds three new buckets on top.
+ *
+ * Strategy:
+ *   1. Run detectDuplicates → get duplicates + legitimate invoice IDs.
+ *   2. For each CRM job not covered by detectDuplicates' duplicate cluster,
+ *      check if it has a matching QBO invoice. If not → missing_invoice.
+ *   3. For each CRM job (whether or not it has an invoice), try to find
+ *      a UF deposit covering it. First try 1:1 amount-equality matches,
+ *      then 1:N bulk-deposit matches via subset-sum.
+ *   4. Leftover UF deposits → unmatched_uf (ask client).
+ *   5. CRM jobs with no UF match → unmatched_job.
+ */
+export function reconcileCrmAgainstQbo(input: ReconcileInput): ReconcileResult {
+  const {
+    crmJobs,
+    qboInvoices,
+    ufPayments,
+    ufWindowDays = 90,
+    amountTolerance = 0.5,
+    maxBulkN = 6,
+  } = input;
+
+  // ─── 1. Duplicates (existing engine) ─────────────────────────────────────
+  const baseResult = detectDuplicates({ crmJobs, qboInvoices });
+
+  // ─── 2. Missing invoices ────────────────────────────────────────────────
+  // For each CRM job, check if any QBO invoice could be the canonical one.
+  // We don't require exact amount match here (change orders are legitimate);
+  // we only require a customer match within a 180-day window. If found,
+  // the CRM job is "represented" in QBO. If not, it's missing.
+  //
+  // We deliberately leave duplicates out of "represented" — a CRM job that
+  // matches a known-duplicate cluster IS represented (just messily).
+  const missingInvoices: MissingInvoice[] = [];
+  const representedCrmJobIds = new Set<string>();
+
+  // Build a customer-bucketed index of QBO invoices for fast lookup.
+  const invByCustomerNorm = new Map<string, OpenInvoice[]>();
+  for (const inv of qboInvoices) {
+    const key = normalizeName(inv.customer_name);
+    if (!key) continue;
+    const bucket = invByCustomerNorm.get(key) || [];
+    bucket.push(inv);
+    invByCustomerNorm.set(key, bucket);
+  }
+
+  for (const job of crmJobs) {
+    const isCompletedish =
+      !job.job_status ||
+      /complet|paid|closed|done|finished|invoiced/i.test(job.job_status);
+    if (!isCompletedish) continue;
+    if (!job.customer_name || job.amount == null) continue;
+
+    // Try exact match first
+    const norm = normalizeName(job.customer_name);
+    let bucket = invByCustomerNorm.get(norm) || [];
+
+    // Loosened match — handles "John Smith" vs "John Smith Painting LLC"
+    if (bucket.length === 0) {
+      for (const [k, v] of invByCustomerNorm.entries()) {
+        if (loosenedNameMatch(k, norm)) {
+          bucket = bucket.concat(v);
+        }
+      }
+    }
+
+    if (bucket.length === 0) {
+      missingInvoices.push({
+        crm_job_id: job.crm_job_id || `name:${job.customer_name}`,
+        customer_name: job.customer_name,
+        amount: job.amount,
+        job_date: job.job_date,
+        job_name: job.job_name,
+        reasoning: `No QBO invoice for "${job.customer_name}" anywhere in the open A/R. Either: job got cancelled before invoicing, invoice was already paid + closed (only OpenInvoices fetched), or it never got pushed from the CRM.`,
+      });
+    } else {
+      representedCrmJobIds.add(job.crm_job_id || `name:${job.customer_name}`);
+    }
+  }
+
+  // ─── 3. UF deposit matching ─────────────────────────────────────────────
+  // Bucket BOTH sides by customer-normalized key so we only try matches
+  // within a customer. Cross-customer matching is too risky (one customer's
+  // $500 check would erroneously clear another customer's $500 invoice).
+  const ufByCustomerNorm = new Map<string, UFPayment[]>();
+  for (const uf of ufPayments) {
+    if (uf.already_applied) continue;
+    const key = normalizeName(uf.customer_name);
+    // "no customer" UF deposits go into a special bucket — they can't be
+    // 1:1 matched but might be 1:N. For V1 we just dump them to unmatched_uf.
+    const bucket = ufByCustomerNorm.get(key) || [];
+    bucket.push(uf);
+    ufByCustomerNorm.set(key, bucket);
+  }
+
+  const jobsByCustomerNorm = new Map<string, ParsedCrmJob[]>();
+  for (const job of crmJobs) {
+    if (!job.customer_name || job.amount == null) continue;
+    const isCompletedish =
+      !job.job_status ||
+      /complet|paid|closed|done|finished|invoiced/i.test(job.job_status);
+    if (!isCompletedish) continue;
+    const key = normalizeName(job.customer_name);
+    const bucket = jobsByCustomerNorm.get(key) || [];
+    bucket.push(job);
+    jobsByCustomerNorm.set(key, bucket);
+  }
+
+  const ufMatches: UfMatch[] = [];
+  const consumedJobIds = new Set<string>();
+  const consumedUfIds = new Set<string>();
+
+  // Walk every UF customer bucket — for each UF deposit, try 1:1 then 1:N
+  // against that customer's unconsumed jobs.
+  for (const [customerKey, ufs] of ufByCustomerNorm.entries()) {
+    if (!customerKey) continue; // skip blank-customer bucket — handled below
+    const jobs = (jobsByCustomerNorm.get(customerKey) || []).slice();
+    // Also try loosened match — customer name might differ slightly between
+    // CRM and QBO ("John Smith" vs "Smith, John").
+    if (jobs.length === 0) {
+      for (const [k, v] of jobsByCustomerNorm.entries()) {
+        if (loosenedNameMatch(k, customerKey)) {
+          jobs.push(...v);
+        }
+      }
+    }
+    if (jobs.length === 0) continue;
+
+    for (const uf of ufs) {
+      if (consumedUfIds.has(uf.qbo_payment_id)) continue;
+
+      // ── 1:1 exact-amount match ──
+      const oneToOne = jobs.find(
+        (j) =>
+          !consumedJobIds.has(jobIdKey(j)) &&
+          Math.abs((j.amount || 0) - uf.amount) < amountTolerance &&
+          withinDays(uf.date, j.job_date, ufWindowDays)
+      );
+      if (oneToOne) {
+        ufMatches.push({
+          uf_payment_id: uf.qbo_payment_id,
+          uf_payment_date: uf.date,
+          uf_payment_amount: uf.amount,
+          uf_customer_name: uf.customer_name,
+          crm_job_ids: [jobIdKey(oneToOne)],
+          confidence: 0.95,
+          reasoning: `1:1 match — UF deposit $${uf.amount.toFixed(2)} on ${uf.date} matches CRM job "${oneToOne.job_name || oneToOne.crm_job_id}" amount within tolerance.`,
+        });
+        consumedJobIds.add(jobIdKey(oneToOne));
+        consumedUfIds.add(uf.qbo_payment_id);
+        continue;
+      }
+
+      // ── 1:N bulk-deposit match via subset-sum ──
+      const candidates = jobs.filter(
+        (j) =>
+          !consumedJobIds.has(jobIdKey(j)) &&
+          withinDays(uf.date, j.job_date, ufWindowDays)
+      );
+      const subset = findSubsetSum(candidates, uf.amount, amountTolerance, maxBulkN);
+      if (subset && subset.length > 1) {
+        ufMatches.push({
+          uf_payment_id: uf.qbo_payment_id,
+          uf_payment_date: uf.date,
+          uf_payment_amount: uf.amount,
+          uf_customer_name: uf.customer_name,
+          crm_job_ids: subset.map(jobIdKey),
+          confidence: 0.78,
+          reasoning: `Bulk deposit — UF $${uf.amount.toFixed(2)} on ${uf.date} appears to cover ${subset.length} jobs (sum within tolerance). Confirm in the multi-select before finalizing.`,
+        });
+        for (const j of subset) consumedJobIds.add(jobIdKey(j));
+        consumedUfIds.add(uf.qbo_payment_id);
+      }
+    }
+  }
+
+  // ─── 4. Unmatched UF ────────────────────────────────────────────────────
+  const unmatchedUf: UnmatchedUf[] = [];
+  for (const uf of ufPayments) {
+    if (uf.already_applied) continue;
+    if (consumedUfIds.has(uf.qbo_payment_id)) continue;
+    unmatchedUf.push({
+      uf_payment_id: uf.qbo_payment_id,
+      uf_customer_name: uf.customer_name,
+      uf_payment_amount: uf.amount,
+      uf_payment_date: uf.date,
+      memo: uf.memo,
+      reasoning: uf.customer_name
+        ? `No CRM job for "${uf.customer_name}" matches $${uf.amount.toFixed(2)} within ${ufWindowDays}d of ${uf.date}.`
+        : `Deposit has no customer assigned and no CRM job matched. Likely needs client confirmation.`,
+    });
+  }
+
+  // ─── 5. Unmatched CRM jobs (no UF deposit) ─────────────────────────────
+  const unmatchedJobs: UnmatchedJob[] = [];
+  for (const job of crmJobs) {
+    if (!job.customer_name || job.amount == null) continue;
+    const isCompletedish =
+      !job.job_status ||
+      /complet|paid|closed|done|finished|invoiced/i.test(job.job_status);
+    if (!isCompletedish) continue;
+    if (consumedJobIds.has(jobIdKey(job))) continue;
+    unmatchedJobs.push({
+      crm_job_id: job.crm_job_id || `name:${job.customer_name}`,
+      customer_name: job.customer_name,
+      amount: job.amount,
+      job_date: job.job_date,
+      reasoning: `Job completed in CRM but no matching deposit in Undeposited Funds. Either: still pending payment, paid via channel not yet deposited, or payment was applied directly (not via UF).`,
+    });
+  }
+
+  return {
+    ...baseResult,
+    missingInvoices,
+    ufMatches,
+    unmatchedJobs,
+    unmatchedUf,
+  };
+}
+
+// ─── Helpers for V2 ────────────────────────────────────────────────────────
+
+/** Stable per-job key — prefers CRM's own ID, falls back to a synthetic
+ *  key built from customer name + amount + date. Mirrors the convention
+ *  in detectDuplicates so the same job is identified consistently. */
+function jobIdKey(job: ParsedCrmJob): string {
+  return job.crm_job_id || `synth:${normalizeName(job.customer_name)}:${job.amount}:${job.job_date}`;
+}
+
+/** True when `a` and `b` are within `days` of each other. Either being
+ *  null returns true (don't punish missing dates). */
+function withinDays(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  days: number
+): boolean {
+  if (!a || !b) return true;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (isNaN(ta) || isNaN(tb)) return true;
+  const diffDays = Math.abs(ta - tb) / (1000 * 60 * 60 * 24);
+  return diffDays <= days;
+}
+
+/**
+ * Find a subset of jobs whose amounts sum to `target` within tolerance.
+ * Brute-force exhaustive search up to `maxN` (default 6) — bigger N gets
+ * exponentially expensive (2^N combinations) and the bookkeeper would
+ * rather see "we couldn't auto-match" than wait 30 seconds.
+ *
+ * Returns the FIRST subset found (not necessarily optimal). For accuracy
+ * we sort candidates by amount descending so the greedy bias picks
+ * "biggest jobs first" which usually matches real deposit patterns
+ * (one big check covers a few large jobs, not 47 tiny ones).
+ */
+function findSubsetSum(
+  candidates: ParsedCrmJob[],
+  target: number,
+  tolerance: number,
+  maxN: number
+): ParsedCrmJob[] | null {
+  if (candidates.length === 0) return null;
+  // Sort biggest-first for the greedy bias mentioned above
+  const sorted = [...candidates].sort((a, b) => (b.amount || 0) - (a.amount || 0));
+
+  // Try all subset sizes from 2 to min(maxN, candidates.length)
+  for (let size = 2; size <= Math.min(maxN, sorted.length); size++) {
+    const found = combinationsSum(sorted, size, target, tolerance);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Recursive helper: pick `size` items from `pool` whose amounts sum to
+ *  `target` ± tolerance. Returns the first matching combination or null. */
+function combinationsSum(
+  pool: ParsedCrmJob[],
+  size: number,
+  target: number,
+  tolerance: number,
+  start = 0,
+  current: ParsedCrmJob[] = []
+): ParsedCrmJob[] | null {
+  if (current.length === size) {
+    const sum = current.reduce((s, j) => s + (j.amount || 0), 0);
+    return Math.abs(sum - target) < tolerance ? current.slice() : null;
+  }
+  for (let i = start; i < pool.length; i++) {
+    current.push(pool[i]);
+    const found = combinationsSum(pool, size, target, tolerance, i + 1, current);
+    if (found) return found;
+    current.pop();
+  }
+  return null;
+}
+
