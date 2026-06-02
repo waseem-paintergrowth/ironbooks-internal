@@ -19,6 +19,13 @@ interface ProposedRule {
    * and is NOT auto-selected. Bookkeeper opts in by ticking + picking.
    */
   hasTarget: boolean;
+  /**
+   * True when bank_rules already has a `pushed_to_qbo=true` row for this
+   * vendor (from a prior .xls export). Row renders with an "Already in
+   * QBO" badge and is default-unchecked. Re-ticking is safe — the upsert
+   * + push guards prevent QBO duplicates.
+   */
+  alreadyInQbo: boolean;
 }
 
 interface AvailableAccount {
@@ -51,12 +58,16 @@ export function BankRulesFromReclassClient({
   cleanupRangeEnd,
 }: Props) {
   const router = useRouter();
-  // Default selection: every vendor that already has an AI-picked target.
-  // Vendors without a target appear in the list but unchecked — they're
-  // opt-in via ticking the row + picking a target. This matches the
-  // "err on more rules" intent while keeping the no-action default safe.
+  // Default selection: every vendor that has an AI-picked target AND is
+  // not already in QBO. Vendors without a target appear unchecked
+  // (opt-in via tick + pick); vendors already in QBO appear unchecked
+  // (opt-in to recreate, which is safe via upsert + push-skip guards).
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(proposedRules.filter((r) => r.hasTarget).map((r) => r.vendorPattern))
+    new Set(
+      proposedRules
+        .filter((r) => r.hasTarget && !r.alreadyInQbo)
+        .map((r) => r.vendorPattern)
+    )
   );
   // Per-vendor account override map. Defaults to the AI-picked target;
   // empty for vendors with no target (bookkeeper picks via the dropdown).
@@ -445,25 +456,39 @@ export function BankRulesFromReclassClient({
   }).length;
   const needsTargetCount = selected.size - readyCount;
 
+  // Counts for the header summary
+  const totalVendors = proposedRules.length;
+  const alreadyInQboCount = proposedRules.filter((r) => r.alreadyInQbo).length;
+  const needsTargetTotal = proposedRules.filter((r) => !r.hasTarget && !r.alreadyInQbo).length;
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl border border-gray-100 p-6">
         <div className="mb-1">
           <h2 className="text-xl font-bold text-navy">
-            {proposedRules.length} vendor{proposedRules.length === 1 ? "" : "s"} from this reclass
+            {totalVendors} vendor{totalVendors === 1 ? "" : "s"} from this reclass
           </h2>
           <p className="text-sm text-ink-slate mt-1 leading-relaxed">
             Every vendor that appeared in this job is listed below — err on the side of
             more rules. Vendors with a confident AI target are pre-ticked.
-            {readyCount > 0 && needsTargetCount > 0 && " "}
-            {needsTargetCount > 0 && (
-              <span>
+            {needsTargetTotal > 0 && (
+              <>
+                {" "}
                 <span className="font-semibold text-amber-700">
-                  {needsTargetCount} vendor{needsTargetCount === 1 ? "" : "s"}
+                  {needsTargetTotal} need{needsTargetTotal === 1 ? "s" : ""} a target
                 </span>{" "}
-                need a target before they can become rules — tick the row + pick a target
-                if you want a rule for them.
-              </span>
+                — tick the row and pick a target if you want a rule for them.
+              </>
+            )}
+            {alreadyInQboCount > 0 && (
+              <>
+                {" "}
+                <span className="font-semibold text-ink-slate">
+                  {alreadyInQboCount} already in QBO
+                </span>{" "}
+                from a prior export — unchecked by default. Re-tick any you want to
+                update; the existing QBO rule will be refreshed on next .xls export.
+              </>
             )}
           </p>
         </div>
@@ -520,11 +545,19 @@ export function BankRulesFromReclassClient({
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-navy flex items-center gap-1.5">
+                    <div className="font-medium text-navy flex items-center gap-1.5 flex-wrap">
                       {rule.vendorDisplay}
                       {!rule.hasTarget && (
                         <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-200">
                           Needs target
+                        </span>
+                      )}
+                      {rule.alreadyInQbo && (
+                        <span
+                          className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-100 text-ink-slate border border-gray-200"
+                          title="A bank rule for this vendor was already exported to QBO. Re-ticking will update the existing rule and re-include it in the next .xls export."
+                        >
+                          Already in QBO
                         </span>
                       )}
                     </div>

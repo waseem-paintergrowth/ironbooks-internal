@@ -157,17 +157,20 @@ export default async function BankRulesFromReclassPage({
     }
   }
 
-  // Build proposed rules from EVERY vendor group, including ones with no
-  // AI-picked target. Rules without a target are emitted with empty
-  // target_* fields — the client renders them with a "Pick target..."
-  // dropdown and the bookkeeper opts them in by selecting the row AND
-  // picking a target. Err on the side of more rules.
+  // Build proposed rules from EVERY vendor group. No vendor is dropped:
+  //   - Vendors with an AI/bookkeeper target: pre-ticked, ready to create
+  //   - Vendors with no target: shown with "Pick target…" dropdown,
+  //     opt-in via tick + pick
+  //   - Vendors already in QBO (from a prior export): shown with
+  //     "Already in QBO" badge, default-unchecked. Re-ticking is safe —
+  //     /api/rules/from-reclass upserts on (client_link_id, vendor_pattern)
+  //     and the QBO push guard skips rows where pushed_to_qbo=true so we
+  //     can't create a QBO duplicate.
   //
   // Sort order (top-down):
-  //   1. Has AI-picked target, highest tx count first
-  //   2. Has AI-picked target, lower tx count
-  //   3. No target yet (needs bookkeeper attention) — sorted by tx count
-  let skippedAsAlreadyInQbo = 0;
+  //   1. Targeted + not in QBO yet  (the primary action)
+  //   2. No target yet              (needs bookkeeper attention)
+  //   3. Already in QBO              (reference / re-create if needed)
   const proposedRules = Array.from(groupMap.entries())
     .map(([vendorPattern, group]) => {
       let bestTarget = { id: "", name: "" };
@@ -178,11 +181,6 @@ export default async function BankRulesFromReclassPage({
           bestTarget = { id: t.id, name: t.name };
         }
       }
-      // Skip vendors that already have a rule pushed to QBO.
-      if (alreadyInQbo.has(normalizePattern(vendorPattern))) {
-        skippedAsAlreadyInQbo++;
-        return null;
-      }
       return {
         vendorPattern,
         vendorDisplay: group.vendorDisplay,
@@ -191,17 +189,22 @@ export default async function BankRulesFromReclassPage({
         txCount: group.txCount,
         totalAmount: group.totalAmount,
         hasTarget: !!bestTarget.name,
+        alreadyInQbo: alreadyInQbo.has(normalizePattern(vendorPattern)),
       };
     })
-    .filter((r): r is NonNullable<typeof r> => r !== null)
     .sort((a, b) => {
-      // Targeted rules first; within each group, sort by tx count desc
-      if (a.hasTarget !== b.hasTarget) return a.hasTarget ? -1 : 1;
+      // Group order: ready → needs target → already in QBO
+      const rank = (r: typeof a) => (r.alreadyInQbo ? 2 : r.hasTarget ? 0 : 1);
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
       return b.txCount - a.txCount;
     });
-  const withoutTarget = proposedRules.filter((r) => !r.hasTarget).length;
+  const ready = proposedRules.filter((r) => r.hasTarget && !r.alreadyInQbo).length;
+  const needsTarget = proposedRules.filter((r) => !r.hasTarget && !r.alreadyInQbo).length;
+  const inQbo = proposedRules.filter((r) => r.alreadyInQbo).length;
   console.log(
-    `[bank-rules ${id}] Proposed: ${proposedRules.length} (${withoutTarget} need bookkeeper to pick target; excluded ${skippedAsAlreadyInQbo} already pushed to QBO)`
+    `[bank-rules ${id}] Proposed: ${proposedRules.length} total — ${ready} ready, ${needsTarget} need target, ${inQbo} already in QBO`
   );
 
   // Build the FINAL dropdown list: live QBO P&L accounts UNION the targets the

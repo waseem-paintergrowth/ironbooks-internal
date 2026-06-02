@@ -93,6 +93,12 @@ export async function POST(request: Request) {
   }
 
   const selectedSet = new Set(selected_vendors);
+  // NOTE: `pushed_to_qbo` deliberately excluded — Supabase upsert generates
+  // `ON CONFLICT DO UPDATE SET col=excluded.col` for every column in the
+  // payload. Including pushed_to_qbo:false would clobber the flag on
+  // already-exported rules and re-include them in the next .xls export,
+  // creating duplicate rules in QBO on import. New rows get the column
+  // default (false); existing rows keep whatever they had.
   const rulesToUpsert: Array<{
     client_link_id: string;
     vendor_pattern: string;
@@ -106,7 +112,6 @@ export async function POST(request: Request) {
     transaction_count: number;
     total_amount: number;
     created_by: string;
-    pushed_to_qbo: boolean;
   }> = [];
 
   for (const [vendorPattern, group] of groupMap.entries()) {
@@ -142,7 +147,6 @@ export async function POST(request: Request) {
       transaction_count: group.txCount,
       total_amount: group.totalAmount,
       created_by: user.id, // UUID — bank_rules.created_by FKs to users.id
-      pushed_to_qbo: false,
     });
   }
 
