@@ -5,6 +5,7 @@ import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { HardcoreCleanupClient } from "./hardcore-cleanup-client";
+import { UnifiedReviewClient } from "./unified-review-client";
 
 export const dynamic = "force-dynamic";
 
@@ -62,11 +63,23 @@ export default async function HardcoreCleanupPage({
           <ArrowLeft size={14} />
           Back to A/R Recovery
         </Link>
-        <HardcoreCleanupClient
-          clientLinkId={client_id}
-          clientName={(client as any).client_name}
-          latestRun={latestRun}
-        />
+        {/* Branch on workflow_version: v2 runs render the new 4-tab UI;
+            v1 runs (Clean Cut Painters' in-flight cleanup) keep using the
+            legacy single-bucket UI so nothing in-flight breaks. New uploads
+            always create v2 runs (start route defaults to workflow_version=2). */}
+        {latestRun && (latestRun as any).workflow_version === 2 ? (
+          <UnifiedReviewClient
+            clientLinkId={client_id}
+            clientName={(client as any).client_name}
+            initialRun={latestRun as any}
+          />
+        ) : (
+          <HardcoreCleanupClient
+            clientLinkId={client_id}
+            clientName={(client as any).client_name}
+            latestRun={latestRun}
+          />
+        )}
       </div>
     </AppShell>
   );

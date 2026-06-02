@@ -1,16 +1,33 @@
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 import { getValidToken } from "@/lib/qbo";
-import { fetchOpenInvoices } from "@/lib/qbo-balance-sheet";
+import {
+  fetchOpenInvoices,
+  fetchUndepositedFundsPayments,
+  findUndepositedFundsAccountId,
+} from "@/lib/qbo-balance-sheet";
 import {
   parseCsv,
   normalizeCrmRows,
   detectDuplicates,
+  reconcileCrmAgainstQbo,
   type CrmSource,
 } from "@/lib/hardcore-cleanup";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
+
+/** Mirrors normalizeName() in lib/hardcore-cleanup.ts — kept in sync so the
+ *  CRM-key → UUID map we build here resolves the same synthetic keys the
+ *  reconcile engine emits. If hardcore-cleanup's normalizer ever changes,
+ *  update this one too. */
+function normalizeForKey(s: string | null | undefined): string {
+  return (s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 /**
  * POST /api/clients/[id]/hardcore-cleanup/start
@@ -95,6 +112,11 @@ export async function POST(
     .in("status", ["uploading", "matching"])
     .lt("created_at", fiveMinAgo);
 
+  // Default new runs to v2 (unified 4-bucket workflow). Body can opt-in
+  // to v1 for backwards-compatibility testing — every production caller
+  // should leave this unset.
+  const workflowVersion: 1 | 2 = body.workflow_version === 1 ? 1 : 2;
+
   // Create run row
   const { data: runIns, error: runErr } = await service
     .from("hardcore_cleanup_runs" as any)
@@ -104,6 +126,7 @@ export async function POST(
       status: "uploading",
       crm_source: crmSource,
       crm_filename: crmFilename,
+      workflow_version: workflowVersion,
     } as any)
     .select()
     .single();
@@ -175,20 +198,95 @@ export async function POST(
       );
     }
 
-    // 2. Fetch QBO open invoices
+    // 2. Fetch QBO open invoices + (V2) UF deposits
     await service
       .from("hardcore_cleanup_runs" as any)
       .update({ status: "matching" } as any)
       .eq("id", runId);
     const accessToken = await getValidToken(clientLinkId, service as any);
-    const invoices = await fetchOpenInvoices((client as any).qbo_realm_id, accessToken);
+    const realmId = (client as any).qbo_realm_id as string;
+    const invoices = await fetchOpenInvoices(realmId, accessToken);
 
-    // 3. Run duplicate detection
-    const detection = detectDuplicates({ crmJobs, qboInvoices: invoices });
+    // V2: also pull Undeposited Funds deposits. V1 skips this (kept narrow
+    // for backwards-compat). UF fetch is failure-tolerant — if the client
+    // has no UF account configured we surface "0 UF payments" rather than
+    // crashing the whole run.
+    let ufPayments: Awaited<ReturnType<typeof fetchUndepositedFundsPayments>> = [];
+    if (workflowVersion === 2) {
+      try {
+        const ufAcctId = await findUndepositedFundsAccountId(realmId, accessToken);
+        if (ufAcctId) {
+          ufPayments = await fetchUndepositedFundsPayments(realmId, accessToken, ufAcctId);
+        } else {
+          console.warn(
+            `[hardcore-start ${runId}] No Undeposited Funds account found in QBO — UF buckets will be empty.`
+          );
+        }
+      } catch (err: any) {
+        console.warn(
+          `[hardcore-start ${runId}] UF fetch failed (continuing without UF data): ${err?.message}`
+        );
+      }
+    }
 
-    // 4. Persist items (persistedJobIds was captured above in insert order)
-    if (detection.duplicates.length > 0) {
-      const itemRows = detection.duplicates.map((d) => ({
+    // 3. Run reconciliation
+    // V1: detectDuplicates only (legacy path, kept for Clean Cut etc).
+    // V2: full reconcileCrmAgainstQbo (4 buckets + uf_match informational).
+    const detection =
+      workflowVersion === 2
+        ? reconcileCrmAgainstQbo({ crmJobs, qboInvoices: invoices, ufPayments })
+        : { ...detectDuplicates({ crmJobs, qboInvoices: invoices }), missingInvoices: [], ufMatches: [], unmatchedJobs: [], unmatchedUf: [] };
+
+    // 4a. Persist UF payments snapshot (V2 only). Each row backs one or
+    // more hardcore_cleanup_items so the review UI is stable even if QBO
+    // state shifts between scan and finalize. We index by qbo_payment_id
+    // so the item-insert step can resolve UF rows back to their UUIDs.
+    const ufRowIdByQboId = new Map<string, string>();
+    if (workflowVersion === 2 && ufPayments.length > 0) {
+      const ufInsertRows = ufPayments.map((p) => ({
+        run_id: runId,
+        qbo_payment_id: p.qbo_payment_id,
+        qbo_object_type: "Payment", // fetchUndepositedFundsPayments only returns Payments today
+        qbo_customer_id: p.customer_id,
+        qbo_customer_name: p.customer_name,
+        payment_date: p.date,
+        amount: p.amount,
+        memo: p.memo,
+        existing_linked_txns: null, // V2 doesn't surface this yet — defer until applyPayment lands
+      }));
+      for (let i = 0; i < ufInsertRows.length; i += BATCH) {
+        const { data: returned, error: ue } = await service
+          .from("hardcore_cleanup_uf_payments" as any)
+          .insert(ufInsertRows.slice(i, i + BATCH) as any)
+          .select("id, qbo_payment_id");
+        if (ue) throw new Error(`UF payments insert failed: ${ue.message}`);
+        for (const row of (returned as any[]) || []) {
+          ufRowIdByQboId.set(row.qbo_payment_id, row.id);
+        }
+      }
+    }
+
+    // 4b. Persist items — duplicates (V1 + V2) plus 4 new buckets (V2 only).
+    //
+    // We need a CRM-job-key → UUID map so the engine's string keys
+    // (`crm_job_id` or synthetic) resolve back to the rows we just inserted.
+    // Mirror the engine's jobIdKey() logic exactly.
+    const crmKeyToUuid = new Map<string, string>();
+    for (let i = 0; i < crmJobs.length; i++) {
+      const j = crmJobs[i];
+      const key = j.crm_job_id || `synth:${normalizeForKey(j.customer_name)}:${j.amount}:${j.job_date}`;
+      crmKeyToUuid.set(key, persistedJobIds[i]);
+      // Also store the "name:" fallback the engine uses when crm_job_id is missing
+      if (!j.crm_job_id && j.customer_name) {
+        crmKeyToUuid.set(`name:${j.customer_name}`, persistedJobIds[i]);
+      }
+    }
+
+    const itemRows: any[] = [];
+
+    // Duplicates (both versions)
+    for (const d of detection.duplicates) {
+      itemRows.push({
         run_id: runId,
         client_link_id: clientLinkId,
         item_type: "duplicate_invoice",
@@ -209,7 +307,88 @@ export async function POST(
         confidence: d.confidence,
         reasoning: d.reasoning,
         resolution: "pending",
-      }));
+      });
+    }
+
+    // V2 buckets
+    if (workflowVersion === 2) {
+      // missing_invoice — CRM job, no QBO invoice
+      for (const m of detection.missingInvoices) {
+        itemRows.push({
+          run_id: runId,
+          client_link_id: clientLinkId,
+          item_type: "missing_invoice",
+          qbo_invoice_id: null,
+          qbo_customer_name: m.customer_name,
+          matched_crm_job_id: crmKeyToUuid.get(m.crm_job_id) || null,
+          confidence: 0.85,
+          reasoning: m.reasoning,
+          resolution: "pending",
+          uf_payment_amount: m.amount,
+        });
+      }
+      // uf_match — informational: 1:1 or 1:N reconciled match
+      for (const m of detection.ufMatches) {
+        const ufRowId = ufRowIdByQboId.get(m.uf_payment_id) || null;
+        const matchedCrmUuids = m.crm_job_ids
+          .map((k) => crmKeyToUuid.get(k))
+          .filter((x): x is string => !!x);
+        itemRows.push({
+          run_id: runId,
+          client_link_id: clientLinkId,
+          item_type: "uf_match",
+          qbo_invoice_id: null,
+          uf_payment_id: m.uf_payment_id,
+          uf_payment_date: m.uf_payment_date,
+          uf_payment_amount: m.uf_payment_amount,
+          uf_customer_name: m.uf_customer_name,
+          // Set matched_crm_job_id to the FIRST job (1:1 path); crm_job_ids
+          // array carries the full N for 1:N bulk deposits.
+          matched_crm_job_id: matchedCrmUuids[0] || null,
+          crm_job_ids: matchedCrmUuids.length > 0 ? matchedCrmUuids : null,
+          confidence: m.confidence,
+          reasoning: m.reasoning,
+          // Bulk matches start as 'pending' so the bookkeeper must confirm.
+          // 1:1 matches default to 'apply_payment' since high-confidence.
+          resolution: m.crm_job_ids.length === 1 ? "apply_payment" : "pending",
+        });
+        void ufRowId; // referenced via uf_payment_id; row.id reserved for future joins
+      }
+      // unmatched_job — CRM job, no UF deposit
+      for (const j of detection.unmatchedJobs) {
+        itemRows.push({
+          run_id: runId,
+          client_link_id: clientLinkId,
+          item_type: "unmatched_job",
+          qbo_invoice_id: null,
+          qbo_customer_name: j.customer_name,
+          matched_crm_job_id: crmKeyToUuid.get(j.crm_job_id) || null,
+          confidence: 0.6,
+          reasoning: j.reasoning,
+          resolution: "pending",
+          uf_payment_amount: j.amount,
+        });
+      }
+      // unmatched_uf — UF deposit, no CRM job
+      for (const u of detection.unmatchedUf) {
+        itemRows.push({
+          run_id: runId,
+          client_link_id: clientLinkId,
+          item_type: "unmatched_uf",
+          qbo_invoice_id: null,
+          uf_payment_id: u.uf_payment_id,
+          uf_payment_amount: u.uf_payment_amount,
+          uf_payment_date: u.uf_payment_date,
+          uf_customer_name: u.uf_customer_name,
+          qbo_invoice_memo: u.memo,
+          confidence: 0.5,
+          reasoning: u.reasoning,
+          resolution: "pending",
+        });
+      }
+    }
+
+    if (itemRows.length > 0) {
       for (let i = 0; i < itemRows.length; i += BATCH) {
         const { error: ie } = await service
           .from("hardcore_cleanup_items" as any)
@@ -238,9 +417,15 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       run_id: runId,
+      workflow_version: workflowVersion,
       crm_jobs_uploaded: crmJobs.length,
       qbo_invoices_scanned: invoices.length,
+      uf_payments_scanned: ufPayments.length,
       duplicates_detected: detection.duplicates.length,
+      missing_invoices_detected: workflowVersion === 2 ? detection.missingInvoices.length : 0,
+      uf_matches_detected: workflowVersion === 2 ? detection.ufMatches.length : 0,
+      unmatched_jobs_detected: workflowVersion === 2 ? detection.unmatchedJobs.length : 0,
+      unmatched_uf_detected: workflowVersion === 2 ? detection.unmatchedUf.length : 0,
       total_phantom_ar: Math.round(totalPhantom * 100) / 100,
       customer_summary: detection.customerSummary,
     });
