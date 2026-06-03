@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  *
  * Body: {
  *   item_ids: string[],
- *   resolution: "pending"|"je_writeoff"|"direct_void"|"keep"|"manual",
+ *   resolution: "pending"|"je_writeoff"|"direct_void"|"keep"|"manual"|"push_invoice"|"apply_payment",
  *   resolution_target_account_id?: string,
  *   resolution_target_account_name?: string,
  *   resolution_notes?: string,
@@ -50,7 +50,15 @@ export async function POST(
   if (itemIds.length === 0) {
     return NextResponse.json({ error: "item_ids required" }, { status: 400 });
   }
-  const allowed = new Set(["pending", "je_writeoff", "direct_void", "keep", "manual"]);
+  // Full set finalize knows how to execute. `push_invoice` (create new
+  // QBO invoice from CRM job data) and `apply_payment` (sparse-update UF
+  // payment with LinkedTxn) were missing here even though finalize
+  // already handled them — Cody Ruane / Clean Cut Painters caught this
+  // when bookkeeper had nothing valid to pick for missing_invoice items.
+  const allowed = new Set([
+    "pending", "je_writeoff", "direct_void", "keep", "manual",
+    "push_invoice", "apply_payment",
+  ]);
   if (!allowed.has(body.resolution)) {
     return NextResponse.json({ error: `Invalid resolution: ${body.resolution}` }, { status: 400 });
   }
@@ -60,6 +68,28 @@ export async function POST(
       { error: "je_writeoff requires resolution_target_account_id (Bad Debt / similar)" },
       { status: 400 }
     );
+  }
+  // Defensive: cross-check resolution against the items' shape so the
+  // resolution can never be set in a way finalize will reject.
+  if (["direct_void", "je_writeoff"].includes(body.resolution)) {
+    const { data: badItems } = await service
+      .from("hardcore_cleanup_items" as any)
+      .select("id, item_type, qbo_invoice_id")
+      .in("id", itemIds)
+      .or("qbo_invoice_id.is.null,qbo_invoice_id.eq.")
+      .limit(5);
+    if (badItems && (badItems as any[]).length > 0) {
+      const names = (badItems as any[])
+        .map((i) => i.item_type)
+        .filter((v, idx, arr) => arr.indexOf(v) === idx)
+        .join(", ");
+      return NextResponse.json(
+        {
+          error: `Can't pick "${body.resolution}" for items of type "${names}" — they have no QBO invoice to act on. Use "push_invoice" or "keep" / "manual" for those.`,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   const updates: any = {

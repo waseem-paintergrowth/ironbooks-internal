@@ -140,6 +140,38 @@ export async function POST(
 
   for (const item of queue) {
     try {
+      // ─── Pre-flight: resolution must be compatible with item shape ───
+      //
+      // Cody Ruane / Clean Cut Painters hit this 3 times in a row: the
+      // bookkeeper picked direct_void on a `missing_invoice` item, finalize
+      // dutifully ran `SELECT * FROM Invoice WHERE Id='null'`, QBO returned
+      // 400 "Invalid ID", item went to `failed`. Same dance every retry.
+      //
+      // Catch the impossible combinations BEFORE calling QBO so the error
+      // message tells the bookkeeper what to do instead, not what HTTP
+      // status QBO returned.
+      const needsQboInvoice = ["direct_void", "je_writeoff"].includes(
+        item.resolution
+      );
+      if (needsQboInvoice && !item.qbo_invoice_id) {
+        throw new Error(
+          `Cannot ${item.resolution} — this is a "${item.item_type}" item with no existing QBO invoice. ` +
+          `For ${item.item_type}, pick "Push to QBO" (creates a new invoice from the CRM job) or "Keep" / "Manual" instead.`
+        );
+      }
+      if (item.resolution === "apply_payment" && !item.uf_payment_id) {
+        throw new Error(
+          `Cannot apply_payment — item has no uf_payment_id. ` +
+          `This usually means the discovery scan didn't capture a UF payment for this customer.`
+        );
+      }
+      if (item.resolution === "push_invoice" && !item.matched_crm_job_id) {
+        throw new Error(
+          `Cannot push_invoice — item has no matched_crm_job_id. ` +
+          `The discovery scan needs to link this item to a CRM job before SNAP can create the QBO invoice.`
+        );
+      }
+
       if (NO_QBO_RESOLUTIONS.has(item.resolution)) {
         await service
           .from("hardcore_cleanup_items" as any)
