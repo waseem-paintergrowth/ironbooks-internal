@@ -341,6 +341,32 @@ export async function POST(
       };
     });
 
+    // Replace existing UNEXECUTED suggestions for this job before inserting
+    // the fresh batch. Without this delete, every re-analyze stacks rows on
+    // top of the previous run and the bookkeeper sees the same account 3x
+    // ("Wages" / "Cost of labor - COGS" / "Direct Payroll Taxes" triplicated
+    // — see screenshot from Cody Ruane's review on June 3).
+    //
+    // We DO NOT delete executed rows — those represent QBO writes that
+    // already landed; deleting would lose the audit trail and re-running
+    // analyze could re-propose work that's already done.
+    //
+    // `.is("executed", null)` covers the "not yet attempted" rows;
+    // `.eq("executed", false)` covers the rows that explicitly failed
+    // (so a retry can replace them with fresh AI suggestions).
+    const { error: delErr } = await service
+      .from("coa_actions")
+      .delete()
+      .eq("job_id", jobId)
+      .or("executed.is.null,executed.eq.false");
+    if (delErr) {
+      console.warn(
+        `[coa-analyze ${jobId}] couldn't clear stale actions before re-analyze: ${delErr.message}`
+      );
+      // Don't bail — better to ship duplicates than to fail analyze entirely.
+      // The bookkeeper can manually dismiss the older copies. Logged for triage.
+    }
+
     await service.from("coa_actions").insert([...actions, ...missingActions] as any);
 
     return NextResponse.json({
