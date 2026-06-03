@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import {
   CheckCircle2, AlertTriangle, FileText, Sparkles, ChevronRight, ChevronDown,
-  ArrowLeft, Wallet, X,
+  ArrowLeft, Wallet, X, Loader2, Send,
 } from "lucide-react";
 
 interface Candidate {
@@ -71,6 +71,83 @@ export function UFARReview({
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(["exact", "high"])
   );
+  // Apply state: per-row status overlays so the bookkeeper can watch a
+  // bulk push finish row-by-row instead of staring at a single spinner.
+  const [applying, setApplying] = useState<"none" | "exact" | "high" | "selected">("none");
+  const [applyError, setApplyError] = useState<string>("");
+  const [applyResult, setApplyResult] = useState<
+    | { applied: number; failed: number; skipped: number }
+    | null
+  >(null);
+  // Row-level outcome map — keyed by match id. Updated incrementally as
+  // the apply endpoint returns per-match outcomes.
+  const [rowOutcome, setRowOutcome] = useState<
+    Record<string, { status: "ok" | "failed" | "skipped"; message: string }>
+  >({});
+
+  async function applyKind(kind: "exact" | "high") {
+    if (applying !== "none") return;
+    setApplying(kind);
+    setApplyError("");
+    try {
+      const res = await fetch(`/api/balance-sheet/uf-ar/${job.id}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setApplyResult({ applied: data.applied, failed: data.failed, skipped: data.skipped });
+      const nextOutcomes = { ...rowOutcome };
+      for (const o of data.outcomes as Array<{ match_id: string; status: "ok" | "failed" | "skipped"; message: string }>) {
+        nextOutcomes[o.match_id] = { status: o.status, message: o.message };
+      }
+      setRowOutcome(nextOutcomes);
+      // Flip applied rows' local decision so future re-clicks skip them
+      setMatches((prev) =>
+        prev.map((m) => {
+          const o = data.outcomes.find((x: any) => x.match_id === m.id);
+          if (o?.status === "ok") return { ...m, decision: "applied" };
+          return m;
+        })
+      );
+    } catch (e: any) {
+      setApplyError(e.message);
+    } finally {
+      setApplying("none");
+    }
+  }
+
+  async function applyOne(matchId: string) {
+    if (applying !== "none") return;
+    setApplying("selected");
+    setApplyError("");
+    try {
+      const res = await fetch(`/api/balance-sheet/uf-ar/${job.id}/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ match_ids: [matchId] }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const outcome = data.outcomes?.[0];
+      if (outcome) {
+        setRowOutcome((prev) => ({
+          ...prev,
+          [outcome.match_id]: { status: outcome.status, message: outcome.message },
+        }));
+        if (outcome.status === "ok") {
+          setMatches((prev) =>
+            prev.map((m) => (m.id === matchId ? { ...m, decision: "applied" } : m))
+          );
+        }
+      }
+    } catch (e: any) {
+      setApplyError(e.message);
+    } finally {
+      setApplying("none");
+    }
+  }
 
   function toggleSection(key: string) {
     setExpandedSections((prev) => {
@@ -87,6 +164,22 @@ export function UFARReview({
     low: matches.filter((m) => m.match_kind === "low_confidence"),
     unmatched: matches.filter((m) => m.match_kind === "unmatched"),
   };
+
+  // Pending = not yet applied (decision !== 'applied'). Sum across kind to
+  // tell the bookkeeper exactly how much UF the next click will drain.
+  const pendingSum = (kind: keyof typeof groups) =>
+    groups[kind]
+      .filter((m) => m.decision !== "applied")
+      .reduce((s, m) => s + (m.uf_amount || 0), 0);
+  const pendingCount = (kind: keyof typeof groups) =>
+    groups[kind].filter((m) => m.decision !== "applied").length;
+
+  const exactPendingCount = pendingCount("exact");
+  const exactPendingSum = pendingSum("exact");
+  const highPendingCount = pendingCount("high");
+  const highPendingSum = pendingSum("high");
+  const totalPending = exactPendingCount + highPendingCount;
+  const totalPendingSum = exactPendingSum + highPendingSum;
 
   const fmt = (n: number) =>
     new Intl.NumberFormat("en-US", {
@@ -152,14 +245,90 @@ export function UFARReview({
         </div>
       )}
 
-      {/* Heads-up: execute is pending */}
-      <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
-        <strong>Heads up:</strong> this is the review surface. Applying
-        these matches against QBO Invoices is in the next iteration —
-        for now you can see the recommendations and audit them. When the
-        execute step ships, every &quot;auto-approve&quot; row will fire in one
-        click.
-      </div>
+      {/* Action panel — the one button that actually drains UF. Sums
+          the dollar value across pending exact + high-confidence matches
+          so the bookkeeper sees exactly what one click will do. */}
+      {totalPending > 0 ? (
+        <div className="rounded-xl bg-teal-lighter/50 border border-teal/30 p-4 flex items-start gap-4 flex-wrap">
+          <div className="flex-1 min-w-[240px]">
+            <div className="text-sm font-bold text-navy">
+              {totalPending} match{totalPending === 1 ? "" : "es"} ready to push to QBO
+              {totalPendingSum > 0 && (
+                <span className="ml-1 text-teal">— {fmt(totalPendingSum)} UF</span>
+              )}
+            </div>
+            <div className="text-xs text-ink-slate mt-0.5 leading-snug">
+              Sparse-updates each Payment in QBO to link it to its matched
+              invoice. The payment leaves Undeposited Funds, A/R drops by
+              the same amount. Per-row errors stay on this page so you can
+              retry — clicking again is safe.
+            </div>
+            {applyError && (
+              <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+                <strong>Apply error:</strong> {applyError}
+              </div>
+            )}
+            {applyResult && (
+              <div className="mt-2 text-xs text-ink-slate">
+                Last batch: <strong className="text-green-700">{applyResult.applied} applied</strong>
+                {applyResult.failed > 0 && (
+                  <>, <strong className="text-red-700">{applyResult.failed} failed</strong></>
+                )}
+                {applyResult.skipped > 0 && (
+                  <>, <strong>{applyResult.skipped} skipped</strong></>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col gap-2 flex-shrink-0">
+            <button
+              onClick={() => applyKind("exact")}
+              disabled={exactPendingCount === 0 || applying !== "none"}
+              className="inline-flex items-center justify-center gap-1.5 bg-teal hover:bg-teal-dark disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition-colors"
+              title={
+                exactPendingCount === 0
+                  ? "No pending exact matches"
+                  : `Push ${exactPendingCount} exact match${exactPendingCount === 1 ? "" : "es"} to QBO (${fmt(exactPendingSum)})`
+              }
+            >
+              {applying === "exact" ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Send size={13} />
+              )}
+              Apply {exactPendingCount} exact ({fmt(exactPendingSum)})
+            </button>
+            <button
+              onClick={() => applyKind("high")}
+              disabled={highPendingCount === 0 || applying !== "none"}
+              className="inline-flex items-center justify-center gap-1.5 bg-white hover:bg-gray-50 border border-teal/30 hover:border-teal text-teal disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+              title={
+                highPendingCount === 0
+                  ? "No pending high-confidence matches"
+                  : `Push ${highPendingCount} high-confidence match${highPendingCount === 1 ? "" : "es"} to QBO (${fmt(highPendingSum)})`
+              }
+            >
+              {applying === "high" ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Send size={13} />
+              )}
+              Apply {highPendingCount} high-conf ({fmt(highPendingSum)})
+            </button>
+          </div>
+        </div>
+      ) : applyResult ? (
+        <div className="rounded-xl bg-green-50 border border-green-200 p-3 text-xs text-green-900 flex items-center gap-2">
+          <CheckCircle2 size={14} className="flex-shrink-0" />
+          <span>
+            All exact + high-confidence matches have been pushed to QBO.
+            {applyResult.failed > 0 && (
+              <> {applyResult.failed} row{applyResult.failed === 1 ? "" : "s"} failed —
+                see red-marked rows below.</>
+            )}
+          </span>
+        </div>
+      ) : null}
 
       {/* Groups */}
       <Section
@@ -173,6 +342,10 @@ export function UFARReview({
         open={expandedSections.has("exact")}
         onToggle={() => toggleSection("exact")}
         fmt={fmt}
+        onApplyOne={applyOne}
+        applyingRow={applying === "selected"}
+        rowOutcome={rowOutcome}
+        canApply
       />
       <Section
         kind="high"
@@ -185,6 +358,10 @@ export function UFARReview({
         open={expandedSections.has("high")}
         onToggle={() => toggleSection("high")}
         fmt={fmt}
+        onApplyOne={applyOne}
+        applyingRow={applying === "selected"}
+        rowOutcome={rowOutcome}
+        canApply
       />
       <Section
         kind="low"
@@ -197,6 +374,7 @@ export function UFARReview({
         open={expandedSections.has("low")}
         onToggle={() => toggleSection("low")}
         fmt={fmt}
+        rowOutcome={rowOutcome}
       />
       <Section
         kind="unmatched"
@@ -209,6 +387,7 @@ export function UFARReview({
         open={expandedSections.has("unmatched")}
         onToggle={() => toggleSection("unmatched")}
         fmt={fmt}
+        rowOutcome={rowOutcome}
       />
     </div>
   );
@@ -250,6 +429,10 @@ function Section({
   open,
   onToggle,
   fmt,
+  onApplyOne,
+  applyingRow,
+  rowOutcome,
+  canApply,
 }: {
   kind: string;
   title: string;
@@ -261,6 +444,10 @@ function Section({
   open: boolean;
   onToggle: () => void;
   fmt: (n: number) => string;
+  onApplyOne?: (id: string) => void;
+  applyingRow?: boolean;
+  rowOutcome?: Record<string, { status: "ok" | "failed" | "skipped"; message: string }>;
+  canApply?: boolean;
 }) {
   if (matches.length === 0) return null;
   return (
@@ -294,7 +481,15 @@ function Section({
       {open && (
         <div className="border-t border-gray-100 divide-y divide-gray-100">
           {matches.map((m) => (
-            <MatchRow key={m.id} match={m} fmt={fmt} accentColor={accentColor} />
+            <MatchRow
+              key={m.id}
+              match={m}
+              fmt={fmt}
+              accentColor={accentColor}
+              onApply={canApply ? onApplyOne : undefined}
+              applyingRow={applyingRow}
+              outcome={rowOutcome?.[m.id]}
+            />
           ))}
         </div>
       )}
@@ -306,17 +501,33 @@ function MatchRow({
   match,
   fmt,
   accentColor,
+  onApply,
+  applyingRow,
+  outcome,
 }: {
   match: Match;
   fmt: (n: number) => string;
   accentColor: string;
+  onApply?: (id: string) => void;
+  applyingRow?: boolean;
+  outcome?: { status: "ok" | "failed" | "skipped"; message: string };
 }) {
   const [showCandidates, setShowCandidates] = useState(false);
   const proposed = match.proposed_invoices?.[0];
   const candidateCount = match.candidate_invoices?.length || 0;
+  const isApplied = match.decision === "applied" || outcome?.status === "ok";
+  const isFailed = outcome?.status === "failed";
 
   return (
-    <div className="px-5 py-4">
+    <div
+      className={`px-5 py-4 ${
+        isApplied
+          ? "bg-green-50/40"
+          : isFailed
+          ? "bg-red-50/40"
+          : ""
+      }`}
+    >
       <div className="flex items-start gap-4">
         {/* Left: UF payment */}
         <div className="flex-1 min-w-0">
@@ -406,6 +617,51 @@ function MatchRow({
                   )}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Per-row apply / status chip. Hides the button after a successful
+              push to keep the row tidy and prevent double-clicks. */}
+          {(onApply || isApplied || isFailed) && (
+            <div className="mt-2 flex items-center gap-2">
+              {isApplied ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-green-700 bg-green-100 border border-green-200 rounded-full px-2 py-0.5">
+                  <CheckCircle2 size={11} /> Applied to QBO
+                </span>
+              ) : isFailed ? (
+                <>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-700 bg-red-100 border border-red-200 rounded-full px-2 py-0.5">
+                    <AlertTriangle size={11} /> Failed
+                  </span>
+                  {outcome?.message && (
+                    <span className="text-[11px] text-red-700 truncate" title={outcome.message}>
+                      {outcome.message}
+                    </span>
+                  )}
+                  {onApply && (
+                    <button
+                      onClick={() => onApply(match.id)}
+                      disabled={applyingRow}
+                      className="text-[11px] font-semibold text-teal hover:text-teal-dark disabled:opacity-50"
+                    >
+                      Retry
+                    </button>
+                  )}
+                </>
+              ) : onApply ? (
+                <button
+                  onClick={() => onApply(match.id)}
+                  disabled={applyingRow}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal hover:text-teal-dark border border-teal/30 hover:border-teal hover:bg-teal-lighter/50 rounded px-2 py-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {applyingRow ? (
+                    <Loader2 size={10} className="animate-spin" />
+                  ) : (
+                    <Send size={10} />
+                  )}
+                  Apply to QBO
+                </button>
+              ) : null}
             </div>
           )}
         </div>
