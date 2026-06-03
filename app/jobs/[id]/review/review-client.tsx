@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight, ChevronDown, Edit2, Trash2, Flag, Check,
-  Loader2, Building2, GitMerge, Search, ChevronRight,
+  Loader2, Building2, GitMerge, Search, ChevronRight, RefreshCcw,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import type { Database } from "@/lib/database.types";
@@ -155,7 +155,48 @@ export function ReviewClient({
   const [actions, setActions] = useState(initialActions);
   const [filter, setFilter] = useState<"all" | "rename" | "merge" | "delete" | "flag" | "keep" | "create">("all");
   const [executing, setExecuting] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+
+  // Count of executed actions — used in the re-analyze confirm dialog so
+  // the bookkeeper knows what survives the refresh.
+  const executedCount = actions.filter((a) => a.executed === true).length;
+
+  /** Re-run /analyze to refresh AI suggestions. The server route deletes
+   *  unexecuted actions before inserting the fresh batch (the dedup fix
+   *  from #76), so the bookkeeper gets a clean slate of new suggestions
+   *  while their already-executed QBO writes stay intact. */
+  async function handleReanalyze() {
+    const proceed = confirm(
+      `Re-analyze ${clientLink.client_name}'s COA?\n\n` +
+        `• AI re-runs against the current QBO state — fresh suggestions.\n` +
+        `• Unconfirmed actions (rename / merge / delete / keep / flag) ` +
+        `will be replaced.\n` +
+        (executedCount > 0
+          ? `• ${executedCount} action${executedCount === 1 ? "" : "s"} already executed in QBO will be preserved.\n`
+          : "") +
+        `\nUse this if the QBO COA changed since the last analysis, OR if you ` +
+        `want a fresh pass after manual edits.`
+    );
+    if (!proceed) return;
+    setReanalyzing(true);
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/analyze`, { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(`Re-analyze failed: ${body.error || `HTTP ${res.status}`}`);
+        setReanalyzing(false);
+        return;
+      }
+      // Hard refresh so the server-rendered page re-fetches actions in
+      // their new (deduped) state. Avoids stale-state edge cases vs a
+      // client-side refetch.
+      router.refresh();
+    } catch (e: any) {
+      alert(`Re-analyze failed: ${e?.message || "unknown"}`);
+      setReanalyzing(false);
+    }
+  }
 
   const supabase = createBrowserClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -263,7 +304,7 @@ export function ReviewClient({
         ))}
       </div>
 
-      {/* Filter tabs */}
+      {/* Filter tabs + Re-analyze action */}
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         {(["all", "rename", "merge", "delete", "flag", "keep", "create"] as const).map((f) => (
           <button
@@ -278,6 +319,22 @@ export function ReviewClient({
             {f} ({f === "all" ? actions.length : counts[f as keyof typeof counts]})
           </button>
         ))}
+        {/* Re-analyze — refreshes AI suggestions from the current QBO state.
+            Server-side dedup (#76) ensures this doesn't pile new rows on
+            top of the old; unconfirmed suggestions get replaced cleanly. */}
+        <button
+          onClick={handleReanalyze}
+          disabled={reanalyzing || executing}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-semibold bg-white text-ink-slate border border-gray-200 hover:border-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Re-run AI analysis against the current QBO COA. Unconfirmed suggestions get replaced; executed actions are preserved."
+        >
+          {reanalyzing ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : (
+            <RefreshCcw size={13} />
+          )}
+          {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+        </button>
       </div>
 
       {/* Column headers */}

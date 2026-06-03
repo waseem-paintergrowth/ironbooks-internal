@@ -156,13 +156,27 @@ export async function POST(
       // Catch the impossible combinations BEFORE calling QBO so the error
       // message tells the bookkeeper what to do instead, not what HTTP
       // status QBO returned.
-      const needsQboInvoice = ["direct_void", "je_writeoff"].includes(
-        item.resolution
-      );
-      if (needsQboInvoice && !item.qbo_invoice_id) {
+      // direct_void: still requires an invoice to act on — no exception.
+      if (item.resolution === "direct_void" && !item.qbo_invoice_id) {
         throw new Error(
-          `Cannot ${item.resolution} — this is a "${item.item_type}" item with no existing QBO invoice. ` +
+          `Cannot direct_void — this is a "${item.item_type}" item with no existing QBO invoice. ` +
           `For ${item.item_type}, pick "Push to QBO" (creates a new invoice from the CRM job) or "Keep" / "Manual" instead.`
+        );
+      }
+      // je_writeoff: invoice-less path supported when the item has a
+      // customer name (the missing_invoice bulk JE flow). Block only when
+      // BOTH invoice + customer name are missing — finalize has nothing
+      // to credit. The detail branching for invoice-less je_writeoff
+      // lives in the resolution handler below.
+      if (
+        item.resolution === "je_writeoff" &&
+        !item.qbo_invoice_id &&
+        !item.qbo_customer_name &&
+        !item.uf_customer_name
+      ) {
+        throw new Error(
+          `Cannot je_writeoff a "${item.item_type}" item with no QBO invoice AND no customer name — ` +
+          `finalize has nothing to credit. Mark as "keep" or "manual" instead.`
         );
       }
       if (item.resolution === "apply_payment" && !item.uf_payment_id) {
@@ -233,57 +247,142 @@ export async function POST(
           throw new Error(`Target account "${target.Name}" is inactive — pick another`);
         }
 
-        // We need the invoice's A/R account + customer for the credit line
-        const query = encodeURIComponent(
-          `SELECT * FROM Invoice WHERE Id = '${item.qbo_invoice_id}'`
-        );
-        const qData: any = await qboCall(`/query?query=${query}`, undefined, "GET");
-        const inv = qData?.QueryResponse?.Invoice?.[0];
-        if (!inv) {
-          throw new Error(`Invoice ${item.qbo_invoice_id} not found in QBO`);
-        }
-        const arRef = inv.ARAccountRef;
-        const customerRef = inv.CustomerRef;
-        if (!arRef?.value) throw new Error("Invoice has no A/R account ref");
-        if (!customerRef?.value) throw new Error("Invoice has no customer ref");
+        // Branch on whether the item references an existing QBO invoice
+        // OR is a missing_invoice JE (Mike's bulk "write off revenue OR
+        // bad debt" flow for jobs that completed in CRM but never made
+        // it to QBO as an invoice).
+        let jeBody: any;
+        let amount: number;
+        if (item.qbo_invoice_id) {
+          // ─── Path A: classic duplicate-invoice write-off ─────────────
+          // Pull the invoice's A/R account + customer for the credit line.
+          const query = encodeURIComponent(
+            `SELECT * FROM Invoice WHERE Id = '${item.qbo_invoice_id}'`
+          );
+          const qData: any = await qboCall(`/query?query=${query}`, undefined, "GET");
+          const inv = qData?.QueryResponse?.Invoice?.[0];
+          if (!inv) {
+            throw new Error(`Invoice ${item.qbo_invoice_id} not found in QBO`);
+          }
+          const arRef = inv.ARAccountRef;
+          const customerRef = inv.CustomerRef;
+          if (!arRef?.value) throw new Error("Invoice has no A/R account ref");
+          if (!customerRef?.value) throw new Error("Invoice has no customer ref");
 
-        const amount = Number(item.qbo_invoice_balance ?? item.qbo_invoice_amount ?? 0);
-        if (amount <= 0) {
-          throw new Error("Invoice balance/amount is zero — nothing to write off");
-        }
+          amount = Number(item.qbo_invoice_balance ?? item.qbo_invoice_amount ?? 0);
+          if (amount <= 0) {
+            throw new Error("Invoice balance/amount is zero — nothing to write off");
+          }
 
-        // JE body — Dr Bad Debt, Cr A/R (with customer entity)
-        const jeBody: any = {
-          TxnDate: postDate(item),
-          PrivateNote:
-            `Ironbooks Hardcore BS Cleanup (by ${bookkeeperName}) — ` +
-            `write off duplicate invoice ${inv.DocNumber || inv.Id} ` +
-            `(survivor: ${item.surviving_qbo_invoice_doc_number || item.surviving_qbo_invoice_id || "?"})`,
-          Line: [
-            {
-              DetailType: "JournalEntryLineDetail",
-              Amount: Number(amount.toFixed(2)),
-              Description: `Write off ${inv.DocNumber || inv.Id}`,
-              JournalEntryLineDetail: {
-                PostingType: "Debit",
-                AccountRef: { value: target.Id, name: target.Name },
-              },
-            },
-            {
-              DetailType: "JournalEntryLineDetail",
-              Amount: Number(amount.toFixed(2)),
-              Description: `Clear A/R for duplicate invoice ${inv.DocNumber || inv.Id}`,
-              JournalEntryLineDetail: {
-                PostingType: "Credit",
-                AccountRef: { value: arRef.value, name: arRef.name },
-                Entity: {
-                  Type: "Customer",
-                  EntityRef: { value: customerRef.value, name: customerRef.name },
+          jeBody = {
+            TxnDate: postDate(item),
+            PrivateNote:
+              `Ironbooks Hardcore BS Cleanup (by ${bookkeeperName}) — ` +
+              `write off duplicate invoice ${inv.DocNumber || inv.Id} ` +
+              `(survivor: ${item.surviving_qbo_invoice_doc_number || item.surviving_qbo_invoice_id || "?"})`,
+            Line: [
+              {
+                DetailType: "JournalEntryLineDetail",
+                Amount: Number(amount.toFixed(2)),
+                Description: `Write off ${inv.DocNumber || inv.Id}`,
+                JournalEntryLineDetail: {
+                  PostingType: "Debit",
+                  AccountRef: { value: target.Id, name: target.Name },
                 },
               },
-            },
-          ],
-        };
+              {
+                DetailType: "JournalEntryLineDetail",
+                Amount: Number(amount.toFixed(2)),
+                Description: `Clear A/R for duplicate invoice ${inv.DocNumber || inv.Id}`,
+                JournalEntryLineDetail: {
+                  PostingType: "Credit",
+                  AccountRef: { value: arRef.value, name: arRef.name },
+                  Entity: {
+                    Type: "Customer",
+                    EntityRef: { value: customerRef.value, name: customerRef.name },
+                  },
+                },
+              },
+            ],
+          };
+        } else {
+          // ─── Path B: missing_invoice JE (no QBO invoice exists) ───────
+          // The bookkeeper picked je_writeoff on a missing_invoice item
+          // via Mike's "Bulk JE → write off revenue OR bad debt" flow.
+          // Build the JE differently: we still credit A/R + Customer, but
+          // we look the AR account up off the default Accounts Receivable
+          // account in the COA (vs sourcing it from an invoice that
+          // doesn't exist), and we look up the customer by name.
+          const customerName = item.qbo_customer_name || item.uf_customer_name;
+          if (!customerName) {
+            throw new Error(
+              `Cannot je_writeoff a ${item.item_type} item with no customer name`
+            );
+          }
+          const customer = await findCustomerByName(
+            (client as any).qbo_realm_id,
+            accessToken,
+            customerName
+          );
+          if (!customer) {
+            throw new Error(
+              `Customer "${customerName}" not found in QBO — can't post JE. ` +
+              `Rename in CRM to match QBO, or pre-create the customer in QBO.`
+            );
+          }
+          // Find the default A/R account. Most QBO files have exactly
+          // one "Accounts Receivable" with AccountType="Accounts Receivable".
+          const arAccount = allAccounts.find(
+            (a) => a.AccountType === "Accounts Receivable" && a.Active !== false
+          );
+          if (!arAccount) {
+            throw new Error(
+              `No active Accounts Receivable account found in QBO — can't post the credit side of the JE.`
+            );
+          }
+          // Amount source: missing_invoice items store the expected
+          // amount in uf_payment_amount (per the start route — it's the
+          // CRM job's amount we'd have invoiced).
+          amount = Number(item.uf_payment_amount ?? item.qbo_invoice_amount ?? 0);
+          if (amount <= 0) {
+            throw new Error(
+              `Missing-invoice item has no amount on file — can't post a $0 JE`
+            );
+          }
+
+          jeBody = {
+            TxnDate: postDate(item),
+            PrivateNote:
+              `Ironbooks Hardcore BS Cleanup (by ${bookkeeperName}) — ` +
+              `JE for missing invoice on ${customerName} ` +
+              `(no QBO invoice ever created; recorded revenue / wrote off via JE)`,
+            Line: [
+              {
+                DetailType: "JournalEntryLineDetail",
+                Amount: Number(amount.toFixed(2)),
+                Description: `Missing-invoice JE: ${customerName}`,
+                JournalEntryLineDetail: {
+                  PostingType: "Debit",
+                  AccountRef: { value: target.Id, name: target.Name },
+                },
+              },
+              {
+                DetailType: "JournalEntryLineDetail",
+                Amount: Number(amount.toFixed(2)),
+                Description: `A/R for missing invoice — ${customerName}`,
+                JournalEntryLineDetail: {
+                  PostingType: "Credit",
+                  AccountRef: { value: arAccount.Id, name: arAccount.Name },
+                  Entity: {
+                    Type: "Customer",
+                    EntityRef: { value: customer.id, name: customer.displayName },
+                  },
+                },
+              },
+            ],
+          };
+        }
+
         const jeData: any = await qboCall(`/journalentry?minorversion=70`, jeBody);
         const jeId = jeData?.JournalEntry?.Id;
         if (!jeId) throw new Error("QBO returned no JE Id");
