@@ -26,7 +26,9 @@ interface Run {
 interface Item {
   id: string;
   item_type: string;
-  qbo_invoice_id: string;
+  /** Null for v2 item types (missing_invoice / unmatched_job / unmatched_uf /
+   *  uf_match) — they reference CRM jobs or UF deposits, not QBO invoices. */
+  qbo_invoice_id: string | null;
   qbo_invoice_doc_number: string | null;
   qbo_invoice_date: string | null;
   qbo_invoice_amount: number | null;
@@ -36,6 +38,15 @@ interface Item {
   matched_crm_job_id: string | null;
   surviving_qbo_invoice_id: string | null;
   surviving_qbo_invoice_doc_number: string | null;
+  /** Set by the start route on missing_invoice + unmatched_job items —
+   *  stashes the CRM job's expected dollar amount so the UI has something
+   *  to display when there's no QBO invoice to source the amount from.
+   *  Reused as the amount fallback in fmtMoney() calls. */
+  uf_payment_amount: number | null;
+  /** v2 UF-side fields, populated for unmatched_uf + uf_match items. */
+  uf_payment_id: string | null;
+  uf_payment_date: string | null;
+  uf_customer_name: string | null;
   confidence: number;
   reasoning: string | null;
   resolution: string;
@@ -228,7 +239,14 @@ export function HardcoreCleanupClient({
     const jeCount = resolved.filter((i) => i.resolution === "je_writeoff").length;
     const voidCount = resolved.filter((i) => i.resolution === "direct_void").length;
     const noOpCount = resolved.filter((i) => ["keep", "manual"].includes(i.resolution)).length;
-    const total = resolved.reduce((s, i) => s + Number(i.qbo_invoice_balance || i.qbo_invoice_amount || 0), 0);
+    const total = resolved.reduce(
+      (s, i) =>
+        s +
+        Number(
+          i.qbo_invoice_balance ?? i.qbo_invoice_amount ?? i.uf_payment_amount ?? 0
+        ),
+      0
+    );
     if (
       !confirm(
         `Finalize ${resolved.length} resolution${resolved.length === 1 ? "" : "s"} (${fmtMoney(total)} phantom A/R)?\n\n` +
@@ -390,7 +408,14 @@ export function HardcoreCleanupClient({
                       items
                         .filter((i) => i.resolution === "pending")
                         .reduce(
-                          (s, i) => s + Number(i.qbo_invoice_balance || i.qbo_invoice_amount || 0),
+                          (s, i) =>
+                            s +
+                            Number(
+                              i.qbo_invoice_balance ??
+                                i.qbo_invoice_amount ??
+                                i.uf_payment_amount ??
+                                0
+                            ),
                           0
                         )
                     )}{" "}
@@ -708,7 +733,16 @@ function CustomerGroup({
     }
   ) => void;
 }) {
-  const total = items.reduce((s, i) => s + Number(i.qbo_invoice_balance || i.qbo_invoice_amount || 0), 0);
+  // Same fallback as the per-row display — uf_payment_amount carries the
+  // CRM job amount for missing_invoice / unmatched_job items that have no
+  // QBO invoice. Without this fallback the group total renders as $0.00
+  // for those types.
+  const total = items.reduce(
+    (s, i) =>
+      s +
+      Number(i.qbo_invoice_balance ?? i.qbo_invoice_amount ?? i.uf_payment_amount ?? 0),
+    0
+  );
   const pendingCount = items.filter((i) => i.resolution === "pending").length;
 
   return (
@@ -790,10 +824,21 @@ function ItemRow({
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0 w-28 text-right">
           <div className="font-bold text-navy text-sm">
-            {fmtMoney(item.qbo_invoice_balance || item.qbo_invoice_amount)}
+            {/* Amount fallback order: qbo_invoice_balance (duplicate +
+                survivor-related items) → qbo_invoice_amount → uf_payment_amount
+                (where the start route stashed the CRM job's expected amount
+                for missing_invoice + unmatched_job items, which have no QBO
+                invoice and would otherwise render as $0). */}
+            {fmtMoney(
+              item.qbo_invoice_balance ??
+                item.qbo_invoice_amount ??
+                item.uf_payment_amount
+            )}
           </div>
           <div className="text-[11px] text-ink-light">
-            #{item.qbo_invoice_doc_number || item.qbo_invoice_id}
+            {item.qbo_invoice_doc_number || item.qbo_invoice_id
+              ? `#${item.qbo_invoice_doc_number || item.qbo_invoice_id}`
+              : "—"}
           </div>
           <div className="text-[11px] text-ink-slate">{item.qbo_invoice_date}</div>
         </div>
