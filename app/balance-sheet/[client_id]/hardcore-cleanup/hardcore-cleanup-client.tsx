@@ -179,15 +179,30 @@ export function HardcoreCleanupClient({
       .catch(() => {});
   }, [clientLinkId]);
 
-  async function uploadCsv(file: File, crmSource: "drip_jobs" | "jobber" | "generic") {
+  /**
+   * Submit one or more CSVs in a single hardcore-cleanup run. Server
+   * concatenates the parsed CRM jobs from each file (using each file's
+   * own crm_source for correct column mapping) and runs the matcher
+   * once across the combined list. Lets the bookkeeper upload Jobber +
+   * DripJobs together when a client uses both.
+   */
+  async function uploadCsvs(
+    files: Array<{ file: File; crm: "drip_jobs" | "jobber" | "generic" }>
+  ) {
     setUploading(true);
     setError("");
     try {
-      const text = await file.text();
+      const csvs = await Promise.all(
+        files.map(async (f) => ({
+          crm_source: f.crm,
+          crm_filename: f.file.name,
+          csv_text: await f.file.text(),
+        }))
+      );
       const res = await fetch(`/api/clients/${clientLinkId}/hardcore-cleanup/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ crm_source: crmSource, crm_filename: file.name, csv_text: text }),
+        body: JSON.stringify({ csvs }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
@@ -324,7 +339,7 @@ export function HardcoreCleanupClient({
 
   return (
     <div className="space-y-4">
-      {noActiveRun && <UploadCard onUpload={uploadCsv} uploading={uploading} />}
+      {noActiveRun && <UploadCard onUpload={uploadCsvs} uploading={uploading} />}
 
       {run && (run.status === "uploading" || run.status === "matching") && (
         <div className="p-6 bg-white border border-slate-200 rounded-lg flex flex-col items-center text-center">
@@ -636,79 +651,163 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "re
   );
 }
 
+/**
+ * Multi-CSV upload card. Bookkeeper adds one row per CRM file (Jobber,
+ * DripJobs, etc.) and submits them as a single batch. Server merges
+ * the parsed jobs and runs one detection pass across all sources, so a
+ * client using both Jobber + DripJobs can reconcile against QBO in one
+ * run instead of two.
+ */
+type UploadRow = {
+  id: string;
+  file: File | null;
+  crm: "drip_jobs" | "jobber" | "generic";
+};
+
 function UploadCard({
   onUpload,
   uploading,
 }: {
-  onUpload: (file: File, crm: "drip_jobs" | "jobber" | "generic") => void;
+  onUpload: (files: Array<{ file: File; crm: "drip_jobs" | "jobber" | "generic" }>) => void;
   uploading: boolean;
 }) {
-  const [crm, setCrm] = useState<"drip_jobs" | "jobber" | "generic">("drip_jobs");
-  const [file, setFile] = useState<File | null>(null);
+  // Default to one DripJobs row — preserves the prior "single Drip Jobs"
+  // workflow for the common case. Bookkeeper can change source and/or
+  // add more rows.
+  const [rows, setRows] = useState<UploadRow[]>([
+    { id: rowId(), file: null, crm: "drip_jobs" },
+  ]);
+
+  const ready = rows.filter((r) => r.file !== null);
+  const totalKb =
+    rows.reduce((s, r) => s + (r.file?.size || 0), 0) / 1024;
+
+  function updateRow(id: string, patch: Partial<UploadRow>) {
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }
+  function addRow() {
+    setRows((rs) => [...rs, { id: rowId(), file: null, crm: "jobber" }]);
+  }
+  function removeRow(id: string) {
+    setRows((rs) => (rs.length === 1 ? rs : rs.filter((r) => r.id !== id)));
+  }
 
   return (
     <div className="p-6 bg-white border border-slate-200 rounded-lg space-y-4">
       <div>
         <h2 className="text-lg font-bold text-navy">Start a Hardcore BS Cleanup</h2>
         <p className="text-sm text-ink-slate mt-1">
-          Upload the client's job report from their CRM. SNAP will cross-reference against
-          QBO open invoices and flag duplicates. You review and pick resolutions before anything
-          touches QBO.
+          Upload the client&apos;s job report(s) from their CRM. Add one file per
+          source — Jobber, DripJobs, or a generic export — and SNAP runs a single
+          reconciliation pass across all of them against QBO open invoices.
+          You review and pick resolutions before anything touches QBO.
         </p>
       </div>
 
-      <div className="space-y-2">
-        <label className="text-xs font-semibold uppercase tracking-wider text-ink-slate">CRM source</label>
-        <div className="flex gap-2 flex-wrap">
-          {[
-            { v: "drip_jobs", label: "Drip Jobs" },
-            { v: "jobber", label: "Jobber" },
-            { v: "generic", label: "Generic CSV" },
-          ].map((opt) => (
-            <button
-              key={opt.v}
-              onClick={() => setCrm(opt.v as any)}
-              className={`px-3 py-1.5 rounded-lg border text-sm font-semibold ${
-                crm === opt.v
-                  ? "bg-teal text-white border-teal"
-                  : "bg-white text-ink-slate border-slate-300 hover:bg-slate-50"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-        <div className="text-[11px] text-ink-light">
-          We map column headers like "Customer / Client", "Amount / Total", "Date / Created", "Status".
-          Generic mode uses a permissive header lookup. If parsing fails, you'll see a clear error.
-        </div>
-      </div>
+      <div className="space-y-3">
+        {rows.map((row, idx) => (
+          <div
+            key={row.id}
+            className="border border-slate-200 rounded-lg p-3 bg-slate-50/40 space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-slate">
+                File {idx + 1}
+              </span>
+              {rows.length > 1 && (
+                <button
+                  onClick={() => removeRow(row.id)}
+                  className="text-[11px] text-ink-light hover:text-red-600 inline-flex items-center gap-1"
+                  title="Remove this file"
+                >
+                  <X size={11} /> Remove
+                </button>
+              )}
+            </div>
 
-      <div className="space-y-2">
-        <label className="text-xs font-semibold uppercase tracking-wider text-ink-slate">CSV file</label>
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
-          className="block w-full text-sm border border-slate-300 rounded-lg p-2"
-        />
-        {file && (
-          <div className="text-xs text-ink-slate flex items-center gap-1">
-            <FileText size={11} /> {file.name} · {(file.size / 1024).toFixed(1)} KB
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-slate">
+                CRM source
+              </label>
+              <div className="flex gap-2 flex-wrap">
+                {[
+                  { v: "drip_jobs", label: "Drip Jobs" },
+                  { v: "jobber", label: "Jobber" },
+                  { v: "generic", label: "Generic CSV" },
+                ].map((opt) => (
+                  <button
+                    key={opt.v}
+                    onClick={() => updateRow(row.id, { crm: opt.v as any })}
+                    className={`px-2.5 py-1 rounded-md border text-xs font-semibold ${
+                      row.crm === opt.v
+                        ? "bg-teal text-white border-teal"
+                        : "bg-white text-ink-slate border-slate-300 hover:bg-slate-100"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-slate">
+                CSV file
+              </label>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) =>
+                  updateRow(row.id, { file: e.target.files?.[0] || null })
+                }
+                className="block w-full text-sm border border-slate-300 rounded-lg p-2 bg-white"
+              />
+              {row.file && (
+                <div className="text-xs text-ink-slate flex items-center gap-1">
+                  <FileText size={11} /> {row.file.name} ·{" "}
+                  {(row.file.size / 1024).toFixed(1)} KB
+                </div>
+              )}
+            </div>
           </div>
-        )}
+        ))}
+
+        <button
+          onClick={addRow}
+          disabled={uploading}
+          className="text-xs font-semibold text-teal hover:text-teal-dark border border-dashed border-teal/40 hover:border-teal rounded-md px-3 py-2 inline-flex items-center gap-1.5 disabled:opacity-50"
+        >
+          + Add another CSV (different source)
+        </button>
+        <div className="text-[11px] text-ink-light leading-snug">
+          Column mapping uses each file&apos;s declared source. Combined
+          payload max 4MB. Total queued: {ready.length} file
+          {ready.length === 1 ? "" : "s"}
+          {ready.length > 0 ? ` · ${totalKb.toFixed(1)} KB` : ""}.
+        </div>
       </div>
 
       <button
-        onClick={() => file && onUpload(file, crm)}
-        disabled={!file || uploading}
+        onClick={() => {
+          const payload = ready.map((r) => ({ file: r.file as File, crm: r.crm }));
+          if (payload.length > 0) onUpload(payload);
+        }}
+        disabled={ready.length === 0 || uploading}
         className="px-4 py-2 bg-teal text-white rounded-lg text-sm font-semibold hover:bg-teal-dark disabled:opacity-50 inline-flex items-center gap-2"
       >
         {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-        {uploading ? "Processing…" : "Upload + run detection"}
+        {uploading
+          ? "Processing…"
+          : ready.length > 1
+          ? `Upload ${ready.length} files + run detection`
+          : "Upload + run detection"}
       </button>
     </div>
   );
+}
+
+function rowId(): string {
+  return Math.random().toString(36).slice(2, 9);
 }
 
 function CustomerGroup({

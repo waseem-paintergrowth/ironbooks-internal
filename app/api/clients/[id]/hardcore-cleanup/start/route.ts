@@ -79,48 +79,120 @@ export async function POST(
 
   const body = await request.json().catch(() => ({} as any));
   // CSV becomes optional. Two scan modes:
-  //   - "csv"      : bookkeeper uploaded a CRM (DripJobs/Jobber/generic)
-  //                  CSV. Existing flow — CRM↔QBO duplicate detection,
-  //                  CRM↔UF reconciliation, missing-invoice flags.
-  //   - "qbo_only" : no CSV. Just scan QBO directly — UF↔A/R direct
-  //                   matching via matchUFtoAR. Replaces the standalone
-  //                   /balance-sheet/uf-ar tool.
-  // When the body sends a non-empty csv_text we default to "csv"; when
-  // it's empty we default to "qbo_only". An explicit scan_mode overrides.
-  const csvText = body.csv_text || "";
+  //   - "csv"      : bookkeeper uploaded a CRM CSV. One file or many —
+  //                  the body can carry `csvs: [{crm_source, csv_text,
+  //                  crm_filename}, …]` for multi-source uploads (e.g.
+  //                  Jobber + DripJobs together). Legacy single-file
+  //                  shape (csv_text + crm_source + crm_filename) still
+  //                  accepted for backwards compat.
+  //   - "qbo_only" : no CSV at all. Just scan QBO directly — UF↔A/R
+  //                   direct matching via matchUFtoAR. Replaces the
+  //                   standalone /balance-sheet/uf-ar tool.
+  // When the body sends at least one non-empty CSV we default to "csv";
+  // otherwise "qbo_only". An explicit scan_mode overrides.
+
+  // Normalize to a canonical csvs[] array regardless of which shape the
+  // client sent. Both branches downstream only look at `csvs`.
+  type IncomingCsv = {
+    crm_source?: string;
+    csv_text?: string;
+    crm_filename?: string | null;
+  };
+  const rawCsvs: IncomingCsv[] = Array.isArray(body.csvs) ? body.csvs : [];
+  // Fold the legacy single-file shape into the array form when present
+  // and the client didn't also send csvs[].
+  if (rawCsvs.length === 0 && typeof body.csv_text === "string" && body.csv_text.trim()) {
+    rawCsvs.push({
+      crm_source: body.crm_source,
+      csv_text: body.csv_text,
+      crm_filename: body.crm_filename,
+    });
+  }
+
   const explicitScanMode = body.scan_mode as "csv" | "qbo_only" | undefined;
   const scanMode: "csv" | "qbo_only" =
     explicitScanMode === "csv" || explicitScanMode === "qbo_only"
       ? explicitScanMode
-      : csvText.trim()
+      : rawCsvs.some((c) => (c.csv_text || "").trim())
       ? "csv"
       : "qbo_only";
-  const crmSource = (body.crm_source as CrmSource | undefined) || "generic";
-  const crmFilename = body.crm_filename || null;
+
+  // Validate + normalize each CSV when we're in csv mode. Reject early
+  // with a clear per-file message rather than letting the parser blow
+  // up downstream.
+  const csvs: Array<{ crm_source: CrmSource; csv_text: string; crm_filename: string | null }> = [];
   if (scanMode === "csv") {
-    if (!["drip_jobs", "jobber", "generic"].includes(crmSource)) {
-      return NextResponse.json({ error: "Invalid crm_source" }, { status: 400 });
-    }
-    if (!csvText.trim()) {
+    if (rawCsvs.length === 0) {
       return NextResponse.json(
-        { error: "csv_text is required for scan_mode=csv" },
+        { error: "scan_mode=csv requires at least one csv. Pass csvs:[{crm_source,csv_text,crm_filename}] or legacy csv_text." },
         { status: 400 }
       );
     }
+    for (let i = 0; i < rawCsvs.length; i++) {
+      const c = rawCsvs[i];
+      const src = (c.crm_source as CrmSource | undefined) || "generic";
+      if (!["drip_jobs", "jobber", "generic"].includes(src)) {
+        return NextResponse.json(
+          { error: `csvs[${i}].crm_source invalid: ${src}. Expected drip_jobs | jobber | generic.` },
+          { status: 400 }
+        );
+      }
+      if (!c.csv_text || !c.csv_text.trim()) {
+        return NextResponse.json(
+          { error: `csvs[${i}].csv_text is empty.` },
+          { status: 400 }
+        );
+      }
+      csvs.push({
+        crm_source: src,
+        csv_text: c.csv_text,
+        crm_filename: c.crm_filename || null,
+      });
+    }
   }
+
   // Vercel serverless function body limit is ~4.5MB. JSON-encoded CSV
-  // adds overhead. Cap at 4MB raw to keep us well under.
+  // adds overhead. Cap each individual CSV at 4MB AND total across all
+  // CSVs at 4MB (the body has to fit in one request).
   const MAX_CSV_BYTES = 4 * 1024 * 1024;
-  if (Buffer.byteLength(csvText, "utf8") > MAX_CSV_BYTES) {
+  let totalBytes = 0;
+  for (let i = 0; i < csvs.length; i++) {
+    const bytes = Buffer.byteLength(csvs[i].csv_text, "utf8");
+    if (bytes > MAX_CSV_BYTES) {
+      return NextResponse.json(
+        {
+          error: `csvs[${i}] is too large (${Math.round(bytes / 1024 / 1024)}MB). Max 4MB per file — split or filter to a smaller date range.`,
+        },
+        { status: 413 }
+      );
+    }
+    totalBytes += bytes;
+  }
+  if (totalBytes > MAX_CSV_BYTES) {
     return NextResponse.json(
       {
-        error:
-          `CSV is too large (${Math.round(Buffer.byteLength(csvText, "utf8") / 1024 / 1024)}MB). ` +
-          `Max 4MB — split the export or filter to a smaller date range.`,
+        error: `Combined CSV payload is ${Math.round(totalBytes / 1024 / 1024)}MB. Max 4MB total across all files in one upload — submit fewer files or filter them down.`,
       },
       { status: 413 }
     );
   }
+
+  // Legacy single-field aliases for the run row write below. When
+  // multiple CSVs are uploaded, crm_source becomes "multi" and the
+  // joined filenames go into crm_filename so the run header reads
+  // sensibly without a schema change.
+  const crmSource: CrmSource | "multi" =
+    csvs.length > 1
+      ? ("multi" as any)
+      : csvs.length === 1
+      ? csvs[0].crm_source
+      : "generic";
+  const crmFilename: string | null =
+    csvs.length === 0
+      ? null
+      : csvs.length === 1
+      ? csvs[0].crm_filename
+      : `${csvs.length} files: ${csvs.map((c) => c.crm_filename || `(unnamed ${c.crm_source})`).join(", ")}`;
 
   // Zombie cleanup
   const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -373,30 +445,49 @@ export async function POST(
   // SCAN_MODE = "csv" — existing CRM CSV upload flow.
   // ──────────────────────────────────────────────────────────────
   try {
-    // 1. Parse CSV
-    const rawRows = parseCsv(csvText);
-    if (rawRows.length === 0) {
-      throw new Error("CSV had no data rows. Check the file and try again.");
+    // 1. Parse EVERY CSV and concatenate the results. Each CSV uses its
+    //    own crm_source so column mapping is correct per file (Jobber
+    //    has "Job #" / DripJobs has "Invoice ID" etc.). The matcher
+    //    runs once across the combined crm_jobs list — so a Jobber
+    //    Invoice 1234 and a DripJobs Proposal Name #1234 both go
+    //    through DocNumber matching together.
+    type ParsedSlice = { source: CrmSource; jobs: ReturnType<typeof normalizeCrmRows> };
+    const slices: ParsedSlice[] = [];
+    for (let i = 0; i < csvs.length; i++) {
+      const c = csvs[i];
+      const rawRows = parseCsv(c.csv_text);
+      if (rawRows.length === 0) {
+        throw new Error(
+          `csvs[${i}] (${c.crm_filename || c.crm_source}): had no data rows. Check the file.`
+        );
+      }
+      const jobs = normalizeCrmRows(rawRows, c.crm_source);
+      if (jobs.length === 0) {
+        const detectedHeaders = Object.keys(rawRows[0] || {});
+        const sample = rawRows.slice(0, 3).map((r) => {
+          const filled = Object.entries(r).filter(([, v]) => v && String(v).trim());
+          return filled.map(([k, v]) => `${k}="${String(v).slice(0, 40)}"`).join(", ");
+        });
+        throw new Error(
+          `csvs[${i}] (${c.crm_filename || c.crm_source}) parsed ${rawRows.length} rows but none had a recognizable customer name column. ` +
+          `Detected headers: ${detectedHeaders.length > 0 ? detectedHeaders.map((h) => `"${h}"`).join(", ") : "(none)"}. ` +
+          `Expected one of: "Customer", "Customer Name", "Client", "Client Name", "Name", "Source Name", "Customer:Job". ` +
+          `Sample of first row: ${sample[0] || "(empty)"}. ` +
+          `If your customer column has a different header, send Mike the header name to add it to the alias list.`
+        );
+      }
+      slices.push({ source: c.crm_source, jobs });
     }
-    const crmJobs = normalizeCrmRows(rawRows, crmSource);
+    // Flatten — engine doesn't currently care which source each job
+    // came from. (If we ever want per-source telemetry we'd carry that
+    // through on the persisted rows; not needed for matching today.)
+    const crmJobs = slices.flatMap((s) => s.jobs);
     if (crmJobs.length === 0) {
-      // Surface the actual headers we found PLUS a sample of the first
-      // populated row's data so Mike/Lisa can see exactly what we're
-      // parsing. The generic "expected Customer/Client/Name" message left
-      // them guessing — this one shows reality.
-      const detectedHeaders = Object.keys(rawRows[0] || {});
-      const sample = rawRows.slice(0, 3).map((r) => {
-        const filled = Object.entries(r).filter(([, v]) => v && String(v).trim());
-        return filled.map(([k, v]) => `${k}="${String(v).slice(0, 40)}"`).join(", ");
-      });
-      throw new Error(
-        `CSV parsed ${rawRows.length} rows but none had a recognizable customer name column. ` +
-        `Detected headers: ${detectedHeaders.length > 0 ? detectedHeaders.map((h) => `"${h}"`).join(", ") : "(none)"}. ` +
-        `Expected one of: "Customer", "Customer Name", "Client", "Client Name", "Name", "Source Name", "Customer:Job". ` +
-        `Sample of first row: ${sample[0] || "(empty)"}. ` +
-        `If your customer column has a different header, send Mike the header name to add it to the alias list.`
-      );
+      throw new Error("No CRM jobs parsed across all files. Nothing to match.");
     }
+    console.log(
+      `[hardcore-start ${runId}] Parsed ${crmJobs.length} CRM jobs across ${slices.length} file(s): ${slices.map((s) => `${s.source}=${s.jobs.length}`).join(", ")}`
+    );
 
     // Persist CRM jobs AND capture their IDs in input order. Using
     // `.insert(arr).select("id")` returns rows in the same order they
