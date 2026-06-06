@@ -815,6 +815,7 @@ function ClientRow({
             <ActionsDropdown
               clientId={client.id}
               jurisdiction={client.jurisdiction}
+              isSenior={canEdit}
               onReport={() => setReportOpen(true)}
             />
           </>
@@ -948,6 +949,7 @@ function ClientCard({
           <ActionsDropdown
             clientId={client.id}
             jurisdiction={client.jurisdiction}
+            isSenior={canEdit}
             compact
           />
           {!client.is_active && (
@@ -1054,34 +1056,12 @@ function ClientCard({
             Match Double →
           </Link>
         ) : (
-          <>
-            <Link
-              href={`/jobs/new?client=${client.id}`}
-              className="flex-1 text-center px-3 py-1.5 rounded-md text-xs font-semibold bg-teal hover:bg-teal-dark text-white"
-            >
-              New Cleanup
-            </Link>
-            <Link
-              href={`/balance-sheet/${client.id}`}
-              className="px-3 py-1.5 rounded-md text-xs font-semibold bg-teal-light text-teal hover:bg-teal/20"
-              title="Balance Sheet cleanup — reconcile accounts, UF→A/R matching"
-            >
-              BS
-            </Link>
-            <Link
-              href={`/rules/new?client=${client.id}`}
-              className="px-3 py-1.5 rounded-md text-xs font-semibold bg-teal-light text-teal hover:bg-teal/20"
-            >
-              Rules
-            </Link>
-            <Link
-              href={`/clients/${client.id}/match-double`}
-              className="px-3 py-1.5 rounded-md text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200"
-              title="Change the Double HQ match"
-            >
-              Rematch
-            </Link>
-          </>
+          <Link
+            href={`/clients/${client.id}`}
+            className="flex-1 text-center px-3 py-1.5 rounded-md text-xs font-semibold bg-teal hover:bg-teal-dark text-white"
+          >
+            Open client
+          </Link>
         )}
       </div>
     </div>
@@ -1101,11 +1081,13 @@ function ClientCard({
 function ActionsDropdown({
   clientId,
   jurisdiction,
+  isSenior = false,
   onReport,
   compact,
 }: {
   clientId: string;
   jurisdiction: string;
+  isSenior?: boolean;
   onReport?: () => void;
   compact?: boolean;
 }) {
@@ -1137,56 +1119,62 @@ function ActionsDropdown({
     hidden?: boolean;
   }> = [
     {
-      section: "Cleanup",
-      label: "New cleanup",
+      section: "Workflow",
+      label: "Account cleanup",
       href: `/jobs/new?client=${clientId}`,
       icon: Sparkle,
     },
     {
-      label: "New rule discovery",
+      label: "Balance sheet cleanup",
+      href: `/balance-sheet/${clientId}/cleanup`,
+      icon: FileSpreadsheet,
+    },
+    {
+      label: "Bank rules",
       href: `/rules/new?client=${clientId}`,
       icon: Zap,
     },
     {
-      label: "Generate cleanup report (PDF)",
+      label: "Cleanup report (PDF)",
       onClick: onReport,
       icon: FileText,
       hidden: !onReport,
     },
     {
-      section: "Balance Sheet",
-      label: "Balance Sheet (UF → A/R)",
-      href: `/balance-sheet/${clientId}`,
-      icon: FileSpreadsheet,
-    },
-    {
-      label: "BS COA viewer · AI BS cleanup",
+      section: "Tools",
+      label: "COA editor",
       href: `/balance-sheet/${clientId}/coa`,
       icon: FileSpreadsheet,
+      hidden: !isSenior,
     },
     {
-      label: "A/R Recovery toolkit",
+      label: "A/R recovery",
       href: `/balance-sheet/${clientId}/ar-recovery`,
       icon: Wallet,
+      hidden: !isSenior,
     },
     {
-      // Logan-style mess: CRM CSV upload + duplicate-invoice detection,
-      // JE write-off / void straight to QBO. Distinct from A/R Recovery
-      // because it requires bookkeeper to bring CRM ground truth.
-      label: "Hardcore BS Cleanup",
+      label: "Legacy balance sheet",
+      href: `/balance-sheet/${clientId}`,
+      icon: FileSpreadsheet,
+      hidden: !isSenior,
+    },
+    {
+      label: "Advanced cleanup",
       href: `/balance-sheet/${clientId}/hardcore-cleanup`,
       icon: Flame,
+      hidden: !isSenior,
     },
     {
       section: "Compliance",
-      label: "GST/HST Audit",
+      label: "GST/HST audit",
       href: `/tax-audit/${clientId}`,
       icon: Receipt,
-      hidden: jurisdiction !== "CA",
+      hidden: jurisdiction !== "CA" || !isSenior,
     },
     {
-      section: "Client portal",
-      label: "View portal as client",
+      section: "Portal",
+      label: "View as client",
       onClick: async () => {
         try {
           const res = await fetch("/api/admin/impersonate/start", {
@@ -1197,7 +1185,7 @@ function ActionsDropdown({
           const body = await res.json();
           if (!res.ok) {
             if (body.code === "no_portal_user") {
-              if (confirm(`${body.error}\n\nGo to the invite page now?`)) {
+              if (confirm(`${body.error}\n\nGo to invite page now?`)) {
                 window.location.href = "/admin/invite-client";
               }
               return;
@@ -1211,6 +1199,7 @@ function ActionsDropdown({
         }
       },
       icon: Eye,
+      hidden: !isSenior,
     },
   ];
 

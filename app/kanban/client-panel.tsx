@@ -227,25 +227,16 @@ export function ClientPanel({ card, stage, bookkeepers, canEdit, onClose, onRefr
           {stage === "bs_cleanup" && (
             <div>
               <p className="text-xs font-bold text-ink-slate uppercase tracking-wider mb-2">
-                Cleanup tools
+                Balance sheet
               </p>
-              <div className="space-y-1.5">
-                <Link
-                  href={`/balance-sheet/${card.id}/ar-recovery`}
-                  className="flex items-center gap-2 px-3 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg text-sm text-amber-900 font-semibold transition-colors"
-                >
-                  <Wallet size={14} />
-                  <span className="flex-1">A/R Recovery</span>
-                  <ArrowRight size={12} className="text-amber-700" />
-                </Link>
-                <Link
-                  href={`/balance-sheet/${card.id}/coa`}
-                  className="flex items-center gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs text-navy"
-                >
-                  <span className="flex-1">BS COA viewer · AI BS cleanup</span>
-                  <ArrowRight size={12} className="text-ink-slate" />
-                </Link>
-              </div>
+              <Link
+                href={`/balance-sheet/${card.id}/cleanup`}
+                className="flex items-center gap-2 px-3 py-2 bg-teal/5 hover:bg-teal/10 border border-teal/20 rounded-lg text-sm text-navy font-semibold transition-colors"
+              >
+                <Wallet size={14} className="text-teal" />
+                <span className="flex-1">Open BS cleanup</span>
+                <ArrowRight size={12} className="text-teal" />
+              </Link>
             </div>
           )}
 

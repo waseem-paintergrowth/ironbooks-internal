@@ -1,6 +1,5 @@
 import { AppShell } from "@/components/AppShell";
 import { TopBar } from "@/components/TopBar";
-import { WorkflowStepper } from "@/components/WorkflowStepper";
 import { createServerSupabase } from "@/lib/supabase";
 import { NewJobForm } from "./form";
 
@@ -23,11 +22,10 @@ export default async function NewJobPage() {
   return (
     <AppShell>
       <TopBar
-        title="New COA Cleanup Job"
-        subtitle="Select the client you want to clean up"
+        title="Account Cleanup"
+        subtitle="Step 1 of 5 · Chart of accounts"
       />
-      <WorkflowStepper currentStep="coa" currentState="active" />
-      <div className="px-8 py-6 max-w-4xl">
+      <div className="px-8 py-6 max-w-3xl">
         <NewJobForm clientLinks={clientLinks || []} />
       </div>
     </AppShell>

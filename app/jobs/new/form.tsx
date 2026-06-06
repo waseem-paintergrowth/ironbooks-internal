@@ -234,8 +234,8 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 
         <div className="rounded-xl bg-white border border-gray-200 mb-6">
           <div className="px-5 py-4 border-b border-gray-200">
-            <h3 className="font-bold text-base text-navy">Step 1 · Select Client</h3>
-            <p className="text-xs text-ink-slate">From your connected QBO + Double accounts</p>
+            <h3 className="font-bold text-base text-navy">Select client</h3>
+            <p className="text-xs text-ink-slate">Connected QuickBooks companies</p>
           </div>
 
           <div className="p-5">
@@ -287,9 +287,9 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
       <div className="rounded-xl bg-white border border-gray-200 mb-6">
         <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
           <div>
-            <h3 className="font-bold text-base text-navy">Step 2 · Confirm Country & Province</h3>
+            <h3 className="font-bold text-base text-navy">Client setup</h3>
             <p className="text-xs text-ink-slate">
-              Determines the master COA template and (Canada only) sales tax codes
+              Country, province, and industry — drives COA template and tax codes
             </p>
           </div>
           <button
@@ -498,13 +498,46 @@ export function NewJobForm({ clientLinks }: { clientLinks: ClientLink[] }) {
 }
 
 function StepIndicator({ current }: { current: "client" | "jurisdiction" }) {
+  const steps = [
+    { key: "client", label: "Client" },
+    { key: "jurisdiction", label: "Setup" },
+    { key: "review", label: "Review" },
+  ] as const;
+  const activeIdx = current === "client" ? 0 : 1;
+
   return (
-    <div className="flex items-center gap-2 mb-5 text-xs font-semibold">
-      <span className={current === "client" ? "text-teal" : "text-ink-light"}>1. Client</span>
-      <span className="text-ink-light">→</span>
-      <span className={current === "jurisdiction" ? "text-teal" : "text-ink-light"}>2. Country & Province</span>
-      <span className="text-ink-light">→</span>
-      <span className="text-ink-light">3. Review</span>
+    <div className="flex items-center gap-3 mb-6">
+      {steps.map((step, idx) => {
+        const done = idx < activeIdx;
+        const active = idx === activeIdx;
+        return (
+          <div key={step.key} className="flex items-center gap-3 flex-1 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <div
+                className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0 ${
+                  done
+                    ? "bg-teal text-white"
+                    : active
+                    ? "bg-teal/15 text-teal ring-2 ring-teal/30"
+                    : "bg-gray-100 text-ink-light"
+                }`}
+              >
+                {done ? <CheckCircle2 size={14} /> : idx + 1}
+              </div>
+              <span
+                className={`text-xs font-semibold truncate ${
+                  active ? "text-navy" : done ? "text-teal" : "text-ink-light"
+                }`}
+              >
+                {step.label}
+              </span>
+            </div>
+            {idx < steps.length - 1 && (
+              <div className={`h-px flex-1 ${done ? "bg-teal/40" : "bg-gray-200"}`} />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
