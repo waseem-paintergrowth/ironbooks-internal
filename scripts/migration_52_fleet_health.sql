@@ -37,11 +37,11 @@ CREATE INDEX IF NOT EXISTS fleet_dismissals_item_idx
   ON fleet_dismissals (item_type, item_id);
 CREATE INDEX IF NOT EXISTS fleet_dismissals_client_idx
   ON fleet_dismissals (client_link_id, expires_at);
--- "Active dismissals" lookup — covers null expires_at (forever) plus
--- any future expiry. Used by the dashboard read path to filter
--- snoozed items out.
-CREATE INDEX IF NOT EXISTS fleet_dismissals_active_idx
-  ON fleet_dismissals (item_type, item_id)
-  WHERE expires_at IS NULL OR expires_at > now();
+-- (No partial index on (expires_at IS NULL OR expires_at > now()) —
+-- now() is STABLE not IMMUTABLE and Postgres refuses it in index
+-- predicates. The two indexes above are enough; the dashboard's
+-- read path filters by expires_at at query time, which uses the
+-- existing fleet_dismissals_item_idx for the seek + a small in-mem
+-- filter for the time check. Table is expected to stay <10K rows.)
 
 SELECT 'migration_52 applied' AS status;
