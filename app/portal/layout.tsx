@@ -44,6 +44,23 @@ export default async function PortalLayout({ children }: { children: React.React
 
   const ctxResult = await tryResolvePortalContext();
 
+  // QBO disconnected (token dead OR realm never set). Show a clear
+  // reconnect UI for BOTH real clients and impersonating admins instead
+  // of silently bouncing to /dashboard. The bounce previously hid the
+  // real problem when admin clicked "View portal as client" for any
+  // client whose refresh token had been revoked.
+  if (!ctxResult.ok && ctxResult.code === "no_qbo") {
+    return (
+      <QboDisconnectedState
+        clientLinkId={ctxResult.meta.clientLinkId || null}
+        clientName={ctxResult.meta.clientName || "this client"}
+        impersonating={!!ctxResult.meta.impersonating}
+        realUserName={ctxResult.meta.realUserName || null}
+        actorIsInternal={isInternal}
+      />
+    );
+  }
+
   // Internal staff with no impersonation = wrong place
   if (isInternal && (!ctxResult.ok || !ctxResult.ctx.impersonating)) {
     redirect("/dashboard");
@@ -132,6 +149,116 @@ function NavLink({
         </span>
       )}
     </Link>
+  );
+}
+
+/**
+ * Friendly recovery screen for the "QBO is disconnected" case. Replaces
+ * the silent bounce-to-dashboard that admins used to hit when they tried
+ * to impersonate a client whose refresh token had died (a category that
+ * grew to 32 clients at once after the recent Intuit credential rotation).
+ *
+ * Real clients see the same screen with a "Reconnect QuickBooks" CTA;
+ * admins see an additional "Stop impersonating" link so they're never
+ * stuck inside a broken portal session.
+ */
+function QboDisconnectedState({
+  clientLinkId,
+  clientName,
+  impersonating,
+  realUserName,
+  actorIsInternal,
+}: {
+  clientLinkId: string | null;
+  clientName: string;
+  impersonating: boolean;
+  realUserName: string | null;
+  actorIsInternal: boolean;
+}) {
+  const reconnectHref = clientLinkId
+    ? `/connect-quickbooks?client_link_id=${encodeURIComponent(clientLinkId)}&reason=token_expired`
+    : `/connect-quickbooks?reason=token_expired`;
+
+  return (
+    <div className="min-h-screen bg-[#FAFAF7]">
+      {impersonating && (
+        <div className="bg-amber-500 text-white text-sm px-4 py-2.5 flex items-center justify-between">
+          <div>
+            <span className="font-bold">{realUserName || "Admin"}</span> viewing as{" "}
+            <span className="font-bold">{clientName}</span>
+          </div>
+          <form action="/api/admin/impersonate/stop" method="POST">
+            <button
+              type="submit"
+              className="text-xs font-bold underline underline-offset-2 hover:no-underline"
+            >
+              Stop impersonating
+            </button>
+          </form>
+        </div>
+      )}
+      <div className="min-h-[calc(100vh-44px)] flex items-center justify-center px-4 py-12">
+        <div className="max-w-lg w-full bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
+          <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-7 py-5 text-white">
+            <div className="text-xs uppercase tracking-widest opacity-80">
+              Action needed
+            </div>
+            <h1 className="mt-1 text-xl font-bold leading-tight">
+              QuickBooks connection expired
+            </h1>
+          </div>
+          <div className="px-7 py-6 space-y-5">
+            <p className="text-sm text-slate-700 leading-relaxed">
+              {impersonating ? (
+                <>
+                  <span className="font-semibold">{clientName}</span>'s QuickBooks
+                  authorization has expired or been revoked. They (or you on
+                  their behalf) need to reconnect QuickBooks before this portal
+                  can load their books.
+                </>
+              ) : (
+                <>
+                  Your QuickBooks Online authorization has expired. Reconnect
+                  below to resume access — takes about 60 seconds.
+                </>
+              )}
+            </p>
+
+            <div className="rounded-lg bg-slate-50 border border-slate-200 px-4 py-3 text-xs text-slate-600">
+              <strong className="text-slate-800">Why this happened:</strong>{" "}
+              QuickBooks refresh tokens expire after a period of inactivity, or
+              when the connection is revoked from the QuickBooks Apps page.
+              Re-authorizing restores access immediately.
+            </div>
+
+            <a
+              href={reconnectHref}
+              className="block w-full text-center px-5 py-3 rounded-lg bg-[#2CA01C] hover:bg-[#1F7D14] text-white text-sm font-bold transition-colors shadow-sm"
+            >
+              Reconnect QuickBooks
+            </a>
+
+            {actorIsInternal && impersonating && (
+              <form action="/api/admin/impersonate/stop" method="POST">
+                <button
+                  type="submit"
+                  className="block w-full text-center px-5 py-2.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-medium transition-colors"
+                >
+                  Exit portal view
+                </button>
+              </form>
+            )}
+
+            <p className="text-xs text-slate-500 text-center pt-2">
+              Questions? Email{" "}
+              <a href="mailto:admin@ironbooks.com" className="text-blue-600 hover:underline">
+                admin@ironbooks.com
+              </a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

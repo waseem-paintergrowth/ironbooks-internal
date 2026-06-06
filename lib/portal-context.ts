@@ -34,8 +34,30 @@ export interface PortalContext {
   realUserName?: string;
 }
 
+/**
+ * Partial context returned alongside a PortalAccessError when we have
+ * enough info to render an informative recovery UI instead of a blank
+ * error or a silent bounce. Populated for "no_qbo" failures so the
+ * portal layout can show a "Reconnect QuickBooks" CTA scoped to the
+ * specific client — critical for admin impersonation, where bouncing
+ * to /dashboard hides the actual problem (dead refresh token, not
+ * missing portal access).
+ */
+export interface PortalAccessErrorMeta {
+  clientLinkId?: string;
+  clientName?: string;
+  impersonating?: boolean;
+  realUserName?: string;
+  userEmail?: string;
+  userFullName?: string;
+}
+
 export class PortalAccessError extends Error {
-  constructor(message: string, public code: "no_session" | "not_client" | "no_mapping" | "no_qbo" | "fetch_failed") {
+  constructor(
+    message: string,
+    public code: "no_session" | "not_client" | "no_mapping" | "no_qbo" | "fetch_failed",
+    public meta: PortalAccessErrorMeta = {}
+  ) {
     super(message);
     this.name = "PortalAccessError";
   }
@@ -138,8 +160,23 @@ export async function resolvePortalContext(): Promise<PortalContext> {
   if ((client as any).is_active === false) {
     throw new PortalAccessError("Client is inactive", "no_mapping");
   }
+  // Build the meta payload once — used by both no_qbo throw paths below
+  // so the layout can render a useful Reconnect UI instead of bouncing.
+  const errorMeta: PortalAccessErrorMeta = {
+    clientLinkId,
+    clientName: (client as any).client_name || "this client",
+    impersonating,
+    realUserName,
+    userEmail: (targetProfile as any)?.email || "",
+    userFullName: (targetProfile as any)?.full_name || "",
+  };
+
   if (!(client as any).qbo_realm_id) {
-    throw new PortalAccessError("QBO not connected for this client", "no_qbo");
+    throw new PortalAccessError(
+      "QBO not connected for this client",
+      "no_qbo",
+      errorMeta
+    );
   }
 
   // Get a fresh QBO access token. getValidToken handles refresh internally.
@@ -149,7 +186,8 @@ export async function resolvePortalContext(): Promise<PortalContext> {
   } catch (err: any) {
     throw new PortalAccessError(
       `QBO authorization failed: ${err?.message || "unknown"}`,
-      "no_qbo"
+      "no_qbo",
+      errorMeta
     );
   }
 
@@ -174,15 +212,15 @@ export async function resolvePortalContext(): Promise<PortalContext> {
  */
 export async function tryResolvePortalContext(): Promise<
   | { ok: true; ctx: PortalContext }
-  | { ok: false; code: PortalAccessError["code"]; message: string }
+  | { ok: false; code: PortalAccessError["code"]; message: string; meta: PortalAccessErrorMeta }
 > {
   try {
     const ctx = await resolvePortalContext();
     return { ok: true, ctx };
   } catch (err) {
     if (err instanceof PortalAccessError) {
-      return { ok: false, code: err.code, message: err.message };
+      return { ok: false, code: err.code, message: err.message, meta: err.meta };
     }
-    return { ok: false, code: "fetch_failed", message: (err as Error).message };
+    return { ok: false, code: "fetch_failed", message: (err as Error).message, meta: {} };
   }
 }
