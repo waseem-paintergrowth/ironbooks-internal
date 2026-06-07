@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Loader2, RefreshCw, CheckCircle2, AlertCircle, XCircle,
-  ArrowRight, Upload, Shield, FileText, Play,
+  ArrowRight, Upload, Shield, FileText, Play, Lock,
+  Building2, Wallet, FileSearch, Receipt, Coins,
+  Users as UsersIcon, Calculator, HelpCircle,
 } from "lucide-react";
 import { MODULE_LABELS, type CleanupModule } from "@/lib/cleanup-system/types";
 import { ProposedEntryRow } from "./proposed-entry-row";
@@ -19,20 +21,93 @@ interface RunStatus {
 }
 
 const GRADE_COLORS = {
-  green: "bg-green-100 text-green-800 border-green-200",
-  yellow: "bg-amber-100 text-amber-800 border-amber-200",
-  red: "bg-red-100 text-red-800 border-red-200",
+  green: { tile: "from-emerald-50 to-emerald-100 border-emerald-200 text-emerald-900", chip: "bg-emerald-500" },
+  yellow: { tile: "from-amber-50 to-amber-100 border-amber-200 text-amber-900", chip: "bg-amber-500" },
+  red: { tile: "from-red-50 to-red-100 border-red-200 text-red-900", chip: "bg-red-500" },
+} as const;
+
+const GRADE_HEADLINE: Record<string, string> = {
+  green: "Books look healthy",
+  yellow: "Books need attention",
+  red: "Books need significant cleanup",
 };
 
-const MODULE_STATUS_ICON: Record<string, any> = {
-  complete: CheckCircle2,
-  failed: XCircle,
-  executing: Loader2,
-  discovering: Loader2,
-  reviewing: AlertCircle,
-  ready: ArrowRight,
-  locked: Shield,
+/**
+ * Module catalog — labels, icons, and the one-line "what it does" copy
+ * that shows up next to each module card so bookkeepers don't have to
+ * memorize what each module is for.
+ */
+const MODULE_META: Record<CleanupModule, { icon: any; description: string; postsToQbo: boolean }> = {
+  bank_recon: {
+    icon: Building2,
+    description: "Reconciles bank + credit card balances against statements. Proposes journal entries for unexplained gaps.",
+    postsToQbo: true,
+  },
+  undeposited_funds: {
+    icon: Wallet,
+    description: "Matches stuck Undeposited Funds payments to the right open invoice. Posts ReceivePayment in QBO on execute.",
+    postsToQbo: true,
+  },
+  accounts_receivable: {
+    icon: FileSearch,
+    description: "Finds duplicate invoices (optionally cross-checked against your CRM export). Voids duplicates in QBO on execute.",
+    postsToQbo: true,
+  },
+  accounts_payable: {
+    icon: Receipt,
+    description: "Reviews open bills + vendor balances. Flags potential duplicate bills for cleanup.",
+    postsToQbo: false,
+  },
+  loans: {
+    icon: Coins,
+    description: "Reconciles loan balances against lender statements. Proposes interest split / balance corrections.",
+    postsToQbo: false,
+  },
+  shareholder_draws: {
+    icon: UsersIcon,
+    description: "Reviews shareholder distribution + loan accounts. Flags entries needing CPA sign-off.",
+    postsToQbo: false,
+  },
+  tax_payroll: {
+    icon: Calculator,
+    description: "Checks sales tax payable + payroll liability accuracy against filed returns.",
+    postsToQbo: false,
+  },
+  obe_uncategorized: {
+    icon: HelpCircle,
+    description: "Cleans up Opening Balance Equity + any remaining uncategorized accounts left over from migration.",
+    postsToQbo: false,
+  },
 };
+
+/** Plain-English label for the raw status enums coming back from the DB */
+function moduleStatusLabel(status: string): string {
+  switch (status) {
+    case "locked": return "Locked — finish earlier modules first";
+    case "ready": return "Ready to discover";
+    case "discovering": return "Discovering issues…";
+    case "reviewing": return "Awaiting your review";
+    case "executing": return "Posting to QuickBooks…";
+    case "complete": return "Complete";
+    case "failed": return "Failed";
+    case "skipped": return "Skipped";
+    default: return status;
+  }
+}
+
+/** Plain-English label for review tabs (DB enum values) */
+const REVIEW_TAB_LABELS: Record<string, string> = {
+  needs_review: "Needs review",
+  auto_approve: "Auto-approved",
+  approved: "Approved",
+  flagged: "Flagged",
+  skip: "Skipping",
+};
+
+function formatMoney(n: number): string {
+  if (!Number.isFinite(n)) return "$0";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+}
 
 export function CleanupWizardClient({
   clientLinkId,
@@ -85,6 +160,12 @@ export function CleanupWizardClient({
     return () => clearInterval(interval);
   }, [refresh]);
 
+  // Reset attestation any time you change which module you're reviewing —
+  // attestation is a per-execute affirmation, never a sticky checkbox.
+  useEffect(() => {
+    setAttested(false);
+  }, [activeModule]);
+
   async function importCsv() {
     if (!csvText.trim()) return;
     setActing(true);
@@ -122,7 +203,8 @@ export function CleanupWizardClient({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       setStep("review");
-      setTimeout(() => loadEntries(mod), 3000);
+      setReviewTab("needs_review");
+      setTimeout(() => loadEntries(mod, "needs_review"), 1500);
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -145,7 +227,7 @@ export function CleanupWizardClient({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "approve_all_auto", module: activeModule }),
     });
-    await loadEntries(activeModule || undefined);
+    await loadEntries(activeModule || undefined, reviewTab);
   }
 
   async function approveUfConfident() {
@@ -177,7 +259,7 @@ export function CleanupWizardClient({
 
   async function executeModule(mod: CleanupModule) {
     if (!attested) {
-      setError("Check the attestation box before executing QBO writes.");
+      setError("Tick the attestation box right before posting to QuickBooks.");
       return;
     }
     setActing(true);
@@ -244,79 +326,137 @@ export function CleanupWizardClient({
     await refresh();
   }
 
+  // Derived: which steps the user has "completed" — used to render
+  // checkmarks in the stepper instead of just a row of pills.
+  const stepIsDone = useMemo(() => {
+    const modules = status?.modules || [];
+    const anyDiscovered = modules.some((m: any) =>
+      ["reviewing", "executing", "complete"].includes(m.status)
+    );
+    const allDoneOrSkipped = modules.length > 0 && modules.every((m: any) =>
+      ["complete", "skipped", "locked"].includes(m.status)
+    );
+    return {
+      diagnose: !!status?.health_score,
+      modules: anyDiscovered,
+      review: modules.some((m: any) => (m.executed_count || 0) > 0),
+      qa: qa?.passed,
+      deliver: status?.run?.status === "complete",
+      allModulesProcessed: allDoneOrSkipped,
+    };
+  }, [status, qa]);
+
+  // Execute preview — what's about to hit QBO when bookkeeper clicks
+  // the big button. Counted from the currently-loaded entries list.
+  const executePreview = useMemo(() => {
+    const approved = entries.filter(
+      (e) => (e.decision === "approved" || e.decision === "auto_approve") && !e.executed
+    );
+    const total = approved.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+    const byType: Record<string, number> = {};
+    for (const e of approved) {
+      byType[e.entry_type] = (byType[e.entry_type] || 0) + 1;
+    }
+    return { count: approved.length, total, byType };
+  }, [entries]);
+
   if (loading && !status) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="animate-spin text-teal" size={32} />
+      <div className="flex flex-col items-center justify-center py-20 gap-3">
+        <Loader2 className="animate-spin text-teal" size={28} />
+        <div className="text-sm text-ink-light">Loading cleanup run…</div>
       </div>
     );
   }
 
   const hs = status?.health_score;
-  const grade = hs?.overall_grade || "red";
+  const grade = (hs?.overall_grade || "red") as keyof typeof GRADE_COLORS;
   const score = hs?.overall_score ?? 0;
+  const gradeStyle = GRADE_COLORS[grade];
 
-  const STEPS: { key: WizardStep; label: string }[] = [
-    { key: "diagnose", label: "Diagnose" },
-    { key: "modules", label: "Modules" },
-    { key: "review", label: "Review" },
-    { key: "qa", label: "QA Gate" },
-    { key: "deliver", label: "Deliver" },
+  const STEPS: { key: WizardStep; label: string; description: string }[] = [
+    { key: "diagnose", label: "1. Diagnose", description: "Check the books' health" },
+    { key: "modules", label: "2. Modules", description: "Run cleanup module by module" },
+    { key: "review", label: "3. Review", description: "Approve what gets posted" },
+    { key: "qa", label: "4. QA Gate", description: "Final safety checks" },
+    { key: "deliver", label: "5. Deliver", description: "Publish to client portal" },
   ];
 
   return (
     <div className="space-y-6">
-      {/* Step nav */}
-      <div className="flex gap-2 flex-wrap">
-        {STEPS.map((s) => (
-          <button
-            key={s.key}
-            onClick={() => {
-              setStep(s.key);
-              if (s.key === "review") loadEntries(activeModule || undefined);
-            }}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
-              step === s.key
-                ? "bg-teal text-white border-teal"
-                : "bg-white text-ink-slate border-gray-200 hover:border-teal/40"
-            }`}
-          >
-            {s.label}
-          </button>
-        ))}
-        <button onClick={refresh} className="ml-auto p-1.5 rounded-lg hover:bg-gray-100">
-          <RefreshCw size={14} className="text-ink-slate" />
+      {/* Real stepper — checkmarks on completed steps so progress is visible at a glance */}
+      <div className="bg-white rounded-2xl border border-gray-100 p-4">
+        <div className="grid grid-cols-5 gap-2">
+          {STEPS.map((s, idx) => {
+            const isActive = step === s.key;
+            const isDone = stepIsDone[s.key as keyof typeof stepIsDone];
+            return (
+              <button
+                key={s.key}
+                onClick={() => {
+                  setStep(s.key);
+                  if (s.key === "review") loadEntries(activeModule || undefined, reviewTab);
+                }}
+                className={`text-left p-3 rounded-xl border-2 transition-all ${
+                  isActive
+                    ? "border-teal bg-teal/5"
+                    : isDone
+                    ? "border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50"
+                    : "border-gray-100 hover:border-gray-200"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  {isDone ? (
+                    <CheckCircle2 size={14} className="text-emerald-600 flex-shrink-0" />
+                  ) : isActive ? (
+                    <span className="w-3.5 h-3.5 rounded-full bg-teal flex-shrink-0" />
+                  ) : (
+                    <span className="w-3.5 h-3.5 rounded-full border-2 border-gray-300 flex-shrink-0" />
+                  )}
+                  <div className={`text-xs font-bold ${isActive ? "text-teal" : isDone ? "text-emerald-800" : "text-ink-slate"}`}>
+                    {s.label}
+                  </div>
+                </div>
+                <div className="text-[11px] text-ink-light leading-snug">{s.description}</div>
+              </button>
+            );
+          })}
+        </div>
+        <button onClick={refresh} className="mt-2 text-[11px] text-ink-light hover:text-navy flex items-center gap-1">
+          <RefreshCw size={11} /> Refresh status
         </button>
       </div>
 
       {error && (
-        <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm flex items-center gap-2">
+        <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-800 text-sm flex items-center gap-2">
           <AlertCircle size={14} />
           {error}
-          <button onClick={() => setError("")} className="ml-auto text-xs underline">dismiss</button>
+          <button onClick={() => setError("")} className="ml-auto text-xs underline">Dismiss</button>
         </div>
       )}
 
-      {/* CPA flags banner */}
+      {/* CPA flags banner — blocks delivery until signed off */}
       {(status?.cpa_flags || []).filter((f) => f.status === "open").length > 0 && (
         <div className="p-4 rounded-xl bg-red-50 border border-red-200">
-          <div className="font-semibold text-red-800 text-sm mb-2 flex items-center gap-2">
+          <div className="font-bold text-red-800 text-sm mb-2 flex items-center gap-2">
             <Shield size={14} />
-            CPA flags — blocked until sign-off
+            CPA flags — delivery blocked until each one is signed off
           </div>
-          {(status?.cpa_flags || [])
-            .filter((f) => f.status === "open")
-            .map((f) => (
-              <div key={f.id} className="flex items-center justify-between text-sm text-red-700 py-1">
-                <span>{f.description}</span>
-                <button
-                  onClick={() => signOffFlag(f.id)}
-                  className="text-xs font-semibold px-2 py-1 rounded border border-red-300 hover:bg-red-100"
-                >
-                  Sign off
-                </button>
-              </div>
-            ))}
+          <div className="space-y-1.5">
+            {(status?.cpa_flags || [])
+              .filter((f) => f.status === "open")
+              .map((f) => (
+                <div key={f.id} className="flex items-center justify-between text-sm text-red-700 bg-white/60 rounded-lg px-3 py-2">
+                  <span>{f.description}</span>
+                  <button
+                    onClick={() => signOffFlag(f.id)}
+                    className="text-xs font-bold px-2.5 py-1 rounded border border-red-300 hover:bg-red-100"
+                  >
+                    Sign off
+                  </button>
+                </div>
+              ))}
+          </div>
         </div>
       )}
 
@@ -324,71 +464,85 @@ export function CleanupWizardClient({
       {step === "diagnose" && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-1">
-            <div className={`rounded-2xl border p-6 text-center ${GRADE_COLORS[grade as keyof typeof GRADE_COLORS]}`}>
-              <div className="text-5xl font-black mb-1">{score}</div>
-              <div className="text-sm font-semibold uppercase tracking-wide">Health Score</div>
-              <div className="text-xs mt-1 capitalize">{grade}</div>
+            <div className={`rounded-2xl border-2 bg-gradient-to-br ${gradeStyle.tile} p-6 text-center`}>
+              <div className="text-xs font-bold uppercase tracking-widest opacity-80">Health Score</div>
+              <div className="text-6xl font-black my-2">{score}</div>
+              <div className="text-sm font-bold">{GRADE_HEADLINE[grade]}</div>
             </div>
             <button
               onClick={() => setStep("modules")}
-              className="w-full mt-4 bg-teal text-white font-semibold py-2.5 rounded-xl hover:bg-teal-dark transition-colors flex items-center justify-center gap-2"
+              className="w-full mt-4 bg-teal text-white font-bold py-3 rounded-xl hover:bg-teal-dark transition-colors flex items-center justify-center gap-2"
             >
-              Start fixing <ArrowRight size={14} />
+              Start cleanup <ArrowRight size={14} />
             </button>
+            <div className="mt-3 text-[11px] text-ink-light text-center">
+              You'll work through each module one at a time. Nothing posts to QuickBooks until you approve and execute.
+            </div>
           </div>
 
           <div className="lg:col-span-2 space-y-4">
             <div className="bg-white rounded-2xl border border-gray-100 p-5">
-              <h3 className="font-semibold text-navy mb-3">Priority tasks</h3>
+              <h3 className="font-bold text-navy mb-1">What needs fixing</h3>
+              <p className="text-xs text-ink-light mb-3">
+                Top issues detected — red dots are priority cleanup targets, amber dots are worth a look.
+              </p>
               <div className="space-y-2">
                 {((hs?.task_list as any[]) || []).slice(0, 8).map((t: any) => (
                   <div key={t.id} className="flex items-start gap-2 text-sm">
-                    <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${
-                      t.grade === "red" ? "bg-red-500" : "bg-amber-400"
-                    }`} />
+                    <span
+                      className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${
+                        t.grade === "red" ? "bg-red-500" : "bg-amber-400"
+                      }`}
+                    />
                     <div>
-                      <div className="font-medium text-navy">{t.title}</div>
+                      <div className="font-semibold text-navy">{t.title}</div>
                       <div className="text-xs text-ink-light">{t.description}</div>
                     </div>
                   </div>
                 ))}
                 {(!hs?.task_list || (hs.task_list as any[]).length === 0) && (
-                  <div className="text-sm text-green-700 flex items-center gap-2">
-                    <CheckCircle2 size={14} /> No issues detected
+                  <div className="text-sm text-emerald-700 flex items-center gap-2">
+                    <CheckCircle2 size={14} /> No issues detected — books look clean.
                   </div>
                 )}
               </div>
             </div>
 
             <div className="bg-white rounded-2xl border border-gray-100 p-5">
-              <h3 className="font-semibold text-navy mb-3 flex items-center gap-2">
+              <h3 className="font-bold text-navy mb-1 flex items-center gap-2">
                 <Upload size={14} /> Import CSVs (optional)
               </h3>
-              <div className="flex gap-2 mb-2">
+              <p className="text-xs text-ink-light mb-3">
+                Paste exports from Stripe, the bank, or a CRM to give the matcher more to work with. Skip this if you don't have one handy.
+              </p>
+              <div className="flex gap-2 mb-2 flex-wrap">
                 {["stripe", "bank", "jobber", "drip_jobs", "loan_statement"].map((s) => (
                   <button
                     key={s}
                     onClick={() => setCsvSource(s)}
-                    className={`text-xs px-2 py-1 rounded border ${
-                      csvSource === s ? "bg-teal text-white border-teal" : "border-gray-200"
+                    className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
+                      csvSource === s
+                        ? "bg-teal text-white border-teal"
+                        : "border-gray-200 hover:border-teal/40"
                     }`}
                   >
-                    {s}
+                    {s.replace("_", " ")}
                   </button>
                 ))}
               </div>
               <textarea
                 value={csvText}
                 onChange={(e) => setCsvText(e.target.value)}
-                placeholder="Paste CSV content here..."
-                className="w-full h-24 text-xs font-mono border border-gray-200 rounded-lg p-2"
+                placeholder="Paste CSV content here…"
+                className="w-full h-24 text-xs font-mono border border-gray-200 rounded-lg p-2 focus:border-teal focus:ring-1 focus:ring-teal/30 outline-none"
               />
               <button
                 onClick={importCsv}
                 disabled={acting || !csvText.trim()}
-                className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-lg bg-navy text-white disabled:opacity-50"
+                className="mt-2 text-xs font-bold px-3 py-1.5 rounded-lg bg-navy text-white disabled:opacity-50 inline-flex items-center gap-1.5"
               >
-                {acting ? <Loader2 size={12} className="animate-spin" /> : "Import"}
+                {acting ? <Loader2 size={12} className="animate-spin" /> : <Upload size={12} />}
+                Import CSV
               </button>
             </div>
           </div>
@@ -398,153 +552,239 @@ export function CleanupWizardClient({
       {/* MODULES */}
       {step === "modules" && (
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
-          <h3 className="font-semibold text-navy mb-2">Module checklist</h3>
-          <p className="text-xs text-ink-light mb-4">
-            Recommended order: Bank Recon → Undeposited Funds → Accounts Receivable.
-            UF matching and duplicate voids post directly to QuickBooks on execute.
-          </p>
-          <div className="space-y-2">
+          <div className="flex items-start justify-between mb-1">
+            <div>
+              <h3 className="font-bold text-navy">Module checklist</h3>
+              <p className="text-xs text-ink-light mt-0.5">
+                Work top to bottom. <strong className="text-navy">Bank Recon → UF → A/R</strong> is the recommended path.
+                Each module discovers issues first, then you review, then you post to QuickBooks.
+              </p>
+            </div>
+            {stepIsDone.allModulesProcessed && (
+              <button
+                onClick={runQA}
+                disabled={acting}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-navy text-white inline-flex items-center gap-1.5"
+              >
+                <Shield size={12} /> Run QA Gate
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-2 mt-4">
             {(status?.modules || []).map((m: any) => {
-              const Icon = MODULE_STATUS_ICON[m.status] || ArrowRight;
-              const isReady = ["ready", "reviewing", "complete"].includes(m.status);
+              const meta = MODULE_META[m.module as CleanupModule];
+              const ModIcon = meta?.icon || ArrowRight;
+              const isLocked = m.status === "locked";
+              const isReady = m.status === "ready";
+              const isReviewing = m.status === "reviewing";
+              const isComplete = m.status === "complete";
+              const inFlight = ["discovering", "executing"].includes(m.status);
+
               return (
                 <div key={m.module}>
-                <div
-                  className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:border-teal/30"
-                >
-                  <Icon
-                    size={16}
-                    className={`flex-shrink-0 ${
-                      m.status === "complete" ? "text-green-600" :
-                      m.status === "failed" ? "text-red-600" :
-                      ["executing", "discovering"].includes(m.status) ? "animate-spin text-teal" :
-                      "text-ink-slate"
+                  <div
+                    className={`flex items-start gap-3 p-4 rounded-xl border-2 transition-colors ${
+                      isComplete
+                        ? "border-emerald-200 bg-emerald-50/40"
+                        : isReviewing
+                        ? "border-amber-200 bg-amber-50/40"
+                        : isLocked
+                        ? "border-gray-100 bg-gray-50/50 opacity-60"
+                        : "border-gray-100 hover:border-teal/30"
                     }`}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-navy">
-                      {MODULE_LABELS[m.module as CleanupModule] || m.module}
+                  >
+                    <div className={`flex-shrink-0 p-2 rounded-lg ${
+                      isComplete ? "bg-emerald-100" : isReviewing ? "bg-amber-100" : "bg-gray-100"
+                    }`}>
+                      {isLocked ? (
+                        <Lock size={16} className="text-gray-400" />
+                      ) : inFlight ? (
+                        <Loader2 size={16} className="animate-spin text-teal" />
+                      ) : isComplete ? (
+                        <CheckCircle2 size={16} className="text-emerald-600" />
+                      ) : (
+                        <ModIcon size={16} className="text-navy" />
+                      )}
                     </div>
-                    <div className="text-xs text-ink-light capitalize">
-                      {m.status} · {m.proposed_count || 0} proposed · {m.executed_count || 0} executed
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="font-bold text-navy text-sm">
+                          {MODULE_LABELS[m.module as CleanupModule] || m.module}
+                        </div>
+                        {meta?.postsToQbo && (
+                          <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-100 text-blue-700">
+                            Posts to QBO
+                          </span>
+                        )}
+                      </div>
+                      {meta?.description && (
+                        <div className="text-xs text-ink-light mt-1 leading-relaxed">{meta.description}</div>
+                      )}
+                      <div className="text-[11px] mt-2 flex items-center gap-3 flex-wrap">
+                        <span className={`font-semibold ${
+                          isComplete ? "text-emerald-700" :
+                          isReviewing ? "text-amber-700" :
+                          isLocked ? "text-gray-500" :
+                          "text-ink-slate"
+                        }`}>
+                          {moduleStatusLabel(m.status)}
+                        </span>
+                        {(m.proposed_count || 0) > 0 && (
+                          <span className="text-ink-light">
+                            {m.proposed_count} proposed
+                          </span>
+                        )}
+                        {(m.executed_count || 0) > 0 && (
+                          <span className="text-emerald-700 font-semibold">
+                            ✓ {m.executed_count} posted
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  {isReady && m.status !== "complete" && (
-                    <button
-                      onClick={() => discoverModule(m.module)}
-                      disabled={acting}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal text-white disabled:opacity-50"
-                    >
-                      {acting && activeModule === m.module ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : "Discover"}
-                    </button>
-                  )}
-                  {m.status === "reviewing" && (
-                    <button
-                      onClick={() => {
-                        setActiveModule(m.module);
-                        setStep("review");
-                        loadEntries(m.module);
-                      }}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200"
-                    >
-                      Review
-                    </button>
-                  )}
-                </div>
-                {m.module === "accounts_receivable" && m.status !== "complete" && (
-                  <div className="ml-9 mb-2 p-3 rounded-xl border border-amber-100 bg-amber-50/50">
-                    <h4 className="text-xs font-semibold text-navy mb-2">
-                      CRM export (optional — paste before Discover)
-                    </h4>
-                    <div className="flex gap-2 mb-2">
-                      {(["jobber", "drip_jobs", "generic"] as const).map((s) => (
+
+                    <div className="flex-shrink-0">
+                      {isReady && (
                         <button
-                          key={s}
-                          onClick={() => setCrmSource(s)}
-                          className={`text-xs px-2 py-1 rounded border ${
-                            crmSource === s ? "bg-teal text-white border-teal" : "border-gray-200"
-                          }`}
+                          onClick={() => discoverModule(m.module)}
+                          disabled={acting}
+                          className="text-xs font-bold px-3 py-2 rounded-lg bg-teal text-white hover:bg-teal-dark disabled:opacity-50 inline-flex items-center gap-1.5"
                         >
-                          {s}
+                          {acting && activeModule === m.module ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <>Discover <ArrowRight size={12} /></>
+                          )}
                         </button>
-                      ))}
+                      )}
+                      {isReviewing && (
+                        <button
+                          onClick={() => {
+                            setActiveModule(m.module);
+                            setStep("review");
+                            loadEntries(m.module, "needs_review");
+                          }}
+                          className="text-xs font-bold px-3 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 inline-flex items-center gap-1.5"
+                        >
+                          Review <ArrowRight size={12} />
+                        </button>
+                      )}
+                      {isComplete && (
+                        <span className="text-xs font-bold text-emerald-700 px-2">Done</span>
+                      )}
                     </div>
-                    <textarea
-                      value={crmCsv}
-                      onChange={(e) => setCrmCsv(e.target.value)}
-                      placeholder="Paste Jobber / DripJobs CSV for duplicate-invoice scan…"
-                      className="w-full h-16 text-xs font-mono border border-gray-200 rounded-lg p-2"
-                    />
                   </div>
-                )}
+
+                  {/* CRM CSV upload — inline on the A/R module so bookkeeper sees the option when it's relevant */}
+                  {m.module === "accounts_receivable" && !isComplete && (
+                    <div className="ml-12 mb-2 p-3 rounded-xl border border-amber-100 bg-amber-50/50 mt-1">
+                      <h4 className="text-xs font-bold text-navy mb-1 flex items-center gap-1.5">
+                        <Upload size={11} /> CRM export (optional)
+                      </h4>
+                      <p className="text-[11px] text-ink-light mb-2">
+                        Paste a Jobber, DripJobs, or generic CRM invoice export <strong>before clicking Discover</strong>.
+                        This lets the matcher cross-check duplicates against the source system, not just QuickBooks.
+                      </p>
+                      <div className="flex gap-2 mb-2">
+                        {(["jobber", "drip_jobs", "generic"] as const).map((s) => (
+                          <button
+                            key={s}
+                            onClick={() => setCrmSource(s)}
+                            className={`text-xs font-semibold px-2 py-1 rounded border ${
+                              crmSource === s ? "bg-teal text-white border-teal" : "border-gray-200"
+                            }`}
+                          >
+                            {s.replace("_", " ")}
+                          </button>
+                        ))}
+                      </div>
+                      <textarea
+                        value={crmCsv}
+                        onChange={(e) => setCrmCsv(e.target.value)}
+                        placeholder="Paste CRM invoice CSV here…"
+                        className="w-full h-16 text-xs font-mono border border-gray-200 rounded-lg p-2"
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
-
-          <button
-            onClick={runQA}
-            disabled={acting}
-            className="mt-4 w-full py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-navy hover:border-teal/40"
-          >
-            Run QA Gate
-          </button>
         </div>
       )}
 
       {/* REVIEW */}
       {step === "review" && (
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-navy">
-              Review queue {activeModule ? `· ${MODULE_LABELS[activeModule]}` : ""}
+          <div className="mb-4">
+            <h3 className="font-bold text-navy">
+              Review {activeModule ? `· ${MODULE_LABELS[activeModule]}` : "queue"}
             </h3>
-            <div className="flex gap-2">
-              {["auto_approve", "needs_review", "flagged", "skip", "approved"].map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => { setReviewTab(tab); loadEntries(activeModule || undefined, tab); }}
-                  className={`text-xs px-2 py-1 rounded border ${
-                    reviewTab === tab ? "bg-navy text-white border-navy" : "border-gray-200"
-                  }`}
-                >
-                  {tab.replace("_", " ")}
-                </button>
-              ))}
-            </div>
+            <p className="text-xs text-ink-light mt-0.5">
+              Each row is a proposed change. Approve the ones that look right —
+              everything you approve will post to QuickBooks when you click Execute.
+            </p>
           </div>
 
+          {/* Tabs with plain-English labels + counts */}
           <div className="flex gap-2 mb-4 flex-wrap">
+            {["needs_review", "auto_approve", "flagged", "skip", "approved"].map((tab) => (
+              <button
+                key={tab}
+                onClick={() => { setReviewTab(tab); loadEntries(activeModule || undefined, tab); }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors ${
+                  reviewTab === tab
+                    ? "bg-navy text-white border-navy"
+                    : "border-gray-200 hover:border-navy/30"
+                }`}
+              >
+                {REVIEW_TAB_LABELS[tab] || tab}
+              </button>
+            ))}
+          </div>
+
+          {/* Bulk-approve actions */}
+          <div className="flex flex-wrap gap-2 mb-4">
             <button
               onClick={approveAllAuto}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-green-600 text-white"
+              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+              title="Approve every entry the matcher already auto-approved"
             >
-              Approve all auto
+              ✓ Approve all auto-approved
             </button>
             {activeModule === "undeposited_funds" && (
               <button
                 onClick={approveUfConfident}
-                className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-teal text-white"
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-teal text-white hover:bg-teal-dark"
+                title="Approve exact invoice-number matches + high-confidence amount matches in one click"
               >
-                Approve exact + high confidence
+                ✓ Approve exact + high confidence UF matches
               </button>
             )}
-            <label className="flex items-center gap-2 text-xs text-ink-slate ml-auto">
-              <input
-                type="checkbox"
-                checked={attested}
-                onChange={(e) => setAttested(e.target.checked)}
-              />
-              I attest these entries are correct before posting to QBO
-            </label>
           </div>
 
-          <div className="space-y-2 max-h-96 overflow-y-auto">
+          {/* Entry list */}
+          <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
             {entries.length === 0 && (
-              <div className="text-sm text-ink-light py-8 text-center">
-                No entries in this tab. Run Discover on a module first.
+              <div className="text-center py-12 px-4 border-2 border-dashed border-gray-200 rounded-xl">
+                <FileSearch size={28} className="mx-auto text-gray-300 mb-2" />
+                <div className="text-sm font-semibold text-navy">No entries in this tab</div>
+                <div className="text-xs text-ink-light mt-1 max-w-md mx-auto">
+                  {reviewTab === "needs_review" && "Either the matcher auto-approved everything, or you haven't run Discover yet."}
+                  {reviewTab === "auto_approve" && "No entries hit the auto-approve threshold for this module."}
+                  {reviewTab === "approved" && "You haven't approved any entries in this module yet."}
+                  {reviewTab === "flagged" && "Nothing's flagged — good sign."}
+                  {reviewTab === "skip" && "Nothing's been marked to skip."}
+                </div>
+                {activeModule && (
+                  <button
+                    onClick={() => setStep("modules")}
+                    className="mt-3 text-xs font-bold text-teal hover:underline"
+                  >
+                    ← Back to modules
+                  </button>
+                )}
               </div>
             )}
             {entries.map((e) => (
@@ -557,15 +797,54 @@ export function CleanupWizardClient({
             ))}
           </div>
 
-          {activeModule && (
-            <button
-              onClick={() => executeModule(activeModule)}
-              disabled={acting || !attested}
-              className="mt-4 w-full flex items-center justify-center gap-2 bg-navy text-white font-semibold py-3 rounded-xl disabled:opacity-50"
-            >
-              {acting ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-              Execute approved entries
-            </button>
+          {/* Execute preview + button — only when there's something approved waiting */}
+          {activeModule && executePreview.count > 0 && (
+            <div className="mt-5 border-t border-gray-100 pt-5">
+              <div className="rounded-xl border-2 border-navy/10 bg-navy/[0.02] p-4">
+                <div className="text-xs font-bold uppercase tracking-wider text-navy mb-2">
+                  Ready to post to QuickBooks
+                </div>
+                <div className="flex items-baseline gap-2 mb-1">
+                  <span className="text-2xl font-black text-navy">{executePreview.count}</span>
+                  <span className="text-sm text-ink-slate">
+                    {executePreview.count === 1 ? "entry" : "entries"} totaling{" "}
+                    <strong className="text-navy">{formatMoney(executePreview.total)}</strong>
+                  </span>
+                </div>
+                <div className="text-xs text-ink-light">
+                  {Object.entries(executePreview.byType)
+                    .map(([t, n]) => `${n} × ${t.replace("_", " ")}`)
+                    .join(" · ")}
+                </div>
+
+                <label className="flex items-start gap-2 text-xs text-navy mt-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={attested}
+                    onChange={(e) => setAttested(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <strong>I've reviewed these entries</strong> and confirm they're correct to post to this client's QuickBooks.
+                  </span>
+                </label>
+
+                <button
+                  onClick={() => executeModule(activeModule)}
+                  disabled={acting || !attested}
+                  className="mt-3 w-full flex items-center justify-center gap-2 bg-navy text-white font-bold py-3 rounded-xl hover:bg-[#0a1722] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  {acting ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                  {acting ? "Posting to QuickBooks…" : `Post ${executePreview.count} ${executePreview.count === 1 ? "entry" : "entries"} now`}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeModule && executePreview.count === 0 && entries.length > 0 && (
+            <div className="mt-5 text-center text-xs text-ink-light border-t border-gray-100 pt-4">
+              Nothing approved yet for this module. Approve at least one entry above to enable posting.
+            </div>
           )}
         </div>
       )}
@@ -573,50 +852,65 @@ export function CleanupWizardClient({
       {/* QA */}
       {step === "qa" && (
         <div className="bg-white rounded-2xl border border-gray-100 p-5">
-          <h3 className="font-semibold text-navy mb-4 flex items-center gap-2">
-            <Shield size={16} />
-            QA Gate
-          </h3>
+          <div className="mb-4">
+            <h3 className="font-bold text-navy flex items-center gap-2">
+              <Shield size={16} /> QA Gate
+            </h3>
+            <p className="text-xs text-ink-light mt-0.5">
+              Final safety checks before the cleanup is delivered to the client.
+              All checks must pass before you can publish to the portal.
+            </p>
+          </div>
           {!qa && (
-            <button onClick={runQA} disabled={acting} className="text-sm font-semibold text-teal underline">
-              Run QA check
+            <button
+              onClick={runQA}
+              disabled={acting}
+              className="text-sm font-bold px-4 py-2 rounded-lg bg-teal text-white inline-flex items-center gap-2"
+            >
+              {acting ? <Loader2 size={14} className="animate-spin" /> : <Shield size={14} />}
+              Run QA checks
             </button>
           )}
           {qa && (
             <div className="space-y-2">
               {(qa.checks || []).map((c: any) => (
-                <div key={c.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100">
+                <div key={c.id} className="flex items-start gap-3 p-3 rounded-xl border border-gray-100">
                   {c.passed ? (
-                    <CheckCircle2 size={16} className="text-green-600" />
+                    <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0 mt-0.5" />
                   ) : (
-                    <XCircle size={16} className="text-red-600" />
+                    <XCircle size={16} className="text-red-600 flex-shrink-0 mt-0.5" />
                   )}
                   <div>
-                    <div className="text-sm font-medium text-navy">{c.label}</div>
-                    <div className="text-xs text-ink-light">{c.detail}</div>
+                    <div className="text-sm font-semibold text-navy">{c.label}</div>
+                    <div className="text-xs text-ink-light mt-0.5">{c.detail}</div>
                   </div>
                 </div>
               ))}
               {qa.passed ? (
-                <div className="mt-4 space-y-3">
-                  <textarea
-                    value={aiSummary}
-                    onChange={(e) => setAiSummary(e.target.value)}
-                    placeholder="Plain-language summary for client (human-reviewed)..."
-                    className="w-full h-24 text-sm border border-gray-200 rounded-lg p-3"
-                  />
+                <div className="mt-5 space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-navy mb-1.5">
+                      Summary for the client (shows on their portal)
+                    </label>
+                    <textarea
+                      value={aiSummary}
+                      onChange={(e) => setAiSummary(e.target.value)}
+                      placeholder="Plain-language summary of what was cleaned up. Read this carefully before publishing — the client sees exactly what you write."
+                      className="w-full h-28 text-sm border border-gray-200 rounded-lg p-3 focus:border-teal focus:ring-1 focus:ring-teal/30 outline-none"
+                    />
+                  </div>
                   <button
                     onClick={() => deliver(true)}
                     disabled={acting}
-                    className="w-full bg-teal text-white font-semibold py-3 rounded-xl disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="w-full bg-teal text-white font-bold py-3 rounded-xl disabled:opacity-50 flex items-center justify-center gap-2 hover:bg-teal-dark"
                   >
                     <FileText size={16} />
-                    Deliver &amp; publish to portal
+                    {acting ? "Publishing…" : "Deliver & publish to client portal"}
                   </button>
                 </div>
               ) : (
-                <div className="mt-4 p-3 rounded-lg bg-amber-50 text-amber-800 text-sm">
-                  QA gate failed — resolve issues above before delivering.
+                <div className="mt-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-sm">
+                  <strong>QA gate failed</strong> — resolve the failing checks above before delivering.
                 </div>
               )}
             </div>
@@ -626,18 +920,18 @@ export function CleanupWizardClient({
 
       {/* DELIVER */}
       {step === "deliver" && status?.run?.status === "complete" && (
-        <div className="bg-green-50 rounded-2xl border border-green-200 p-8 text-center">
-          <CheckCircle2 size={40} className="text-green-600 mx-auto mb-3" />
-          <h3 className="text-xl font-bold text-green-800 mb-2">Cleanup complete</h3>
-          <p className="text-sm text-green-700 mb-4">
-            Report published. You can now mark the client complete or submit for senior review.
+        <div className="bg-gradient-to-br from-emerald-50 to-teal-50 rounded-2xl border-2 border-emerald-200 p-8 text-center">
+          <CheckCircle2 size={48} className="text-emerald-600 mx-auto mb-3" />
+          <h3 className="text-2xl font-black text-emerald-900 mb-2">Cleanup complete</h3>
+          <p className="text-sm text-emerald-800 mb-6 max-w-md mx-auto">
+            Report published to the client portal. Mark the engagement complete to close out, or jump back to your workflow.
           </p>
-          <div className="flex gap-3 justify-center">
+          <div className="flex gap-3 justify-center flex-wrap">
             <a
               href={`/balance-sheet/${clientLinkId}`}
-              className="text-sm font-semibold px-4 py-2 rounded-lg border border-green-300 text-green-800 hover:bg-green-100"
+              className="text-sm font-bold px-4 py-2.5 rounded-lg border border-emerald-300 text-emerald-800 hover:bg-emerald-100 bg-white"
             >
-              Legacy BS tools
+              Open BS tools
             </a>
             <button
               onClick={async () => {
@@ -648,9 +942,9 @@ export function CleanupWizardClient({
                 });
                 window.location.href = "/kanban";
               }}
-              className="text-sm font-semibold px-4 py-2 rounded-lg bg-green-700 text-white hover:bg-green-800"
+              className="text-sm font-bold px-5 py-2.5 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800"
             >
-              Mark cleanup complete
+              Mark cleanup complete →
             </button>
           </div>
         </div>
