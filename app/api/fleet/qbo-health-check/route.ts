@@ -92,7 +92,16 @@ export async function GET(_request: Request) {
       });
     } catch (err: any) {
       const msg = err?.message || String(err);
-      if (/invalid_grant|invalid_token|token.*revoked|Incorrect Token type/i.test(msg)) {
+      // getValidToken() rewrites invalid_grant into a friendly remediation
+      // string ("Your QuickBooks connection has expired or been disconnected.
+      // Please reconnect QBO from the client's Settings...") so the regex
+      // has to recognize BOTH the raw OAuth error AND the friendly version.
+      // Without this every dead-refresh-token client landed in other_error.
+      if (
+        /invalid_grant|invalid_token|token.*revoked|Incorrect Token type/i.test(msg) ||
+        /(QuickBooks connection|QBO connection).*(expired|disconnected|no longer valid)/i.test(msg) ||
+        /reconnect QBO/i.test(msg)
+      ) {
         results.push({
           client_link_id: c.id,
           client_name: c.client_name,
