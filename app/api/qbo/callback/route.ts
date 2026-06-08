@@ -166,18 +166,31 @@ export async function GET(request: Request) {
         console.error("[qbo/callback] fetchCompanyInfo failed:", e);
       }
 
+      // The realm is the identity of the QBO company and is UNIQUE, so we must
+      // never stamp it onto a row that doesn't already own it — that's what
+      // trips client_links_qbo_realm_id_key on reconnect. Find the row that
+      // actually owns this realm and refresh tokens there; only attach the realm
+      // to the requested row when it isn't linked anywhere yet.
+      const { data: realmOwner } = await serviceClient
+        .from("client_links")
+        .select("id")
+        .eq("qbo_realm_id", realmId)
+        .maybeSingle();
+
+      const targetId = realmOwner?.id ?? clientLinkId;
+
       const updatePayload: Record<string, string> = {
-        qbo_realm_id: realmId,
         qbo_access_token: tokens.access_token,
         qbo_refresh_token: tokens.refresh_token,
         qbo_token_expires_at: expiresAt,
       };
+      if (!realmOwner) updatePayload.qbo_realm_id = realmId; // fresh attach only
       if (companyName) updatePayload.qbo_company_name = companyName;
 
       const { error: updateErr } = await serviceClient
         .from("client_links")
         .update(updatePayload)
-        .eq("id", clientLinkId);
+        .eq("id", targetId);
 
       if (updateErr) {
         return NextResponse.redirect(
