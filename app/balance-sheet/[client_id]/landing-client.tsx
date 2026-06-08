@@ -599,6 +599,40 @@ export function BalanceSheetLanding({
         </div>
       </div>
 
+      {/* UF AI Reconcile — CSV-driven, works without live QBO tokens.
+          Bookkeeper exports AR + UF transaction reports from QBO, drops
+          them here, Claude returns matched payments + open items + QBO
+          cleanup steps. Especially useful when QBO refresh tokens are
+          dead (the firm-level QBOA connection stays alive for exports
+          even when SNAP's OAuth grant is broken). */}
+      <div className="rounded-2xl bg-gradient-to-br from-teal/5 to-white border-2 border-teal/20 p-5">
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 rounded-xl bg-teal/10 flex-shrink-0">
+            <Sparkles size={18} className="text-teal" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-bold text-navy">UF AI Reconcile</h2>
+              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-teal text-white">NEW</span>
+            </div>
+            <p className="text-xs text-ink-slate mt-1 leading-relaxed">
+              Upload the AR + Undeposited Funds CSVs from QuickBooks. Claude matches
+              payments to deposits, finds what&apos;s still stuck, verifies the math, and
+              writes step-by-step QuickBooks instructions to clear it. Works without a
+              live QBO connection — paste the CSVs and go.
+            </p>
+          </div>
+          <a
+            href={`/balance-sheet/${clientLinkId}/uf-ai`}
+            className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-xs font-bold px-4 py-2 rounded-lg flex-shrink-0"
+          >
+            <Sparkles size={14} />
+            Open UF Reconcile
+            <ArrowRight size={12} />
+          </a>
+        </div>
+      </div>
+
       {/* Standalone BS COA viewer — see every BS account, not just the
           bank/cc/loan subset shown below. Scrub-reclass entry per row. */}
       <div className="rounded-2xl bg-gradient-to-br from-slate-50 to-white border border-slate-200 p-5">
