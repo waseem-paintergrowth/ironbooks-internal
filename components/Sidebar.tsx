@@ -33,6 +33,7 @@ const operationsNav: Array<{
   { href: "/balance-sheet/cleanup", label: "BS Cleanup", icon: ClipboardCheck },
   { href: "/flagged", label: "Flagged", icon: Flag, badge: true },
   { href: "/fleet", label: "Fleet Health", icon: Gauge },
+  { href: "/fleet/qbo-health", label: "QBO Connections", icon: Shield },
 ];
 
 /** Reference + standalone tools — tucked under Tools, senior+ only. */

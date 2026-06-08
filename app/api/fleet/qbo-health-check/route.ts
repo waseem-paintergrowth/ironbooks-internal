@@ -137,6 +137,65 @@ export async function GET(_request: Request) {
     checked_at: new Date().toISOString(),
   };
 
+  // Persist each result to qbo_connection_health so the /fleet/qbo-health
+  // page can read the current state without re-probing. We upsert per
+  // client — rolling first_failed_at forward when the streak continues,
+  // clearing it when we go green.
+  try {
+    // Read existing health rows so we can roll first_failed_at correctly.
+    const ids = results.map((r) => r.client_link_id);
+    const { data: existingRows } = await (service as any)
+      .from("qbo_connection_health")
+      .select("client_link_id, status, first_failed_at, last_ok_at")
+      .in("client_link_id", ids);
+    const existingByClient = new Map<string, any>();
+    for (const row of (existingRows as any[]) || []) {
+      existingByClient.set(row.client_link_id, row);
+    }
+
+    const now = new Date().toISOString();
+    const upserts = results.map((r) => {
+      const prev = existingByClient.get(r.client_link_id);
+      const wasFailing =
+        prev && (prev.status === "invalid_grant" || prev.status === "other_error");
+      const isFailingNow =
+        r.status === "invalid_grant" || r.status === "other_error";
+      return {
+        client_link_id: r.client_link_id,
+        status: r.status,
+        last_checked_at: now,
+        error_message: r.status === "ok" ? null : r.detail,
+        // Roll last_ok_at forward on success; preserve existing otherwise.
+        last_ok_at: r.status === "ok" ? now : prev?.last_ok_at ?? null,
+        // first_failed_at:
+        //   - Currently failing + was previously failing → keep prev (streak)
+        //   - Currently failing + wasn't failing before → start streak now
+        //   - Currently ok → clear (streak resolved)
+        first_failed_at: isFailingNow
+          ? wasFailing && prev?.first_failed_at
+            ? prev.first_failed_at
+            : now
+          : null,
+        updated_at: now,
+      };
+    });
+
+    // Upsert in chunks (Supabase has a soft limit on a single insert).
+    const BATCH = 200;
+    for (let i = 0; i < upserts.length; i += BATCH) {
+      await (service as any)
+        .from("qbo_connection_health")
+        .upsert(upserts.slice(i, i + BATCH), { onConflict: "client_link_id" });
+    }
+  } catch (writeErr: any) {
+    // Persistence is observability — don't fail the probe response if it
+    // breaks. The summary + per-client results above are still correct.
+    console.warn(
+      "[qbo-health-check] failed to persist results:",
+      writeErr?.message
+    );
+  }
+
   // Sort: dead connections first, then errors, then ok.
   results.sort((a, b) => {
     const rank = (s: ClientResult["status"]) =>
