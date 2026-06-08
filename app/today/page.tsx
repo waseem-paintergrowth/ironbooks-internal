@@ -181,6 +181,41 @@ export default async function TodayPage() {
     }
   }
 
+  // ─── Monthly-close status for the current closing period ───
+  // Default period = previous calendar month (the one bookkeepers
+  // normally close in the first week of the new month). Detection:
+  // any cleanup_runs row with workflow_mode=monthly_close AND
+  // period_lock_date inside that month. Most recent wins on ties.
+  // We use this to power the smart MonthlyBsCheckButton states
+  // (Closed ✓ / Resume / Start) so the bookkeeper sees at a glance
+  // which clients still owe a close for the current period.
+  const closeNow = new Date();
+  const closingYear = closeNow.getMonth() === 0 ? closeNow.getFullYear() - 1 : closeNow.getFullYear();
+  const closingMonth = (closeNow.getMonth() + 11) % 12;
+  const closingPeriodStart = `${closingYear}-${String(closingMonth + 1).padStart(2, "0")}-01`;
+  const closingPeriodEnd = new Date(closingYear, closingMonth + 1, 0).toISOString().slice(0, 10);
+  const closingPeriodLabel = new Date(closingYear, closingMonth, 1).toLocaleDateString("en-US", { month: "short" });
+
+  type CloseStatus = "closed" | "in_progress" | "not_started";
+  const monthlyByClient = new Map<string, { status: CloseStatus; runId: string }>();
+  let monthlyClosedCount = 0;
+  if (clientIds.length > 0) {
+    const { data: mr } = await service
+      .from("cleanup_runs")
+      .select("id, client_link_id, status, period_lock_date" as any)
+      .in("client_link_id", clientIds)
+      .eq("workflow_mode" as any, "monthly_close")
+      .gte("period_lock_date", closingPeriodStart)
+      .lte("period_lock_date", closingPeriodEnd)
+      .order("started_at", { ascending: false });
+    for (const r of (mr as any[]) || []) {
+      if (monthlyByClient.has(r.client_link_id)) continue;
+      const status: CloseStatus = r.status === "complete" ? "closed" : "in_progress";
+      monthlyByClient.set(r.client_link_id, { status, runId: r.id });
+      if (status === "closed") monthlyClosedCount++;
+    }
+  }
+
   // Top-line totals
   const totalPending = Array.from(pendingByClient.values()).reduce((s, n) => s + n, 0);
   const totalAnomalies = Array.from(anomaliesByClient.values()).reduce((s, n) => s + n, 0);
@@ -210,6 +245,31 @@ export default async function TodayPage() {
         {/* Portal flags from clients — shown above daily recon since they're
             often more urgent (client is actively waiting for a response) */}
         {pendingFlags.length > 0 && <ClientFlagsWidget flags={pendingFlags} />}
+
+        {/* Month-end at-a-glance — only show if there's at least one
+            production client, otherwise just clutter. Links into
+            /month-end for the bulk delivery workflow. */}
+        {eligibleClients.length > 0 && (
+          <Link
+            href="/month-end"
+            className="flex items-center gap-4 px-5 py-3 bg-gradient-to-r from-navy/[0.04] to-white rounded-2xl border border-navy/15 hover:border-navy/30 transition-colors group"
+          >
+            <div className="p-2 rounded-lg bg-navy/10 flex-shrink-0">
+              <CheckCircle2 size={16} className="text-navy" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-bold uppercase tracking-widest text-ink-light">
+                Month-end · {closingPeriodLabel}
+              </div>
+              <div className="text-sm font-bold text-navy mt-0.5">
+                <span className="text-emerald-700">{monthlyClosedCount}</span> of {eligibleClients.length} clients closed for the period
+              </div>
+            </div>
+            <div className="text-xs font-bold text-navy group-hover:text-teal flex items-center gap-1 flex-shrink-0">
+              Open Month-End <ArrowRight size={12} />
+            </div>
+          </Link>
+        )}
 
         {/* Top-line summary */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -286,7 +346,12 @@ export default async function TodayPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3 text-xs">
-                      <MonthlyBsCheckButton clientLinkId={c.id} />
+                      <MonthlyBsCheckButton
+                        clientLinkId={c.id}
+                        monthlyCloseStatus={monthlyByClient.get(c.id)?.status || "not_started"}
+                        existingRunId={monthlyByClient.get(c.id)?.runId || null}
+                        periodLabel={closingPeriodLabel}
+                      />
                       <Pill count={autoToday} label="auto" tone="emerald" />
                       <Pill count={pending} label="review" tone={pending > 0 ? "amber" : "gray"} />
                       <Pill count={anomalies} label="anomaly" tone={anomalies > 0 ? "red" : "gray"} />
