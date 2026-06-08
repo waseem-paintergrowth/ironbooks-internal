@@ -35,6 +35,11 @@ export default async function QboHealthPage() {
   }
 
   // Pull every active client + their health row + bookkeeper.
+  // Use star-select on the health table — Supabase JS sometimes silently
+  // drops untyped tables' explicit column lists when the table isn't in
+  // the generated Database type. `select("*")` bypasses that. We cast the
+  // service handle through `any` for the same reason.
+  const svcAny: any = service;
   const [clientsRes, healthRes, bookkeepersRes] = await Promise.all([
     service
       .from("client_links")
@@ -43,20 +48,34 @@ export default async function QboHealthPage() {
       )
       .eq("is_active", true)
       .order("client_name"),
-    (service as any)
-      .from("qbo_connection_health")
-      .select(
-        "client_link_id, status, last_checked_at, error_message, last_ok_at, first_failed_at, reconnect_initiated_at, reconnect_initiated_by"
-      ),
+    svcAny.from("qbo_connection_health").select("*"),
     service
       .from("users")
       .select("id, full_name")
       .eq("is_active", true),
   ]);
 
+  // Server-side trace — surfaces in Vercel logs the first time someone
+  // opens the page after a deploy. Helps catch silent column-projection
+  // failures on untyped tables.
+  console.log(
+    `[fleet/qbo-health] client_links=${(clientsRes.data as any[])?.length ?? "null"} ` +
+    `health_rows=${(healthRes?.data as any[])?.length ?? "null"} ` +
+    `health_error=${(healthRes as any)?.error?.message || "none"}`
+  );
+  if (Array.isArray(healthRes?.data) && healthRes.data.length > 0) {
+    const sample = healthRes.data[0];
+    console.log(
+      `[fleet/qbo-health] sample health row keys=${Object.keys(sample).join(",")} ` +
+      `client_link_id=${sample.client_link_id} status=${sample.status}`
+    );
+  }
+
   const healthByClient = new Map<string, any>();
-  for (const h of (healthRes.data as any[]) || []) {
-    healthByClient.set(h.client_link_id, h);
+  for (const h of (healthRes?.data as any[]) || []) {
+    if (h?.client_link_id) {
+      healthByClient.set(String(h.client_link_id), h);
+    }
   }
   const bookkeepersById = new Map<string, string>();
   for (const u of (bookkeepersRes.data as any[]) || []) {
@@ -64,7 +83,7 @@ export default async function QboHealthPage() {
   }
 
   const rows: ClientHealthRow[] = ((clientsRes.data as any[]) || []).map((c) => {
-    const h = healthByClient.get(c.id);
+    const h = healthByClient.get(String(c.id));
     let status: ClientHealthRow["status"];
     if (!c.qbo_realm_id) status = "never_connected";
     else if (!h) status = "unknown";
@@ -92,7 +111,15 @@ export default async function QboHealthPage() {
     };
   });
 
-  const probeNeverRun = ((healthRes.data as any[]) || []).length === 0;
+  const probeNeverRun = ((healthRes?.data as any[]) || []).length === 0;
+  // Diagnostic — surface when we fetched health rows but the join
+  // produced zero matches. If this fires, either the IDs disagree
+  // (UUID format mismatch) or the column projection dropped data.
+  const healthRowCount = ((healthRes?.data as any[]) || []).length;
+  const joinedCount = rows.filter(
+    (r) => r.status === "ok" || r.status === "invalid_grant" || r.status === "other_error"
+  ).length;
+  const joinSuspect = healthRowCount > 0 && joinedCount === 0;
 
   return (
     <AppShell>
@@ -100,7 +127,16 @@ export default async function QboHealthPage() {
         title="QBO Connection Health"
         subtitle="Every client's QuickBooks refresh-token state — re-auth dead connections in bulk"
       />
-      <div className="px-6 py-5 max-w-[1400px] mx-auto">
+      <div className="px-6 py-5 max-w-[1400px] mx-auto space-y-3">
+        {joinSuspect && (
+          <div className="rounded-lg bg-red-50 border border-red-300 p-3 text-xs text-red-800">
+            <strong className="block mb-1">Join diagnostic — page is broken:</strong>
+            Fetched {healthRowCount} health rows from qbo_connection_health, but
+            zero matched any of the {(clientsRes.data as any[])?.length ?? "?"}{" "}
+            active clients. Check the Vercel logs for `[fleet/qbo-health]` lines
+            — they'll show the sample row keys + first client_link_id.
+          </div>
+        )}
         <QboHealthClient rows={rows} probeNeverRun={probeNeverRun} />
       </div>
     </AppShell>
