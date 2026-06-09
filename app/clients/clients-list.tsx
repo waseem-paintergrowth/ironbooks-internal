@@ -1093,20 +1093,83 @@ function ActionsDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  // Viewport-anchored menu position. position:absolute (the previous
+  // approach) gets clipped by the parent table's overflow:auto when the
+  // button is on the last visible row. Computing fixed coords off the
+  // button's getBoundingClientRect escapes every parent container and
+  // lets us flip-to-upward when the menu won't fit below.
+  const [menuPos, setMenuPos] = useState<{
+    top: number;
+    left: number;
+    openUpward: boolean;
+    maxHeight: number;
+  } | null>(null);
+
+  // Approx height of the menu (10 items × ~32px + headers + padding).
+  // We use a target height to decide flip; actual menu is bounded by
+  // maxHeight so it scrolls instead of overflowing the viewport in
+  // pathological cases.
+  const MENU_TARGET_HEIGHT = 380;
+  const MENU_WIDTH = 256;
+  const VIEWPORT_PADDING = 8;
+
+  function computePosition() {
+    if (!buttonRef.current) return null;
+    const rect = buttonRef.current.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const spaceBelow = vh - rect.bottom - VIEWPORT_PADDING;
+    const spaceAbove = rect.top - VIEWPORT_PADDING;
+    const openUpward = spaceBelow < MENU_TARGET_HEIGHT && spaceAbove > spaceBelow;
+    // Right-align to the button; clamp so we never extend past the
+    // left edge of the viewport on narrow screens.
+    const left = Math.max(
+      VIEWPORT_PADDING,
+      Math.min(rect.right - MENU_WIDTH, vw - MENU_WIDTH - VIEWPORT_PADDING)
+    );
+    const maxHeight = openUpward ? spaceAbove : spaceBelow;
+    return {
+      top: openUpward ? rect.top - 4 : rect.bottom + 4,
+      left,
+      openUpward,
+      maxHeight: Math.max(160, maxHeight),
+    };
+  }
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setMenuPos(null);
+      return;
+    }
+    // Compute once on open. Re-compute on scroll/resize would be
+    // nicer, but closing on either is simpler + matches typical
+    // dropdown UX (user scrolls = they're moving on).
+    setMenuPos(computePosition());
     function onClick(e: MouseEvent) {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      if (ref.current?.contains(e.target as Node)) return;
+      // Menu is portaled out via position:fixed, so check both the
+      // wrapper AND any element with our menu marker attribute.
+      const target = e.target as HTMLElement;
+      if (target.closest("[data-actions-menu]")) return;
+      setOpen(false);
     }
     function onEsc(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
+    function onScrollOrResize() {
+      setOpen(false);
+    }
     window.addEventListener("mousedown", onClick);
     window.addEventListener("keydown", onEsc);
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
     return () => {
       window.removeEventListener("mousedown", onClick);
       window.removeEventListener("keydown", onEsc);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
     };
   }, [open]);
 
@@ -1205,9 +1268,23 @@ function ActionsDropdown({
 
   const visible = items.filter((i) => !i.hidden);
 
+  // Translate the openUpward flag into a CSS transform so the menu's
+  // bottom edge aligns to the button's top when flipped.
+  const menuStyle = menuPos
+    ? {
+        position: "fixed" as const,
+        top: menuPos.top,
+        left: menuPos.left,
+        width: MENU_WIDTH,
+        maxHeight: menuPos.maxHeight,
+        transform: menuPos.openUpward ? "translateY(-100%)" : undefined,
+      }
+    : undefined;
+
   return (
     <div className="relative inline-block" ref={ref}>
       <button
+        ref={buttonRef}
         onClick={() => setOpen((v) => !v)}
         className={
           compact
@@ -1225,8 +1302,12 @@ function ActionsDropdown({
           </>
         )}
       </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
+      {open && menuPos && (
+        <div
+          data-actions-menu
+          style={menuStyle}
+          className="bg-white border border-gray-200 rounded-lg shadow-xl z-[100] overflow-y-auto"
+        >
           {visible.map((item, idx) => {
             const Icon = item.icon;
             const sectionLabel = item.section;
