@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   ChevronDown, AlertTriangle, X, Loader2, ChevronRight, Flag, CheckCircle2,
-  Sparkles, Info, ArrowDown, TrendingUp, TrendingDown, CalendarRange,
+  Sparkles, Info, ArrowDown, TrendingUp, TrendingDown, CalendarRange, Tag, Search,
 } from "lucide-react";
 import type { ProfitLossData } from "@/lib/qbo-reports";
 import { classifyProfitLoss, marginVerdict, type PortalPl, type PlBucket } from "@/lib/portal-pl";
@@ -41,6 +41,10 @@ export function ProfitLossClient({
     account_id: string;
     amount: number;
   } | null>(null);
+  // Reclass request modal — used by both the account-level "tag" buttons in
+  // each BucketSection row AND the per-transaction button in the drill-down
+  // drawer. The modal is rendered once at this top level so it overlays both.
+  const [reclassTarget, setReclassTarget] = useState<ReclassTarget | null>(null);
 
   // Custom range — fetched on demand from /api/portal/profit-loss.
   const [customStart, setCustomStart] = useState("");
@@ -185,6 +189,8 @@ export function ProfitLossClient({
               accent="teal"
               periodLabel={range.label}
               onDrill={setDrillLine}
+              onReclass={(t) => setReclassTarget(t)}
+              range={range}
             />
 
             <BucketSection
@@ -192,6 +198,8 @@ export function ProfitLossClient({
               accent="amber"
               periodLabel={range.label}
               onDrill={setDrillLine}
+              onReclass={(t) => setReclassTarget(t)}
+              range={range}
               note={
                 c.costSplitEstimated
                   ? "Estimated from account names — your books don't separate direct job costs from overhead yet. Your bookkeeper can set up Cost of Goods Sold for a precise gross margin."
@@ -219,14 +227,16 @@ export function ProfitLossClient({
               accent="orange"
               periodLabel={range.label}
               onDrill={setDrillLine}
+              onReclass={(t) => setReclassTarget(t)}
+              range={range}
               emptyNote="No overhead expenses recorded for this period."
             />
 
             {c.otherIncome && (
-              <BucketSection bucket={c.otherIncome} accent="teal" periodLabel={range.label} onDrill={setDrillLine} />
+              <BucketSection bucket={c.otherIncome} accent="teal" periodLabel={range.label} onDrill={setDrillLine} onReclass={(t) => setReclassTarget(t)} range={range} />
             )}
             {c.otherExpense && (
-              <BucketSection bucket={c.otherExpense} accent="orange" periodLabel={range.label} onDrill={setDrillLine} />
+              <BucketSection bucket={c.otherExpense} accent="orange" periodLabel={range.label} onDrill={setDrillLine} onReclass={(t) => setReclassTarget(t)} range={range} />
             )}
 
             {/* Net Profit band — the bottom line */}
@@ -253,7 +263,19 @@ export function ProfitLossClient({
       </div>
 
       {drillLine && range && (
-        <DrillDownDrawer line={drillLine} range={range} onClose={() => setDrillLine(null)} />
+        <DrillDownDrawer
+          line={drillLine}
+          range={range}
+          onClose={() => setDrillLine(null)}
+          onReclass={(target) => setReclassTarget(target)}
+        />
+      )}
+
+      {reclassTarget && (
+        <ReclassRequestModal
+          target={reclassTarget}
+          onClose={() => setReclassTarget(null)}
+        />
       )}
     </div>
   );
@@ -406,6 +428,8 @@ function BucketSection({
   accent,
   periodLabel,
   onDrill,
+  onReclass,
+  range,
   note,
   emptyNote,
 }: {
@@ -413,6 +437,8 @@ function BucketSection({
   accent: "teal" | "amber" | "orange";
   periodLabel: string;
   onDrill: (l: { label: string; account_id: string; amount: number }) => void;
+  onReclass: (t: ReclassTarget) => void;
+  range: { label: string; start: string; end: string };
   note?: string;
   emptyNote?: string;
 }) {
@@ -484,6 +510,25 @@ function BucketSection({
                         context={{ section: bucket.label, account_id: l.account_id, pct_of_income: Math.round(l.pctOfIncome * 10) / 10 }}
                         variant="icon"
                       />
+                      {drillable && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onReclass({
+                              source_account_qbo_id: l.account_id!,
+                              source_account_name: l.label,
+                              period_label: range.label,
+                              period_start: range.start,
+                              period_end: range.end,
+                            });
+                          }}
+                          title="Suggest a different category for this line"
+                          className="text-ink-light hover:text-violet-600 transition-colors p-1 rounded hover:bg-violet-50"
+                        >
+                          <Tag size={13} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -690,10 +735,12 @@ function DrillDownDrawer({
   line,
   range,
   onClose,
+  onReclass,
 }: {
   line: { label: string; account_id: string; amount: number };
   range: { label: string; start: string; end: string };
   onClose: () => void;
+  onReclass: (t: ReclassTarget) => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -826,6 +873,28 @@ function DrillDownDrawer({
                           variant="icon"
                         />
                         <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onReclass({
+                              source_account_qbo_id: line.account_id,
+                              source_account_name: line.label,
+                              example_txn_id: t.txn_id || undefined,
+                              example_txn_type: t.txn_type || undefined,
+                              example_txn_date: t.date || undefined,
+                              example_txn_amount: t.amount,
+                              example_txn_memo: t.memo || undefined,
+                              vendor_name: t.name || undefined,
+                              period_label: range.label,
+                              period_start: range.start,
+                              period_end: range.end,
+                            });
+                          }}
+                          title="Suggest this should be in a different category"
+                          className="text-ink-light hover:text-violet-600 transition-colors p-1 rounded hover:bg-violet-50"
+                        >
+                          <Tag size={13} />
+                        </button>
+                        <button
                           onClick={(e) => { e.stopPropagation(); setFlagTxn(t); }}
                           title="Flag this transaction for your bookkeeper to review"
                           className="text-ink-light hover:text-amber-600 transition-colors p-1 rounded hover:bg-amber-50"
@@ -872,6 +941,15 @@ function DrillDownDrawer({
 
 // ─── FLAG TRANSACTION MODAL ─────────────────────────────────────────────
 
+type SuggestedAlternative = {
+  account_id: string;
+  account_name: string;
+  fully_qualified_name: string;
+  account_type: string;
+  account_sub_type: string;
+  reason: string;
+};
+
 function FlagTransactionModal({
   transaction,
   accountId,
@@ -890,6 +968,43 @@ function FlagTransactionModal({
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // AI-suggested alternative categories. When a suggestion is picked, the
+  // submit path switches from /api/portal/transaction-flags (no-op flag for
+  // bookkeeper triage) to /api/portal/reclass-request (full approval flow
+  // with bulk reclass + bank rule). "None of these" or null = plain flag.
+  const [suggestions, setSuggestions] = useState<SuggestedAlternative[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  // null = no choice yet; "none" = explicit "none of these"; otherwise = picked account_id
+  const [pickedAlternative, setPickedAlternative] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setSuggestionsLoading(true);
+      try {
+        const res = await fetch("/api/portal/suggest-categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            vendor_name: transaction.name,
+            memo: transaction.memo,
+            amount: transaction.amount,
+            current_account_id: accountId,
+            current_account_name: accountLabel,
+          }),
+        });
+        const body = await res.json();
+        if (cancelled) return;
+        setSuggestions((body?.suggestions as SuggestedAlternative[]) || []);
+      } catch {
+        if (!cancelled) setSuggestions([]);
+      } finally {
+        if (!cancelled) setSuggestionsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [transaction.name, transaction.memo, transaction.amount, accountId, accountLabel]);
+
   async function submit() {
     const trimmed = note.trim();
     if (!trimmed) {
@@ -899,30 +1014,63 @@ function FlagTransactionModal({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/portal/transaction-flags", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          qbo_txn_id: transaction.txn_id || null,
-          qbo_txn_type: transaction.txn_type || null,
-          qbo_account_id: accountId,
-          account_label: accountLabel,
-          txn_date: transaction.date || null,
-          txn_amount: transaction.amount,
-          txn_doc_number: transaction.doc_number,
-          txn_vendor_or_customer: transaction.name,
-          txn_memo: transaction.memo,
-          period_label: range.label,
-          period_start: range.start,
-          period_end: range.end,
-          client_note: trimmed,
-        }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      const picked = pickedAlternative && pickedAlternative !== "none"
+        ? suggestions.find((s) => s.account_id === pickedAlternative) || null
+        : null;
+
+      if (picked) {
+        // Convert to a reclass request — bookkeeper can approve/decline in
+        // /today, which runs the bulk reclass + creates a bank rule.
+        const res = await fetch("/api/portal/reclass-request", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_account_qbo_id: accountId,
+            source_account_name:   accountLabel,
+            target_account_qbo_id: picked.account_id,
+            target_account_name:   picked.fully_qualified_name,
+            example_txn_id:        transaction.txn_id || null,
+            example_txn_type:      transaction.txn_type || null,
+            example_txn_date:      transaction.date || null,
+            example_txn_amount:    transaction.amount,
+            example_txn_memo:      transaction.memo || null,
+            vendor_name:           transaction.name || null,
+            period_label:          range.label,
+            period_start:          range.start,
+            period_end:            range.end,
+            client_reason:         trimmed,
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      } else {
+        // No category picked (or "None of these") — original flag flow.
+        const res = await fetch("/api/portal/transaction-flags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            qbo_txn_id: transaction.txn_id || null,
+            qbo_txn_type: transaction.txn_type || null,
+            qbo_account_id: accountId,
+            account_label: accountLabel,
+            txn_date: transaction.date || null,
+            txn_amount: transaction.amount,
+            txn_doc_number: transaction.doc_number,
+            txn_vendor_or_customer: transaction.name,
+            txn_memo: transaction.memo,
+            period_label: range.label,
+            period_start: range.start,
+            period_end: range.end,
+            client_note: trimmed,
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      }
+
       setSubmitted(true);
     } catch (e: any) {
-      setError(e?.message || "Couldn't send the flag — please try again.");
+      setError(e?.message || "Couldn't send — please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -945,8 +1093,16 @@ function FlagTransactionModal({
               <div className="flex items-start gap-3 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
                 <CheckCircle2 size={18} className="text-emerald-700 flex-shrink-0 mt-0.5" />
                 <div className="text-sm text-emerald-900">
-                  <strong className="block">Sent to your bookkeeper.</strong>
-                  <span className="text-xs">They'll review the transaction and reply.</span>
+                  <strong className="block">
+                    {pickedAlternative && pickedAlternative !== "none"
+                      ? "Re-categorize request sent."
+                      : "Sent to your bookkeeper."}
+                  </strong>
+                  <span className="text-xs">
+                    {pickedAlternative && pickedAlternative !== "none"
+                      ? "Your bookkeeper will review and (if approved) reclassify the matching transactions in QuickBooks."
+                      : "They'll review the transaction and reply."}
+                  </span>
                 </div>
               </div>
               <button onClick={onClose} className="w-full px-4 py-2 bg-teal text-white rounded-lg text-sm font-semibold hover:bg-teal-dark">Done</button>
@@ -989,6 +1145,78 @@ function FlagTransactionModal({
                 </div>
               </div>
 
+              {/* AI suggested alternative categories. Picking one converts
+                  the flag into a reclass request the bookkeeper can approve
+                  with one click; "None of these" or leaving blank keeps it
+                  as a plain flag for the bookkeeper to triage. */}
+              {(suggestionsLoading || suggestions.length > 0) && (
+                <div>
+                  <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles size={11} className="text-violet-600" />
+                    Suggested alternatives
+                    <span className="text-[10px] font-normal text-ink-light normal-case">
+                      (optional — pick one to turn this into a re-categorize request)
+                    </span>
+                  </label>
+                  {suggestionsLoading ? (
+                    <div className="mt-1 px-3 py-2 text-xs text-ink-slate flex items-center gap-2">
+                      <Loader2 size={11} className="animate-spin" /> Looking at similar categories…
+                    </div>
+                  ) : (
+                    <div className="mt-1 space-y-1">
+                      {suggestions.map((s) => {
+                        const checked = pickedAlternative === s.account_id;
+                        return (
+                          <label
+                            key={s.account_id}
+                            className={`flex items-start gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
+                              checked
+                                ? "border-violet-400 bg-violet-50"
+                                : "border-slate-200 hover:border-violet-200 hover:bg-violet-50/30"
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="suggested-alt"
+                              checked={checked}
+                              onChange={() => setPickedAlternative(s.account_id)}
+                              className="mt-0.5"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-semibold text-navy truncate">
+                                {s.fully_qualified_name}
+                              </div>
+                              <div className="text-[11px] text-ink-slate mt-0.5">{s.reason}</div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                      <label
+                        className={`flex items-start gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
+                          pickedAlternative === "none"
+                            ? "border-slate-400 bg-slate-50"
+                            : "border-slate-200 hover:border-slate-300 hover:bg-slate-50/60"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="suggested-alt"
+                          checked={pickedAlternative === "none"}
+                          onChange={() => setPickedAlternative("none")}
+                          className="mt-0.5"
+                        />
+                        <div className="text-sm text-ink-slate">
+                          <strong>None of these</strong>
+                          <span className="text-[11px] block text-ink-light">
+                            Just flag for the bookkeeper to look at — they'll figure out the right category.
+                          </span>
+                        </div>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {error && <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{error}</div>}
 
               <div className="flex items-center gap-2 justify-end">
@@ -998,8 +1226,18 @@ function FlagTransactionModal({
                   disabled={submitting || !note.trim()}
                   className="px-4 py-1.5 bg-amber-500 text-white rounded-lg text-sm font-semibold hover:bg-amber-600 disabled:opacity-50 inline-flex items-center gap-1.5"
                 >
-                  {submitting ? <Loader2 size={12} className="animate-spin" /> : <Flag size={12} />}
-                  {submitting ? "Sending…" : "Send to bookkeeper"}
+                  {submitting ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : pickedAlternative && pickedAlternative !== "none" ? (
+                    <Tag size={12} />
+                  ) : (
+                    <Flag size={12} />
+                  )}
+                  {submitting
+                    ? "Sending…"
+                    : pickedAlternative && pickedAlternative !== "none"
+                      ? "Request re-categorize"
+                      : "Send to bookkeeper"}
                 </button>
               </div>
               <div className="text-[11px] text-ink-light">Nothing changes in QuickBooks. Your bookkeeper reviews and decides what to do.</div>
@@ -1010,3 +1248,328 @@ function FlagTransactionModal({
     </div>
   );
 }
+
+// ─── RECLASS REQUEST MODAL ──────────────────────────────────────────────
+//
+// Client-side request to move a transaction (or a whole account) to a
+// different category. Manager approves in /today; approval handler runs
+// the bulk reclass + (optionally) creates a bank rule. This modal is just
+// the request capture — it never writes to QBO.
+//
+// Entry points:
+//   • Account-level button (Tag icon) in each P&L line row → opens with
+//     only source account info, no example txn.
+//   • Transaction-level button (Tag icon) in the drill-down → opens with
+//     the txn pre-filled, including vendor + memo so the manager can match.
+
+export type ReclassTarget = {
+  source_account_qbo_id: string;
+  source_account_name: string;
+  example_txn_id?: string;
+  example_txn_type?: string;
+  example_txn_date?: string;
+  example_txn_amount?: number;
+  example_txn_memo?: string;
+  vendor_name?: string;
+  period_label: string;
+  period_start: string;
+  period_end: string;
+};
+
+type QboAccountOption = {
+  id: string;
+  name: string;
+  fully_qualified_name: string;
+  account_type: string;
+  account_sub_type: string;
+  classification: string;
+};
+
+function ReclassRequestModal({
+  target,
+  onClose,
+}: {
+  target: ReclassTarget;
+  onClose: () => void;
+}) {
+  const [accounts, setAccounts] = useState<QboAccountOption[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+
+  const [search, setSearch] = useState("");
+  const [targetAccount, setTargetAccount] = useState<QboAccountOption | null>(null);
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch the chart of accounts once when the modal opens. We deliberately
+  // refetch rather than caching across sessions — accounts change rarely
+  // but they DO change, and a stale list silently breaks bookkeeper trust.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setAccountsLoading(true);
+      setAccountsError(null);
+      try {
+        const res = await fetch("/api/portal/qbo-accounts");
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+        if (cancelled) return;
+        // Hide the source account from the picker — they shouldn't be able
+        // to "move to itself" and the API would 400 anyway.
+        setAccounts(
+          (body.accounts as QboAccountOption[]).filter(
+            (a) => a.id !== target.source_account_qbo_id
+          )
+        );
+      } catch (e: any) {
+        if (cancelled) return;
+        setAccountsError(e?.message || "Couldn't load the category list");
+      } finally {
+        if (!cancelled) setAccountsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [target.source_account_qbo_id]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  // Filter the picker results by search query. We match against the
+  // fully-qualified name so the user can type "Marketing" and find
+  // "Expenses:Marketing & Advertising:EDDM" the same way.
+  const filteredAccounts = (() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return accounts.slice(0, 12);
+    return accounts
+      .filter((a) => a.fully_qualified_name.toLowerCase().includes(q))
+      .slice(0, 20);
+  })();
+
+  async function submit() {
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      setError("Please explain why this should change — your bookkeeper needs context to approve it.");
+      return;
+    }
+    if (!targetAccount) {
+      setError("Pick the category this should be moved to.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/portal/reclass-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_account_qbo_id: target.source_account_qbo_id,
+          source_account_name:   target.source_account_name,
+          target_account_qbo_id: targetAccount.id,
+          target_account_name:   targetAccount.fully_qualified_name,
+          example_txn_id:        target.example_txn_id || null,
+          example_txn_type:      target.example_txn_type || null,
+          example_txn_date:      target.example_txn_date || null,
+          example_txn_amount:    target.example_txn_amount ?? null,
+          example_txn_memo:      target.example_txn_memo || null,
+          vendor_name:           target.vendor_name || null,
+          period_label:          target.period_label,
+          period_start:          target.period_start,
+          period_end:            target.period_end,
+          client_reason:         trimmed,
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+      setSubmitted(true);
+    } catch (e: any) {
+      setError(e?.message || "Couldn't submit the request — please try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const isTxnLevel = !!target.example_txn_id;
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-navy/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl max-w-lg w-full shadow-xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Tag size={16} className="text-violet-600" />
+            <h3 className="font-bold text-navy">
+              {isTxnLevel ? "Re-categorize this transaction" : "Suggest a different category"}
+            </h3>
+          </div>
+          <button onClick={onClose} className="text-ink-slate hover:text-navy"><X size={20} /></button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 overflow-y-auto">
+          {submitted ? (
+            <>
+              <div className="flex items-start gap-3 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                <CheckCircle2 size={18} className="text-emerald-700 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-emerald-900">
+                  <strong className="block">Request sent to your bookkeeper.</strong>
+                  <span className="text-xs">
+                    They'll review and either approve (which reclassifies the matching
+                    transactions in QuickBooks and updates the bank rule for next time)
+                    or reply with questions.
+                  </span>
+                </div>
+              </div>
+              <button onClick={onClose} className="w-full px-4 py-2 bg-teal text-white rounded-lg text-sm font-semibold hover:bg-teal-dark">Done</button>
+            </>
+          ) : (
+            <>
+              {/* What's being changed */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs">
+                <div className="text-[10px] uppercase tracking-wider font-semibold text-ink-slate mb-1">
+                  {isTxnLevel ? "Transaction you flagged" : "Category you're questioning"}
+                </div>
+                {isTxnLevel ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-navy truncate">
+                        {target.example_txn_type || "Transaction"}
+                        {target.vendor_name && <span className="text-ink-slate font-normal"> · {target.vendor_name}</span>}
+                      </div>
+                      <div className="text-ink-light truncate">
+                        {target.example_txn_date}
+                        {target.example_txn_memo && ` · ${target.example_txn_memo}`}
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      {typeof target.example_txn_amount === "number" && (
+                        <div className="font-mono font-semibold text-navy">{fmtMoney(target.example_txn_amount)}</div>
+                      )}
+                      <div className="text-[10px] text-ink-light">Currently in {target.source_account_name}</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-navy">
+                    <strong>{target.source_account_name}</strong> for {target.period_label}
+                  </div>
+                )}
+              </div>
+
+              {/* Target category picker */}
+              <div>
+                <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">
+                  Move to which category? <span className="text-red-700">*</span>
+                </label>
+                {targetAccount ? (
+                  <div className="mt-1 flex items-center justify-between gap-2 px-3 py-2 border border-violet-300 bg-violet-50 rounded-lg">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-navy truncate">{targetAccount.fully_qualified_name}</div>
+                      <div className="text-[10px] text-ink-light">{targetAccount.account_type} · {targetAccount.account_sub_type}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setTargetAccount(null); setSearch(""); }}
+                      className="text-ink-slate hover:text-navy flex-shrink-0"
+                      title="Pick a different category"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="relative mt-1">
+                      <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-light" />
+                      <input
+                        type="text"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search categories — e.g. Marketing"
+                        className="w-full pl-8 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:border-violet-300 focus:outline-none"
+                      />
+                    </div>
+                    {accountsLoading ? (
+                      <div className="text-xs text-ink-slate py-3 text-center">
+                        <Loader2 size={12} className="inline animate-spin mr-1" />
+                        Loading your categories…
+                      </div>
+                    ) : accountsError ? (
+                      <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{accountsError}</div>
+                    ) : (
+                      <div className="mt-2 border border-slate-200 rounded-lg max-h-48 overflow-y-auto divide-y divide-slate-100">
+                        {filteredAccounts.length === 0 ? (
+                          <div className="px-3 py-3 text-xs text-ink-light italic">No match — try a different search.</div>
+                        ) : filteredAccounts.map((a) => (
+                          <button
+                            key={a.id}
+                            type="button"
+                            onClick={() => { setTargetAccount(a); if (error) setError(null); }}
+                            className="w-full text-left px-3 py-2 hover:bg-violet-50 transition-colors"
+                          >
+                            <div className="text-sm text-navy truncate">{a.fully_qualified_name}</div>
+                            <div className="text-[10px] text-ink-light">{a.account_type} · {a.account_sub_type}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Reason */}
+              <div>
+                <label className="text-xs font-semibold text-ink-slate uppercase tracking-wider">
+                  Why does it belong there? <span className="text-red-700">*</span>
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={(e) => { setReason(e.target.value); if (error) setError(null); }}
+                  placeholder={
+                    isTxnLevel
+                      ? "e.g. This USPS charge is for EDDM postcards — should be Marketing, not Postage."
+                      : "e.g. Most of what's in Postage is actually EDDM marketing — let's move those out."
+                  }
+                  maxLength={1500}
+                  rows={3}
+                  className="mt-1 w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:border-violet-300 focus:outline-none"
+                />
+                <div className="text-[11px] text-ink-light mt-1 flex items-center justify-between">
+                  <span>Your bookkeeper sees this verbatim and decides whether to approve.</span>
+                  <span>{reason.length} / 1500</span>
+                </div>
+              </div>
+
+              {error && <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-800">{error}</div>}
+
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  onClick={onClose}
+                  disabled={submitting}
+                  className="px-3 py-1.5 border border-slate-300 rounded-lg text-sm font-semibold text-ink-slate hover:bg-slate-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submit}
+                  disabled={submitting || !reason.trim() || !targetAccount}
+                  className="px-4 py-1.5 bg-violet-600 text-white rounded-lg text-sm font-semibold hover:bg-violet-700 disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  {submitting ? <Loader2 size={12} className="animate-spin" /> : <Tag size={12} />}
+                  {submitting ? "Sending…" : "Send request"}
+                </button>
+              </div>
+              <div className="text-[11px] text-ink-light">
+                Nothing changes in QuickBooks until your bookkeeper approves. On approval,
+                {target.vendor_name
+                  ? ` matching ${target.vendor_name} transactions in this fiscal year will be reclassified and a bank rule will be created for future imports.`
+                  : ` matching transactions in this fiscal year will be reclassified and a bank rule will be created for future imports.`}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+

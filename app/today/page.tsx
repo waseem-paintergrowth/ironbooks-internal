@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, ArrowRight, Sparkles, Clock, Pause } from "lucide-react";
 import { ClientFlagsWidget } from "./client-flags-widget";
+import { ReclassRequestsWidget, type PendingReclassRequest } from "./reclass-requests-widget";
 import { MonthlyBsCheckButton } from "./monthly-bs-check";
 
 export const dynamic = "force-dynamic";
@@ -107,8 +108,66 @@ export default async function TodayPage() {
     }));
   }
 
-  // If nothing's enabled AND no flags, show the empty state
-  if (eligibleClients.length === 0 && pendingFlags.length === 0) {
+  // ─── Client reclass requests ───
+  // Mirror the portal flag fetch: pending requests across all clients
+  // for seniors, scoped to assigned_bookkeeper_id for bookkeepers. We
+  // enrich with client_name + requester here so the widget doesn't have
+  // to re-fetch.
+  let pendingReclassRequests: PendingReclassRequest[] = [];
+  try {
+    const { data: rrRows } = await service
+      .from("client_reclass_requests" as any)
+      .select(
+        "id, client_link_id, requested_by, requested_at, " +
+        "source_account_qbo_id, source_account_name, target_account_qbo_id, target_account_name, " +
+        "example_txn_id, vendor_name, client_reason, status"
+      )
+      .eq("status", "pending")
+      .order("requested_at", { ascending: false });
+
+    let raw = (rrRows as any[]) || [];
+
+    if (!isSenior && raw.length > 0) {
+      const { data: ownedClients } = await service
+        .from("client_links")
+        .select("id")
+        .eq("assigned_bookkeeper_id", user.id);
+      const ownedIds = new Set(((ownedClients as any[]) || []).map((c) => c.id));
+      raw = raw.filter((r) => ownedIds.has(r.client_link_id));
+    }
+
+    if (raw.length > 0) {
+      const clientIds = Array.from(new Set(raw.map((r) => r.client_link_id)));
+      const requesterIds = Array.from(new Set(raw.map((r) => r.requested_by).filter(Boolean)));
+      const [{ data: cn }, { data: un }] = await Promise.all([
+        clientIds.length > 0
+          ? service.from("client_links").select("id, client_name").in("id", clientIds)
+          : Promise.resolve({ data: [] }),
+        requesterIds.length > 0
+          ? service.from("users").select("id, full_name, email").in("id", requesterIds)
+          : Promise.resolve({ data: [] }),
+      ]);
+      const clientNameById = new Map(((cn as any[]) || []).map((c) => [c.id, c.client_name]));
+      const userById = new Map(
+        ((un as any[]) || []).map((u) => [u.id, { full_name: u.full_name, email: u.email }])
+      );
+      pendingReclassRequests = raw.map((r) => ({
+        ...r,
+        client_name: clientNameById.get(r.client_link_id) || "(unknown client)",
+        requester_name: userById.get(r.requested_by)?.full_name || "",
+        requester_email: userById.get(r.requested_by)?.email || "",
+      })) as PendingReclassRequest[];
+    }
+  } catch {
+    pendingReclassRequests = [];
+  }
+
+  // If nothing's enabled AND no flags AND no reclass requests, show the empty state
+  if (
+    eligibleClients.length === 0 &&
+    pendingFlags.length === 0 &&
+    pendingReclassRequests.length === 0
+  ) {
     return (
       <AppShell>
         <TopBar title="Today" subtitle="Daily reconciliation queue" />
@@ -245,6 +304,12 @@ export default async function TodayPage() {
         {/* Portal flags from clients — shown above daily recon since they're
             often more urgent (client is actively waiting for a response) */}
         {pendingFlags.length > 0 && <ClientFlagsWidget flags={pendingFlags} />}
+
+        {/* Client reclass requests — clients flagging a category they want
+            changed. Approving runs the bulk reclass + activates a bank rule. */}
+        {pendingReclassRequests.length > 0 && (
+          <ReclassRequestsWidget requests={pendingReclassRequests} />
+        )}
 
         {/* Month-end at-a-glance — only show if there's at least one
             production client, otherwise just clutter. Links into
