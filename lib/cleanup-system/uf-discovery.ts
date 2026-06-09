@@ -10,16 +10,21 @@ import {
   findUndepositedFundsAccountId,
 } from "@/lib/qbo-balance-sheet";
 import { matchUFtoAR } from "@/lib/uf-ar-matcher";
+import type { OpenInvoice, UFPayment } from "@/lib/qbo-balance-sheet";
+import type { CleanupModule } from "./types";
 import { createCpaFlag, requiresCpaFlag } from "./cpa-flags";
 import { createProposedEntry } from "./proposed-entries";
 import { serializeMeta, ufKindToDecision, type UfEntryMeta } from "./entry-meta";
 
-export async function discoverUndepositedFundsModule(
+/**
+ * Pull open invoices + UF payments from QBO for a client. Shared by the
+ * Undeposited Funds module and the Accounts Receivable module (which also
+ * surfaces UF→A/R clearing so bookkeepers find it where they expect it).
+ */
+export async function fetchUfAndInvoices(
   service: SupabaseClient,
-  runId: string,
-  clientLinkId: string,
-  periodLockDate: string
-): Promise<{ proposed: number; matches: number; skipped: number }> {
+  clientLinkId: string
+): Promise<{ invoices: OpenInvoice[]; ufPayments: UFPayment[] }> {
   const { data: client } = await service
     .from("client_links")
     .select("qbo_realm_id")
@@ -32,11 +37,38 @@ export async function discoverUndepositedFundsModule(
   if (!realmId) throw new Error("Client has no QuickBooks connection");
 
   const invoices = await fetchOpenInvoices(realmId, token);
-  let ufPayments: Awaited<ReturnType<typeof fetchUndepositedFundsPayments>> = [];
+  let ufPayments: UFPayment[] = [];
   const ufAcctId = await findUndepositedFundsAccountId(realmId, token);
   if (ufAcctId) {
     ufPayments = await fetchUndepositedFundsPayments(realmId, token, ufAcctId);
   }
+  return { invoices, ufPayments };
+}
+
+/**
+ * Run the UF→A/R matcher and stage the proposed receive_payment entries
+ * under the given module. Returns counts. Skips any UF payment that already
+ * has a staged receive_payment entry for this run (so running both the UF
+ * and A/R modules doesn't double-propose the same clearing).
+ */
+export async function proposeUfArMatches(
+  service: SupabaseClient,
+  runId: string,
+  clientLinkId: string,
+  periodLockDate: string,
+  module: CleanupModule,
+  ufPayments: UFPayment[],
+  invoices: OpenInvoice[]
+): Promise<{ proposed: number; matches: number; skipped: number }> {
+  // Which UF payments are already staged as receive_payment for this run?
+  const { data: existing } = await service
+    .from("proposed_entries")
+    .select("qbo_transaction_id")
+    .eq("run_id", runId)
+    .eq("entry_type", "receive_payment");
+  const alreadyStaged = new Set(
+    (existing || []).map((e: any) => e.qbo_transaction_id).filter(Boolean)
+  );
 
   const matches = matchUFtoAR(ufPayments, invoices);
   let proposed = 0;
@@ -44,6 +76,7 @@ export async function discoverUndepositedFundsModule(
   let skipped = 0;
 
   for (const m of matches) {
+    if (alreadyStaged.has(m.payment.qbo_payment_id)) continue;
     const pay = m.payment;
     const picked = m.proposed[0] || null;
 
@@ -82,7 +115,7 @@ export async function discoverUndepositedFundsModule(
       await createProposedEntry(service, {
         runId,
         clientLinkId,
-        module: "undeposited_funds",
+        module,
         entryType: "receive_payment",
         amount: pay.amount,
         txnDate: pay.date,
@@ -103,7 +136,7 @@ export async function discoverUndepositedFundsModule(
     await createProposedEntry(service, {
       runId,
       clientLinkId,
-      module: "undeposited_funds",
+      module,
       entryType: "receive_payment",
       amount: pay.amount,
       txnDate: pay.date,
@@ -122,15 +155,36 @@ export async function discoverUndepositedFundsModule(
     matchCount++;
   }
 
+  return { proposed, matches: matchCount, skipped };
+}
+
+export async function discoverUndepositedFundsModule(
+  service: SupabaseClient,
+  runId: string,
+  clientLinkId: string,
+  periodLockDate: string
+): Promise<{ proposed: number; matches: number; skipped: number }> {
+  const { invoices, ufPayments } = await fetchUfAndInvoices(service, clientLinkId);
+
+  const result = await proposeUfArMatches(
+    service,
+    runId,
+    clientLinkId,
+    periodLockDate,
+    "undeposited_funds",
+    ufPayments,
+    invoices
+  );
+
   await service
     .from("cleanup_run_modules")
     .update({
       status: "reviewing",
-      proposed_count: proposed,
+      proposed_count: result.proposed,
       updated_at: new Date().toISOString(),
     } as any)
     .eq("run_id", runId)
     .eq("module", "undeposited_funds");
 
-  return { proposed, matches: matchCount, skipped };
+  return result;
 }

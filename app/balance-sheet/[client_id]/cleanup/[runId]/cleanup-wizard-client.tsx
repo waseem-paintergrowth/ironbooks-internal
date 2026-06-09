@@ -965,8 +965,9 @@ export function CleanupWizardClient({
                         <Upload size={11} /> CRM export (optional)
                       </h4>
                       <p className="text-[11px] text-ink-light mb-2">
-                        Attach a Jobber, DripJobs, or generic CRM invoice export <strong>before clicking Discover</strong>.
-                        This lets the matcher cross-check duplicates against the source system, not just QuickBooks.
+                        Discover always clears <strong>Undeposited Funds → open invoices</strong> straight from QuickBooks — no upload needed.
+                        Optionally attach a Jobber, DripJobs, or generic CRM <strong>invoice-level</strong> export to also catch duplicate invoices.
+                        An <strong>A/R Aging Summary</strong> is recognized too, but it’s used only as a tie-out check (it has no invoice rows to match).
                       </p>
                       <div className="flex gap-2 mb-2">
                         {(["jobber", "drip_jobs", "generic"] as const).map((s) => (
@@ -1035,7 +1036,7 @@ export function CleanupWizardClient({
             >
               ✓ Approve all auto-approved
             </button>
-            {activeModule === "undeposited_funds" && (
+            {(activeModule === "undeposited_funds" || activeModule === "accounts_receivable") && (
               <button
                 onClick={approveUfConfident}
                 className="text-xs font-bold px-3 py-1.5 rounded-lg bg-teal text-white hover:bg-teal-dark"
@@ -1046,6 +1047,59 @@ export function CleanupWizardClient({
             )}
           </div>
 
+          {/* A/R aging-summary tie-out (informational; not a proposed entry) */}
+          {(() => {
+            const mod = status?.modules?.find((m: any) => m.module === activeModule);
+            const notes = mod?.discovery_notes;
+            if (!notes || notes.type !== "ar_aging_reconciliation") return null;
+            const tied = Math.abs(Number(notes.difference || 0)) <= 0.5;
+            return (
+              <div className={`mb-4 rounded-xl border p-4 ${tied ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${tied ? "bg-emerald-200 text-emerald-800" : "bg-amber-200 text-amber-800"}`}>
+                    A/R Aging tie-out
+                  </span>
+                  {notes.as_of && <span className="text-[11px] text-ink-light">as of {notes.as_of}</span>}
+                </div>
+                <p className="text-xs text-navy leading-relaxed mb-2">{notes.message}</p>
+                <div className="text-[11px] text-ink-slate flex flex-wrap gap-x-4 gap-y-1 mb-2">
+                  <span>Aging total: <strong>{notes.aging_report_total != null ? `$${Number(notes.aging_report_total).toLocaleString()}` : "—"}</strong></span>
+                  <span>QBO open A/R: <strong>${Number(notes.qbo_open_total).toLocaleString()}</strong></span>
+                  <span>Difference: <strong className={tied ? "text-emerald-700" : "text-amber-700"}>${Number(notes.difference).toLocaleString()}</strong></span>
+                </div>
+                {Array.isArray(notes.rows) && notes.rows.filter((r: any) => r.status !== "match").length > 0 && (
+                  <details className="mt-1">
+                    <summary className="text-[11px] font-semibold text-navy cursor-pointer">
+                      {notes.rows.filter((r: any) => r.status !== "match").length} customer(s) don’t tie out
+                    </summary>
+                    <div className="mt-2 max-h-48 overflow-y-auto">
+                      <table className="w-full text-[11px]">
+                        <thead className="text-ink-light">
+                          <tr className="text-left">
+                            <th className="py-1 pr-2">Customer</th>
+                            <th className="py-1 pr-2 text-right">Aging</th>
+                            <th className="py-1 pr-2 text-right">QBO</th>
+                            <th className="py-1 pr-2 text-right">Diff</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {notes.rows.filter((r: any) => r.status !== "match").map((r: any, i: number) => (
+                            <tr key={i} className="border-t border-black/5">
+                              <td className="py-1 pr-2">{r.customer}</td>
+                              <td className="py-1 pr-2 text-right">{r.aging_total != null ? `$${Number(r.aging_total).toLocaleString()}` : "—"}</td>
+                              <td className="py-1 pr-2 text-right">{r.qbo_open_balance != null ? `$${Number(r.qbo_open_balance).toLocaleString()}` : "—"}</td>
+                              <td className="py-1 pr-2 text-right font-semibold">${Number(r.difference).toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Entry list */}
           <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
             {entries.length === 0 && (
@@ -1053,7 +1107,7 @@ export function CleanupWizardClient({
                 <FileSearch size={28} className="mx-auto text-gray-300 mb-2" />
                 <div className="text-sm font-semibold text-navy">No entries in this tab</div>
                 <div className="text-xs text-ink-light mt-1 max-w-md mx-auto">
-                  {reviewTab === "needs_review" && "Either the matcher auto-approved everything, or you haven't run Discover yet."}
+                  {reviewTab === "needs_review" && "Either the matcher auto-approved everything (check the Auto-approved tab), or there were no Undeposited Funds payments / open invoices to match. If you just clicked Discover, give it a few seconds and reopen this module."}
                   {reviewTab === "auto_approve" && "No entries hit the auto-approve threshold for this module."}
                   {reviewTab === "approved" && "You haven't approved any entries in this module yet."}
                   {reviewTab === "flagged" && "Nothing's flagged — good sign."}

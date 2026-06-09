@@ -3,8 +3,6 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { getValidToken } from "@/lib/qbo";
-import { fetchOpenInvoices } from "@/lib/qbo-balance-sheet";
 import {
   detectDuplicates,
   normalizeCrmRows,
@@ -18,6 +16,12 @@ import {
   serializeMeta,
   type ArDuplicateMeta,
 } from "./entry-meta";
+import { fetchUfAndInvoices, proposeUfArMatches } from "./uf-discovery";
+import {
+  isArAgingSummary,
+  parseArAgingSummary,
+  reconcileAgingAgainstQbo,
+} from "./ar-aging";
 
 export interface ArDiscoverOptions {
   crmSource?: CrmSource;
@@ -31,23 +35,22 @@ export async function discoverAccountsReceivableModule(
   periodLockDate: string,
   options: ArDiscoverOptions = {}
 ): Promise<{ proposed: number; duplicates: number }> {
-  const { data: client } = await service
-    .from("client_links")
-    .select("qbo_realm_id")
-    .eq("id", clientLinkId)
-    .single();
-  if (!client) throw new Error("Client not found");
+  const { invoices, ufPayments } = await fetchUfAndInvoices(service, clientLinkId);
 
-  const token = await getValidToken(clientLinkId, service);
-  const realmId = (client as any).qbo_realm_id as string;
-  if (!realmId) throw new Error("Client has no QuickBooks connection");
-
-  const invoices = await fetchOpenInvoices(realmId, token);
-
+  // The A/R module accepts an optional CRM export. A QuickBooks "A/R Aging
+  // Summary" report (per-customer totals, no invoice rows) can't drive
+  // matching — if that's what was uploaded, reconcile it against QBO and
+  // store a tie-out note instead of silently parsing nothing.
+  let discoveryNotes: Record<string, unknown> | null = null;
   let crmJobs: ReturnType<typeof normalizeCrmRows> = [];
-  if (options.crmCsvText?.trim() && options.crmSource) {
-    const rows = parseCsv(options.crmCsvText);
-    crmJobs = normalizeCrmRows(rows, options.crmSource);
+  if (options.crmCsvText?.trim()) {
+    if (isArAgingSummary(options.crmCsvText)) {
+      const parsed = parseArAgingSummary(options.crmCsvText);
+      discoveryNotes = reconcileAgingAgainstQbo(parsed, invoices) as any;
+    } else if (options.crmSource) {
+      const rows = parseCsv(options.crmCsvText);
+      crmJobs = normalizeCrmRows(rows, options.crmSource);
+    }
   }
 
   const { duplicates } = detectDuplicates({ crmJobs, qboInvoices: invoices });
@@ -97,6 +100,22 @@ export async function discoverAccountsReceivableModule(
     proposed++;
   }
 
+  // Surface UF → A/R clearing here too. Bookkeepers expect to clear
+  // Undeposited Funds to open invoices from the A/R module, even though the
+  // matcher also powers the Undeposited Funds module. proposeUfArMatches
+  // skips any payment already staged for this run, so running both modules
+  // never double-proposes the same clearing.
+  const uf = await proposeUfArMatches(
+    service,
+    runId,
+    clientLinkId,
+    periodLockDate,
+    "accounts_receivable",
+    ufPayments,
+    invoices
+  );
+  proposed += uf.proposed;
+
   await service
     .from("cleanup_run_modules")
     .update({
@@ -106,6 +125,19 @@ export async function discoverAccountsReceivableModule(
     } as any)
     .eq("run_id", runId)
     .eq("module", "accounts_receivable");
+
+  // Best-effort: store the aging tie-out separately so a lagging migration
+  // (discovery_notes column not yet applied) can never break discovery.
+  if (discoveryNotes) {
+    const { error: notesErr } = await service
+      .from("cleanup_run_modules")
+      .update({ discovery_notes: discoveryNotes } as any)
+      .eq("run_id", runId)
+      .eq("module", "accounts_receivable");
+    if (notesErr) {
+      console.warn("[ar-discovery] discovery_notes write failed:", notesErr.message);
+    }
+  }
 
   return { proposed, duplicates: duplicates.length };
 }
