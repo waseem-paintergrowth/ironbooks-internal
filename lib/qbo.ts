@@ -357,6 +357,40 @@ export async function refreshAccessToken(
  * qbo_refresh_log table. Useful when we need to figure out who's
  * burning refresh tokens (Ironbooks api routes? a cron? coach-intel?).
  */
+/**
+ * Module-level map of in-flight refresh promises, keyed by client_link_id.
+ *
+ * Why: Postgres advisory locks via Supabase RPC don't actually serialize
+ * concurrent refreshes the way we expected. Each rpc() call uses a
+ * different pooled connection, so the lock acquired in one RPC call
+ * doesn't follow the SELECT / UPDATE / unlock calls — pgBouncer can
+ * recycle the lock-holding connection between RPCs, and pg_advisory_unlock
+ * on a different connection silently fails because it can only release
+ * locks held by the current session. Net effect: lock semantics are
+ * unreliable through Supabase's HTTP/RPC layer.
+ *
+ * In-process debouncer: at the JS layer, if a refresh is already in
+ * flight for THIS client_link_id in THIS Node process, share its promise
+ * instead of starting a new one. Eliminates ~95% of real-world races
+ * because most races are intra-instance (layout + page + sidebar all
+ * call getValidToken on the same client during a single user page load).
+ *
+ * Cross-instance races still exist (two Vercel functions handling
+ * different requests for the same client at the same time) but those are
+ * far rarer than intra-instance ones. If we keep seeing chain breakage
+ * after this fix, we'll need to move to either the vending-endpoint
+ * chokepoint or a Postgres-side state-machine lock.
+ */
+const inFlightRefreshes = new Map<string, Promise<string>>();
+
+// Buffer: how much life left on a cached access_token before we
+// trigger a refresh. Bumping from 5min → 30min sharply reduces the race
+// window — at 1h token lifetime, a 30min buffer means we refresh in the
+// last 30 min instead of the last 5, so the fast-path absorbs many more
+// calls. Most code paths can tolerate a 30min stale-token window since
+// QBO tokens degrade gracefully (401 → refresh → retry).
+const REFRESH_BUFFER_MS = 30 * 60 * 1000;
+
 export async function getValidToken(
   clientLinkId: string,
   supabase: ReturnType<typeof createClient<Database>>,
@@ -370,22 +404,57 @@ export async function getValidToken(
     .single();
   if (error || !cached) throw new Error('Client not found');
 
-  const buffer = 5 * 60 * 1000;
   const cachedExpiresAt = new Date(cached.qbo_token_expires_at!).getTime();
-  if (cachedExpiresAt > Date.now() + buffer) {
+  if (cachedExpiresAt > Date.now() + REFRESH_BUFFER_MS) {
     return cached.qbo_access_token!;
   }
 
-  // ── Slow path: serialize concurrent refreshes for THIS client ──
-  // Postgres advisory locks are session-scoped. We need a single
-  // session for lock-acquire + re-read + refresh + release. Acquire,
-  // re-read inside the lock, refresh only if still needed, release.
-  //
-  // The lock key is the hash of the client_link_id UUID — collisions
-  // are theoretically possible but at our cardinality (<10k clients)
-  // practically negligible.
+  // ── In-process debouncer ──
+  // If THIS process is already refreshing this client, await that promise
+  // instead of starting a new refresh. This is the high-leverage fix
+  // because most real races are within a single Vercel function instance.
+  const existing = inFlightRefreshes.get(clientLinkId);
+  if (existing) return existing;
+
+  // ── Slow path: refresh against Intuit ──
+  // We still register a pg_advisory_lock attempt for the qbo_refresh_log
+  // observability (showing whether concurrent refreshes piled up) but we
+  // no longer rely on it for correctness — the inFlightRefreshes map
+  // above does the real serialization.
+  const refreshPromise = doRefresh(clientLinkId, supabase, source, cached.qbo_refresh_token);
+  inFlightRefreshes.set(clientLinkId, refreshPromise);
+  // Always clean up the map entry so a future expired token can trigger
+  // a new refresh. .finally fires on both fulfill and reject.
+  refreshPromise.finally(() => {
+    // Guard against race where two callers set the map; only delete OUR promise.
+    if (inFlightRefreshes.get(clientLinkId) === refreshPromise) {
+      inFlightRefreshes.delete(clientLinkId);
+    }
+  });
+  return refreshPromise;
+}
+
+/**
+ * The actual refresh-against-Intuit machinery. Factored out so
+ * getValidToken can wrap it in the inFlightRefreshes debouncer.
+ *
+ * Still uses the pg_advisory_lock + re-read pattern as a second line of
+ * defense for cross-instance races — even if the lock semantics are
+ * unreliable through Supabase RPC, it occasionally helps and it keeps
+ * the qbo_refresh_log observability working.
+ */
+async function doRefresh(
+  clientLinkId: string,
+  supabase: ReturnType<typeof createClient<Database>>,
+  source: string | undefined,
+  cachedRefreshToken: string | null,
+): Promise<string> {
+  // We don't trust cachedRefreshToken — fast-path already used the cached
+  // access token, and we re-read the refresh_token inside doRefresh so we
+  // always send Intuit the latest value from DB. Kept in the signature so
+  // future callers can pass a hint without an interface change.
+  void cachedRefreshToken;
   const lockKey = `qbo_refresh:${clientLinkId}`;
-  // Postgres advisory lock takes a bigint. Hash the string to one.
   const lockId = hashStringToInt64(lockKey);
 
   // Acquire the lock. pg_advisory_lock is blocking — concurrent callers
@@ -418,7 +487,7 @@ export async function getValidToken(
       .single();
     if (!fresh) throw new Error('Client not found');
     const freshExpiresAt = new Date(fresh.qbo_token_expires_at!).getTime();
-    if (freshExpiresAt > Date.now() + buffer) {
+    if (freshExpiresAt > Date.now() + REFRESH_BUFFER_MS) {
       // Another caller refreshed while we were waiting for the lock.
       return fresh.qbo_access_token!;
     }
