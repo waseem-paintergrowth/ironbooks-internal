@@ -350,8 +350,12 @@ function parseInvoiceRef(memo: string | null | undefined): string | null {
 /**
  * Pull every Payment record that's still sitting in Undeposited Funds.
  *
- * QBO doesn't have a direct "find UF payments" endpoint, so we query
- * Payments with DepositToAccountRef pointing at the UF account.
+ * IMPORTANT: QBO does NOT allow filtering Payment by DepositToAccountRef —
+ * `SELECT ... FROM Payment WHERE DepositToAccountRef = '24'` returns a 400
+ * ("property 'DepositToAccountRef' is not queryable") or a 503 SystemFault,
+ * depending on the SELECT clause. So we page through ALL Payments and filter
+ * on DepositToAccountRef client-side. The field IS present on each returned
+ * Payment object even though it can't appear in a WHERE clause.
  *
  * `ufAccountId` should be the QBO Id of the "Undeposited Funds"
  * account (typically AccountSubType=UndepositedFunds).
@@ -368,7 +372,7 @@ export async function fetchUndepositedFundsPayments(
   while (true) {
     const startPosition = page * pageSize + 1;
     const query = encodeURIComponent(
-      `SELECT * FROM Payment WHERE DepositToAccountRef = '${ufAccountId}' STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+      `SELECT * FROM Payment STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
     );
     let data: any;
     try {
@@ -379,6 +383,8 @@ export async function fetchUndepositedFundsPayments(
     }
     const rows: any[] = data?.QueryResponse?.Payment || [];
     for (const p of rows) {
+      // Client-side gate: only payments deposited into the UF account.
+      if (p.DepositToAccountRef?.value !== ufAccountId) continue;
       const memo = String(p.PrivateNote || "");
       // LinkedTxn at the top level of a Payment = already applied to
       // something (Invoice, JournalEntry, etc.). We filter these out

@@ -118,7 +118,15 @@ export async function scanUfAudit(
     console.warn("[uf-audit] UF account lookup failed:", err?.message);
   }
 
-  // Helper to fetch a paginated query
+  // Helper to fetch a paginated query.
+  //
+  // IMPORTANT: QBO does NOT allow filtering Payment/SalesReceipt by
+  // DepositToAccountRef — `WHERE DepositToAccountRef = '24'` returns a 400
+  // ("property 'DepositToAccountRef' is not queryable") or a 503 SystemFault.
+  // That invalid clause was silently failing every scan and returning zero
+  // rows (the "scan found 0 but UF balance is $338K" symptom). TxnDate IS
+  // queryable, so we filter by date in the query and gate on the UF account
+  // client-side — DepositToAccountRef is present on each returned object.
   async function fetchAllPayments(table: "Payment" | "SalesReceipt") {
     const out: any[] = [];
     let page = 0;
@@ -126,7 +134,7 @@ export async function scanUfAudit(
     while (true) {
       const startPosition = page * pageSize + 1;
       const query = encodeURIComponent(
-        `SELECT * FROM ${table} WHERE DepositToAccountRef = '${ufAccountId}' AND TxnDate >= '${since}' STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
+        `SELECT * FROM ${table} WHERE TxnDate >= '${since}' STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`
       );
       let data: any;
       try {
@@ -136,7 +144,10 @@ export async function scanUfAudit(
         break;
       }
       const rows: any[] = data?.QueryResponse?.[table] || [];
-      out.push(...rows);
+      // Client-side gate: only rows deposited into the UF account.
+      for (const row of rows) {
+        if (row.DepositToAccountRef?.value === ufAccountId) out.push(row);
+      }
       if (rows.length < pageSize) break;
       page++;
       if (page > 50) break; // safety cap — 10k records is more than enough
