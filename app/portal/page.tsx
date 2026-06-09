@@ -5,7 +5,7 @@ import {
   BarChart3, Scale, Users, FileWarning, ChevronRight,
 } from "lucide-react";
 import { tryResolvePortalContext } from "@/lib/portal-context";
-import { fetchOverview, resolveClosedPeriod } from "@/lib/portal-data";
+import { fetchOverview, resolveClosedPeriodWithRevenue } from "@/lib/portal-data";
 import { createServiceSupabase } from "@/lib/supabase";
 import { fetchPublishedPackage } from "@/lib/month-end/portal-package";
 import { classifyProfitLoss, marginVerdict, type PortalPl } from "@/lib/portal-pl";
@@ -34,18 +34,23 @@ export default async function PortalOverview() {
   }
   const { ctx } = ctxResult;
 
-  // Resolve the most-recent fully-closed accounting period. The portal
-  // shows that month by default — "this month so far" is misleading
-  // when the bookkeeper hasn't reconciled it yet.
+  // Resolve the most-recent fully-closed accounting period. The portal shows
+  // that month by default; "this month so far" is misleading when the
+  // bookkeeper hasn't reconciled it yet. resolveClosedPeriodWithRevenue also
+  // steps back past any unreconciled $0-revenue month so the headline numbers
+  // reflect a month that actually has books.
   const service = createServiceSupabase();
-  const closed = await resolveClosedPeriod(service, ctx.clientLinkId);
-  const publishedPkg = await fetchPublishedPackage(service, ctx.clientLinkId);
+  const [closed, publishedPkg] = await Promise.all([
+    resolveClosedPeriodWithRevenue(service, ctx.clientLinkId, ctx.qboRealmId, ctx.accessToken),
+    fetchPublishedPackage(service, ctx.clientLinkId),
+  ]);
 
   const data = await fetchOverview(
     ctx.qboRealmId,
     ctx.accessToken,
-    closed.closedMonth,
-    closed.priorMonth
+    closed.effectiveMonth,
+    closed.priorMonth,
+    closed.effectivePL // reuse the P&L the resolver already fetched
   );
 
   // Run both periods through the shared classifier so every number on this
@@ -57,7 +62,7 @@ export default async function PortalOverview() {
   const gpDelta = c.grossProfit - cPrior.grossProfit;
   const netDelta = c.netProfit - cPrior.netProfit;
 
-  const monthLabel = publishedPkg?.label || closed.closedMonthLabel;
+  const monthLabel = publishedPkg?.label || closed.effectiveMonth.label || closed.base.closedMonthLabel;
   const monthShort = data.primaryMonth.label?.split(" ")[0] || "the month";
   const prevShort = data.comparisonMonth.label?.split(" ")[0] || "prior month";
 
@@ -98,11 +103,11 @@ export default async function PortalOverview() {
               <span className="text-white/55">
                 {publishedPkg
                   ? "Delivered by your Ironbooks team"
-                  : closed.source === "reclass_job_closed"
+                  : closed.base.source === "reclass_job_closed"
                   ? "Reconciled and closed by your bookkeeper"
-                  : closed.source === "cleanup_completed"
+                  : closed.base.source === "cleanup_completed"
                   ? "Most recent reconciled period"
-                  : "Defaulting to last calendar month"}
+                  : "Most recent month with activity"}
               </span>
             </div>
           </div>
@@ -342,8 +347,8 @@ function buildHeuristicNarrative(
 
   if (c.isEmpty) {
     return {
-      headline: `${monthLabel} had no recorded activity.`,
-      body: `No transactions hit your books for ${monthLabel}. If you were working then, your bookkeeper may still be catching up — reach out if it seems wrong.`,
+      headline: `${monthLabel} doesn't have any activity recorded yet.`,
+      body: `Nothing has posted to your books for ${monthLabel} so far. If you were working then, your bookkeeper may still be catching things up. Reach out if that doesn't sound right.`,
     };
   }
 
@@ -351,22 +356,32 @@ function buildHeuristicNarrative(
   const gm = marginVerdict(c.grossMarginPct);
 
   let headline: string;
-  if (netDelta > 0 && c.netProfit > 0) {
-    headline = `${monthShort}'s profit was up ${fmtMoney(Math.abs(netDelta))} vs ${prevShort}.`;
-  } else if (netDelta < 0 && c.netProfit > 0) {
-    headline = `${monthShort}'s profit was down ${fmtMoney(Math.abs(netDelta))} vs ${prevShort}, but still positive.`;
-  } else if (c.netProfit < 0) {
-    headline = `${monthShort} ran a ${fmtMoney(Math.abs(c.netProfit))} loss.`;
+  if (c.netProfit < 0) {
+    headline = `In ${monthShort}, your costs came in ${fmtMoney(Math.abs(c.netProfit))} above your income.`;
+  } else if (netDelta > 0) {
+    headline = `${monthShort} was a solid month, up ${fmtMoney(Math.abs(netDelta))} from ${prevShort}.`;
+  } else if (netDelta < 0) {
+    headline = `${monthShort} stayed profitable, a little under ${prevShort}.`;
   } else {
-    headline = `${monthShort}'s profit was roughly flat vs ${prevShort}.`;
+    headline = `${monthShort} came in about even with ${prevShort}.`;
   }
 
-  const body =
-    `You brought in ${fmtMoney(c.totalIncome)}. After ${fmtMoney(c.totalVariable)} in ` +
-    `${c.costSplitEstimated ? "estimated " : ""}direct job costs, your gross profit was ` +
-    `${fmtMoney(c.grossProfit)} — a ${Math.round(c.grossMarginPct)}% gross margin (${gm.label}). ` +
-    `Take out ${fmtMoney(c.totalFixed)} of overhead and you're left with ${fmtMoney(c.netProfit)} ` +
-    `in profit — a ${Math.round(c.netMarginPct)}% net margin, ${nm.label} for a contracting business.`;
+  let body: string;
+  if (c.netProfit < 0) {
+    body =
+      `You brought in ${fmtMoney(c.totalIncome)}. After ${fmtMoney(c.totalVariable)} in ` +
+      `${c.costSplitEstimated ? "estimated " : ""}direct job costs, your gross profit was ` +
+      `${fmtMoney(c.grossProfit)}, about a ${Math.round(c.grossMarginPct)}% gross margin. ` +
+      `Overhead of ${fmtMoney(c.totalFixed)} then put the month ${fmtMoney(Math.abs(c.netProfit))} under breakeven. ` +
+      `A slower month happens in this line of work. If it keeps up, it's worth walking through pricing or fixed costs with your bookkeeper.`;
+  } else {
+    body =
+      `You brought in ${fmtMoney(c.totalIncome)}. After ${fmtMoney(c.totalVariable)} in ` +
+      `${c.costSplitEstimated ? "estimated " : ""}direct job costs, your gross profit was ` +
+      `${fmtMoney(c.grossProfit)}, about a ${Math.round(c.grossMarginPct)}% gross margin (${gm.label}). ` +
+      `After ${fmtMoney(c.totalFixed)} of overhead, you kept ${fmtMoney(c.netProfit)} in profit, ` +
+      `a ${Math.round(c.netMarginPct)}% net margin (${nm.label}).`;
+  }
 
   return { headline, body };
 }

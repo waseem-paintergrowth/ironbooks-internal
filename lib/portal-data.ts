@@ -449,7 +449,13 @@ export async function fetchOverview(
   realmId: string,
   accessToken: string,
   primaryMonth: DateRange,
-  comparisonMonth: DateRange
+  comparisonMonth: DateRange,
+  /**
+   * Optional pre-fetched primary-month P&L. Callers that already resolved the
+   * period via resolveClosedPeriodWithRevenue have this in hand — passing it
+   * avoids a redundant QBO round-trip for the same month.
+   */
+  primaryPLOverride?: ProfitLossData | null
 ): Promise<OverviewData> {
   const emptyPL: ProfitLossData = {
     totalIncome: 0, totalExpenses: 0, netIncome: 0,
@@ -457,7 +463,9 @@ export async function fetchOverview(
   };
 
   const [primaryPL, comparisonPL, accounts, invoices, bills] = await Promise.all([
-    safe(() => fetchProfitAndLoss(realmId, accessToken, primaryMonth.start, primaryMonth.end), emptyPL),
+    primaryPLOverride != null
+      ? Promise.resolve(primaryPLOverride)
+      : safe(() => fetchProfitAndLoss(realmId, accessToken, primaryMonth.start, primaryMonth.end), emptyPL),
     safe(() => fetchProfitAndLoss(realmId, accessToken, comparisonMonth.start, comparisonMonth.end), emptyPL),
     safe(() => fetchAllAccounts(realmId, accessToken), [] as QBOAccount[]),
     safe(() => fetchOpenInvoices(realmId, accessToken), [] as OpenInvoice[]),

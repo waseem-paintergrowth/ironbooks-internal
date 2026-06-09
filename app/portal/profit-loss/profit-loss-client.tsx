@@ -276,12 +276,23 @@ function InsightCard({ c, range, periodLabel }: { c: PortalPl; range: { label: s
             You brought in <strong>{fmtMoney(c.totalIncome)}</strong>. After{" "}
             <strong>{fmtMoney(c.totalVariable)}</strong> in {c.costSplitEstimated ? "estimated " : ""}
             direct job costs, your <strong>gross profit</strong> was{" "}
-            <strong>{fmtMoney(c.grossProfit)}</strong> — a{" "}
-            <span className={`font-semibold ${marginText(gm.tone)}`}>{Math.round(c.grossMarginPct)}% gross margin</span> ({gm.label}).
-            Take out <strong>{fmtMoney(c.totalFixed)}</strong> of overhead and you're left with{" "}
-            <strong className={c.netProfit >= 0 ? "text-emerald-700" : "text-red-700"}>{fmtMoney(c.netProfit)}</strong>{" "}
-            in net profit — a{" "}
-            <span className={`font-semibold ${marginText(nm.tone)}`}>{Math.round(c.netMarginPct)}% net margin</span>.
+            <strong>{fmtMoney(c.grossProfit)}</strong>, about a{" "}
+            <span className={`font-semibold ${marginText(gm.tone)}`}>{Math.round(c.grossMarginPct)}% gross margin</span> ({gm.label}).{" "}
+            {c.netProfit < 0 ? (
+              <>
+                Overhead of <strong>{fmtMoney(c.totalFixed)}</strong> then put the period{" "}
+                <strong className="text-red-700">{fmtMoney(Math.abs(c.netProfit))}</strong> under breakeven, a{" "}
+                <span className={`font-semibold ${marginText(nm.tone)}`}>{Math.round(c.netMarginPct)}% net margin</span>.
+                A slower stretch happens in this line of work. If it keeps up, it's worth walking
+                through pricing or fixed costs with your bookkeeper.
+              </>
+            ) : (
+              <>
+                After <strong>{fmtMoney(c.totalFixed)}</strong> of overhead, you kept{" "}
+                <strong className="text-emerald-700">{fmtMoney(c.netProfit)}</strong> in profit, a{" "}
+                <span className={`font-semibold ${marginText(nm.tone)}`}>{Math.round(c.netMarginPct)}% net margin</span> ({nm.label}).
+              </>
+            )}
           </p>
           <div className="mt-3 flex items-center gap-3 flex-wrap">
             <a

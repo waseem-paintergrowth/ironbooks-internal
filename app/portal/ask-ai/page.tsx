@@ -1,5 +1,5 @@
 import { tryResolvePortalContext } from "@/lib/portal-context";
-import { fetchOverview, resolveClosedPeriod } from "@/lib/portal-data";
+import { fetchOverview, resolveClosedPeriodWithRevenue } from "@/lib/portal-data";
 import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "../error-state";
 import { AskAiClient } from "./ask-ai-client";
@@ -22,16 +22,29 @@ export default async function AskAiPage() {
   // Build dynamic starter prompts from the closed-month overview snapshot.
   // Heavy lifting is one parallel fetch — small cost for a much better first
   // impression vs static prompts the user has seen 10 times.
+  //
+  // Use the revenue-aware closed period so the starters reference the same
+  // month the Overview and P&L tabs land on. A client like Zuno whose latest
+  // "closed" month reports $0 income steps back to the last month with real
+  // activity, so prompts say "Why did April run a loss?" not an empty May.
   const service = createServiceSupabase();
-  const closed = await resolveClosedPeriod(service, ctx.clientLinkId);
+  const closed = await resolveClosedPeriodWithRevenue(
+    service,
+    ctx.clientLinkId,
+    ctx.qboRealmId,
+    ctx.accessToken
+  );
   const overview = await fetchOverview(
     ctx.qboRealmId,
     ctx.accessToken,
-    closed.closedMonth,
-    closed.priorMonth
+    closed.effectiveMonth,
+    closed.priorMonth,
+    closed.effectivePL // reuse the P&L the resolver already fetched
   ).catch(() => null);
 
-  const starters = overview ? buildDynamicStarters(overview, closed.closedMonthLabel) : DEFAULT_STARTERS;
+  const starters = overview
+    ? buildDynamicStarters(overview, closed.effectiveMonth.label ?? closed.base.closedMonthLabel)
+    : DEFAULT_STARTERS;
 
   return <AskAiClient starters={starters} />;
 }
