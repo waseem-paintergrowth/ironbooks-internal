@@ -9,9 +9,9 @@ import type { Database } from "@/lib/database.types";
  *  Anything not in this map falls back to a generic. */
 const ERROR_COPY: Record<string, string> = {
   not_authorized:
-    "That email isn't authorized. Ironbooks team members: use your @ironbooks.com email. Clients: use the invite link from your email.",
+    "We don't recognize that email. Use the same email your Ironbooks invite was sent to, or contact your bookkeeper at admin@ironbooks.com. (Ironbooks team: use your @ironbooks.com email.)",
   provision_failed:
-    "Couldn't create your account. Please try again, or contact Mike if it keeps failing.",
+    "Couldn't create your account. Please try again, or email admin@ironbooks.com if it keeps failing.",
   missing_code: "Sign-in link expired or invalid. Request a new one below.",
   oauth_failed: "Sign-in failed. Try requesting a new magic link.",
 };
@@ -87,16 +87,17 @@ function LoginInner() {
         <div className="flex items-center gap-3 mb-10 justify-center">
           <img
             src="/logo.png"
-            alt="Ironbooks SNAP"
+            alt="Ironbooks"
             className="w-12 h-12 object-contain"
           />
-          <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks SNAP</div>
+          <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks</div>
         </div>
 
         <div className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm">
-          <h1 className="text-2xl font-bold text-navy mb-2 tracking-tight">Sign in</h1>
+          <h1 className="text-2xl font-bold text-navy mb-2 tracking-tight">Welcome back</h1>
           <p className="text-sm text-ink-slate mb-6">
-            We&apos;ll email you a magic link. No password required.
+            Sign in to see your books, reports, and messages. We&apos;ll email
+            you a secure sign-in link — no password required.
           </p>
 
           {sent ? (
@@ -117,11 +118,11 @@ function LoginInner() {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@ironbooks.com"
+                  placeholder="you@yourcompany.com"
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:border-teal text-navy"
                 />
                 <p className="text-[11px] text-ink-slate mt-1.5">
-                  Ironbooks team: use your <strong>@ironbooks.com</strong> email — a bookkeeper account is created on first sign-in.
+                  Use the email your Ironbooks invite was sent to.
                 </p>
               </div>
 
@@ -136,14 +137,21 @@ function LoginInner() {
                 disabled={loading}
                 className="w-full bg-teal hover:bg-teal-dark text-white font-semibold py-2.5 rounded-lg transition-colors disabled:opacity-50"
               >
-                {loading ? "Sending..." : "Send magic link"}
+                {loading ? "Sending..." : "Send sign-in link"}
               </button>
             </form>
           )}
         </div>
 
         <p className="text-xs text-center text-ink-slate mt-6">
-          Internal tool for Ironbooks SNAP team members only.
+          New to Ironbooks? Your bookkeeper will send you an invite email.{" "}
+          Questions:{" "}
+          <a href="mailto:admin@ironbooks.com" className="text-teal hover:underline">
+            admin@ironbooks.com
+          </a>
+        </p>
+        <p className="text-[10px] text-center text-ink-slate/60 mt-2">
+          Ironbooks team members sign in with their @ironbooks.com email.
         </p>
       </div>
     </main>
@@ -159,13 +167,13 @@ function LoginShell() {
         <div className="flex items-center gap-3 mb-10 justify-center">
           <img
             src="/logo.png"
-            alt="Ironbooks SNAP"
+            alt="Ironbooks"
             className="w-12 h-12 object-contain"
           />
-          <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks SNAP</div>
+          <div className="font-bold text-2xl tracking-tight text-navy">Ironbooks</div>
         </div>
         <div className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm">
-          <h1 className="text-2xl font-bold text-navy mb-2 tracking-tight">Sign in</h1>
+          <h1 className="text-2xl font-bold text-navy mb-2 tracking-tight">Welcome back</h1>
           <p className="text-sm text-ink-slate">Loading…</p>
         </div>
       </div>
