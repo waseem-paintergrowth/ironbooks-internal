@@ -19,6 +19,7 @@ const dailyNav = [
   { href: "/today", label: "Today", icon: Sun },
   { href: "/kanban", label: "Workflow", icon: KanbanSquare },
   { href: "/clients", label: "Clients", icon: Users },
+  { href: "/balance-sheet/uf-audit", label: "UF Audit", icon: Wallet },
   { href: "/history", label: "History", icon: Clock },
 ];
 
@@ -45,7 +46,6 @@ const toolsNav = [
   { href: "/rules/new", label: "Bank Rules", icon: Zap },
   { href: "/stripe-recon/new", label: "Stripe Recon", icon: CreditCard },
   { href: "/balance-sheet/coa", label: "COA Editor", icon: FileSpreadsheet },
-  { href: "/balance-sheet/ar-recovery", label: "A/R Recovery (legacy)", icon: Wallet },
   { href: "/tax-audit", label: "GST/HST Audit (CA)", icon: Receipt },
 ];
 

@@ -981,6 +981,27 @@ export function CleanupWizardClient({
                     </div>
                   </div>
 
+                  {/* These two modules only match payments → OPEN invoices.
+                      Stuck UF payments whose invoices are closed (CRM
+                      double-counts, money already deposited) need the UF
+                      Audit — link it here so nobody dead-ends on a
+                      0-result scan. */}
+                  {isQboScan && (
+                    <div className="ml-12 mb-2 mt-1 p-2.5 rounded-xl border border-teal/30 bg-teal-lighter/40 text-[11px] text-navy">
+                      Scan found nothing but UF still has a balance? The stuck
+                      payments aren&apos;t matchable to <em>open</em> invoices
+                      (CRM duplicates, money already deposited).{" "}
+                      <a
+                        href={`/balance-sheet/${clientLinkId}/uf-audit`}
+                        className="font-bold text-teal hover:underline"
+                      >
+                        → Open UF Audit
+                      </a>{" "}
+                      — it classifies by deposit existence and clears duplicates
+                      in bulk (void pairs, $0 deposits, JEs).
+                    </div>
+                  )}
+
                   {/* CRM CSV upload — only shown when the A/R module is in
                       'ready' state (i.e. discovery hasn't run yet). Once it's
                       reviewing/executing/complete the CSV is locked in. */}
