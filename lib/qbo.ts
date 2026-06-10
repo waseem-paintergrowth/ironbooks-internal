@@ -423,14 +423,18 @@ export async function getValidToken(
   // above does the real serialization.
   const refreshPromise = doRefresh(clientLinkId, supabase, source, cached.qbo_refresh_token);
   inFlightRefreshes.set(clientLinkId, refreshPromise);
-  // Always clean up the map entry so a future expired token can trigger
-  // a new refresh. .finally fires on both fulfill and reject.
-  refreshPromise.finally(() => {
+  // Clean up the map entry on resolve OR reject. Using .then with both
+  // handlers (rather than .finally) consumes any rejection on the cleanup
+  // branch — otherwise Node sees an unhandled rejection on the secondary
+  // promise chain and aborts the process. Callers still see the error
+  // because they await refreshPromise directly.
+  const cleanup = () => {
     // Guard against race where two callers set the map; only delete OUR promise.
     if (inFlightRefreshes.get(clientLinkId) === refreshPromise) {
       inFlightRefreshes.delete(clientLinkId);
     }
-  });
+  };
+  refreshPromise.then(cleanup, cleanup);
   return refreshPromise;
 }
 
@@ -592,6 +596,54 @@ export function qboErrorResponse(err: unknown): Response {
   }
   const message = err instanceof Error ? err.message : String(err);
   return Response.json({ error: message }, { status: 500 });
+}
+
+/**
+ * Mark a client's QBO connection as healthy in qbo_connection_health.
+ *
+ * Call this after a successful OAuth callback (token exchange landed,
+ * tokens written to client_links) so the Fleet QBO Health dashboard
+ * picks up the fresh state immediately — without waiting for the next
+ * health probe to run.
+ *
+ * Background: the dashboard reads `qbo_connection_health.status` rather
+ * than re-probing on every page load. Before this helper existed, the
+ * status row was only updated by the probe endpoint, so a bookkeeper
+ * who reconnected a dead client would keep seeing it as `invalid_grant`
+ * until the nightly probe ran — leading to support tickets like "I
+ * connected 30 clients and they all show disconnected" (2026-06-09).
+ *
+ * Non-fatal on error — we log + swallow so a transient health-table
+ * write failure can't block the OAuth callback's redirect to the
+ * client profile.
+ */
+export async function markQboConnectionHealthy(
+  supabase: ReturnType<typeof createClient<Database>>,
+  clientLinkId: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { error } = await (supabase as any)
+    .from("qbo_connection_health")
+    .upsert(
+      {
+        client_link_id: clientLinkId,
+        status: "ok",
+        last_checked_at: now,
+        last_ok_at: now,
+        first_failed_at: null,
+        error_message: null,
+        reconnect_initiated_at: null,
+        reconnect_initiated_by: null,
+        updated_at: now,
+      },
+      { onConflict: "client_link_id" }
+    );
+  if (error) {
+    console.error(
+      `[qbo] failed to mark connection healthy for ${clientLinkId}:`,
+      error.message
+    );
+  }
 }
 
 // ============== CORE REQUEST ==============

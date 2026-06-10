@@ -1,4 +1,4 @@
-import { exchangeCodeForTokens, fetchCompanyInfo } from "@/lib/qbo";
+import { exchangeCodeForTokens, fetchCompanyInfo, markQboConnectionHealthy } from "@/lib/qbo";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
@@ -106,6 +106,11 @@ export async function GET(request: Request) {
           );
         }
 
+        // Heal the Fleet QBO Health dashboard immediately — without
+        // this the row stays at status=invalid_grant until the next
+        // probe run, making reconnects look like they didn't take.
+        await markQboConnectionHealthy(serviceClient as any, existing.id);
+
         return NextResponse.redirect(
           `${origin}/clients/${existing.id}/match-double?qbo_reauth=true`
         );
@@ -151,6 +156,11 @@ export async function GET(request: Request) {
         );
       }
 
+      // Seed the health row so first-time connects show as green right
+      // away on /fleet/qbo-health instead of as "unknown" until the
+      // probe runs.
+      await markQboConnectionHealthy(serviceClient as any, inserted.id);
+
       // Send them to the Double matching screen for the new client they just connected
       return NextResponse.redirect(
         `${origin}/clients/${inserted.id}/match-double?qbo_connected=true`
@@ -184,6 +194,8 @@ export async function GET(request: Request) {
           `${origin}/dashboard?qbo_error=${encodeURIComponent(updateErr.message)}`
         );
       }
+
+      await markQboConnectionHealthy(serviceClient as any, clientLinkId);
 
       return NextResponse.redirect(`${origin}/dashboard?qbo_connected=true`);
     }
