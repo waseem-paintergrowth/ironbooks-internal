@@ -286,6 +286,110 @@ export async function fetchProfitAndLoss(
   };
 }
 
+// ─── Cash Flow Statement ─────────────────────────────────────────────────────
+
+export interface CashFlowLineItem {
+  label: string;
+  amount: number;
+}
+
+export interface CashFlowSection {
+  title: string;
+  total: number;
+  items: CashFlowLineItem[];
+}
+
+export interface CashFlowData {
+  operating: CashFlowSection;
+  investing: CashFlowSection;
+  financing: CashFlowSection;
+  netCashChange: number;
+  cashAtStart: number;
+  cashAtEnd: number;
+}
+
+/**
+ * QBO CashFlow report (indirect method). Top-level sections are
+ * OPERATING / INVESTING / FINANCING ACTIVITIES, each with leaf line
+ * items and a "Net cash provided by …" summary, followed by standalone
+ * net-change / beginning-cash / ending-cash rows.
+ *
+ * Section matching is on the header text OR the row group attribute —
+ * QBO emits "OperatingActivities" as group on some realms and only the
+ * header label on others.
+ */
+export async function fetchCashFlow(
+  realmId: string,
+  accessToken: string,
+  startDate: string,
+  endDate: string
+): Promise<CashFlowData> {
+  const report = await fetchQBOReport(realmId, accessToken, "CashFlow", {
+    start_date: startDate,
+    end_date: endDate,
+  });
+
+  const rawRows: ReportRow[] = report?.Rows?.Row || [];
+  const { flat } = flattenRows(rawRows);
+
+  function collectSection(keyword: string, fallbackTitle: string): CashFlowSection {
+    for (const row of rawRows) {
+      const header = (row.Header?.ColData?.[0]?.value || "").toLowerCase();
+      const group = ((row as any).group || "").toLowerCase();
+      if (!header.includes(keyword) && !group.includes(keyword)) continue;
+
+      const items: CashFlowLineItem[] = [];
+      (function walk(rs: any[]) {
+        for (const r of rs || []) {
+          if (r.type === "Data" && r.ColData) {
+            const label = (r.ColData[0]?.value || "").trim();
+            const amount = parseFloat(r.ColData[1]?.value || "0") || 0;
+            if (label) items.push({ label, amount });
+          }
+          if (r.Rows?.Row) walk(r.Rows.Row);
+        }
+      })(row.Rows?.Row || []);
+
+      const total = parseFloat(row.Summary?.ColData?.[1]?.value || "0") || 0;
+      const title = (row.Header?.ColData?.[0]?.value || fallbackTitle).trim();
+      return { title, total, items };
+    }
+    return { title: fallbackTitle, total: 0, items: [] };
+  }
+
+  // Standalone summary rows land in the flat map via flattenRows.
+  const lookup = (...keys: string[]): number => {
+    for (const k of keys) {
+      const v = flat.get(k);
+      if (v !== undefined) return v;
+    }
+    return 0;
+  };
+
+  const netCashChange = lookup(
+    "net cash increase for period",
+    "net cash decrease for period",
+    "net cash increase (decrease) for period"
+  );
+  const cashAtEnd = lookup("cash at end of period");
+  // QBO omits the "Cash at beginning of period" row on some realms (seen
+  // live: report carries only net-change + end-cash). When absent, derive
+  // it — beginning = ending − net change is the identity the statement is
+  // built on.
+  const cashAtStart = flat.has("cash at beginning of period")
+    ? (flat.get("cash at beginning of period") as number)
+    : cashAtEnd - netCashChange;
+
+  return {
+    operating: collectSection("operating", "Operating activities"),
+    investing: collectSection("investing", "Investing activities"),
+    financing: collectSection("financing", "Financing activities"),
+    netCashChange,
+    cashAtStart,
+    cashAtEnd,
+  };
+}
+
 // ─── Find GST/HST accounts from the fetched account list ────────────────────
 // Using the account list (rather than Balance Sheet report) is simpler and
 // gives us CurrentBalance directly. Limitation: CurrentBalance reflects the

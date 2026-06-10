@@ -11,6 +11,7 @@ import {
 import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "../error-state";
 import { ProfitLossClient } from "./profit-loss-client";
+import { StatementSwitcher } from "../financial-statements/statement-switcher";
 
 /**
  * Live P&L page. Defaults to the most-recently-CLOSED month ("Last month").
@@ -73,17 +74,20 @@ export default async function ProfitLossPage() {
   };
 
   return (
-    <ProfitLossClient
-      ranges={ranges as any}
-      data={{
-        lastMonth: closed.effectivePL,
-        thisMonth: thisMonthPL,
-        quarter: quarterPL,
-        ytd: ytdPL,
-        lastYear: lastYearPL,
-      }}
-      closedSource={closed.base.source}
-    />
+    <div className="space-y-4">
+      <StatementSwitcher active="pnl" />
+      <ProfitLossClient
+        ranges={ranges as any}
+        data={{
+          lastMonth: closed.effectivePL,
+          thisMonth: thisMonthPL,
+          quarter: quarterPL,
+          ytd: ytdPL,
+          lastYear: lastYearPL,
+        }}
+        closedSource={closed.base.source}
+      />
+    </div>
   );
 }
 

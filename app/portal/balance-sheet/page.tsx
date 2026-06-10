@@ -2,6 +2,7 @@ import { tryResolvePortalContext } from "@/lib/portal-context";
 import { fetchBalanceSheetSummary } from "@/lib/portal-data";
 import { PortalErrorState } from "../error-state";
 import { AskAboutButton } from "../ask-about";
+import { StatementSwitcher } from "../financial-statements/statement-switcher";
 import { Sparkles, MessageSquare, Wallet, CreditCard, PiggyBank } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +47,8 @@ export default async function BalanceSheetPage() {
 
   return (
     <div className="space-y-6">
+      <StatementSwitcher active="bs" />
+
       {/* ── Gradient hero ───────────────────────────────────────────── */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-navy via-navy to-teal-dark px-6 py-6 text-white">
         <div className="absolute -right-10 -top-10 w-48 h-48 rounded-full bg-teal/20 blur-2xl" />
