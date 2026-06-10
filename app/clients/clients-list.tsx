@@ -8,6 +8,7 @@ import Link from "next/link";
 import {
   Search,
   MapPin,
+  MessageCircle,
   ExternalLink,
   ChevronDown,
   Zap,
@@ -859,6 +860,14 @@ function ClientRow({
       </div>
 
       <div className="flex justify-end items-center gap-1">
+        <Link
+          href={`/clients/${client.id}/messages`}
+          onClick={(e) => e.stopPropagation()}
+          className="p-1.5 rounded hover:bg-teal/10 text-ink-slate hover:text-teal-dark transition-colors"
+          title={`Message ${client.client_name || "client"}`}
+        >
+          <MessageCircle size={13} />
+        </Link>
         <a
           href={`https://app.qbo.intuit.com/app/account?cid=${client.qbo_realm_id}`}
           target="_blank"
@@ -946,6 +955,14 @@ function ClientCard({
             <StatusIcon size={9} />
             {statusCfg.label}
           </span>
+          <Link
+            href={`/clients/${client.id}/messages`}
+            onClick={(e) => e.stopPropagation()}
+            className="p-1 rounded hover:bg-teal/10 text-ink-slate hover:text-teal-dark transition-colors"
+            title={`Message ${client.client_name || "client"}`}
+          >
+            <MessageCircle size={13} />
+          </Link>
           <ActionsDropdown
             clientId={client.id}
             jurisdiction={client.jurisdiction}
