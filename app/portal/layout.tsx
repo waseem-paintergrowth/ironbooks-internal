@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
-  Home, FileText, Scale, Wallet, Receipt, MessageSquare,
+  Home, Wallet, Receipt, MessageSquare,
   GraduationCap, Settings, FileCheck2, Mail,
 } from "lucide-react";
+import { FinancialStatementsNav } from "./financial-statements-nav";
+import { MessagesNavLink } from "./messages-nav-link";
 import { SignOutButton } from "./sign-out-button";
 import { ImpersonationBanner } from "./impersonation-banner";
 import { SupportWidget } from "./support-widget";
@@ -113,18 +115,12 @@ export default async function PortalLayout({ children }: { children: React.React
 
           <nav className="flex-1 px-2 py-3 space-y-0.5">
             <NavLink href="/portal" icon={Home} label="Overview" />
-            <NavLink href="/portal/profit-loss" icon={FileText} label="Profit & Loss" />
-            <NavLink href="/portal/balance-sheet" icon={Scale} label="Balance Sheet" />
+            <FinancialStatementsNav />
             <NavLink href="/portal/whos-paying" icon={Wallet} label="Who owes you" />
             <NavLink href="/portal/whats-due" icon={Receipt} label="What you owe" />
             <NavLink href="/portal/cleanup-reports" icon={FileCheck2} label="Cleanup Reports" />
-            <NavLink
-              href="/portal/messages"
-              icon={Mail}
-              label="Messages"
-              badge={unreadMessages > 0 ? String(Math.min(unreadMessages, 99)) : undefined}
-              badgeTone="alert"
-            />
+            {/* Live: polls unread count, red pill + chime on new messages */}
+            <MessagesNavLink initialCount={unreadMessages} />
             <NavLink href="/portal/ask-ai" icon={MessageSquare} label="Ask the AI" badge="NEW" />
             <NavLink href="/portal/learn" icon={GraduationCap} label="Learn" />
           </nav>

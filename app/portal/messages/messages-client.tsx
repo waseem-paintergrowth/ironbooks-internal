@@ -5,6 +5,7 @@ import {
   Bell, Loader2, Paperclip, Send, X, FileText, Download,
 } from "lucide-react";
 import { createBrowserSupabase } from "@/lib/supabase-browser";
+import { playSound } from "@/lib/sounds";
 import {
   CLIENT_UPLOADS_BUCKET,
   MAX_UPLOAD_BYTES,
@@ -35,6 +36,39 @@ export function MessagesClient({ initialMessages }: { initialMessages: ClientCom
   // Clear the unread badge as soon as the thread is on screen
   useEffect(() => {
     fetch("/api/portal/messages/read", { method: "POST" }).catch(() => {});
+  }, []);
+
+  // Live thread: poll every 20s so a bookkeeper reply appears without a
+  // manual refresh. New incoming messages chime + get marked read (the
+  // thread is on screen).
+  const lastIdRef = useRef<string | null>(
+    initialMessages.length > 0 ? initialMessages[initialMessages.length - 1].id : null
+  );
+  useEffect(() => {
+    if (messages.length > 0) lastIdRef.current = messages[messages.length - 1].id;
+  }, [messages]);
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch("/api/portal/messages");
+        if (!res.ok) return;
+        const json = await res.json();
+        const fresh: ClientCommunication[] = json.messages || [];
+        if (fresh.length === 0) return;
+        if (fresh[fresh.length - 1].id === lastIdRef.current) return;
+        const lastIdx = fresh.findIndex((m) => m.id === lastIdRef.current);
+        const newOnes = lastIdx >= 0 ? fresh.slice(lastIdx + 1) : fresh;
+        setMessages(fresh);
+        if (newOnes.some((m) => m.direction === "to_client")) {
+          playSound("message_received");
+          fetch("/api/portal/messages/read", { method: "POST" }).catch(() => {});
+        }
+      } catch {
+        /* transient — next poll retries */
+      }
+    }, 20_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

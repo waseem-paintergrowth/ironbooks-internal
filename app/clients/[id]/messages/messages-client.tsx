@@ -5,6 +5,7 @@ import {
   Bell, Download, FileText, Loader2, MessageSquare, Send,
 } from "lucide-react";
 import type { ClientCommunication, CommAttachment } from "@/lib/client-comms";
+import { playSound } from "@/lib/sounds";
 
 /**
  * Bookkeeper-side thread + composer for /clients/[id]/messages.
@@ -37,6 +38,39 @@ export function BookkeeperMessagesClient({
 
   useEffect(() => {
     fetch(`/api/clients/${clientLinkId}/messages/read`, { method: "POST" }).catch(() => {});
+  }, [clientLinkId]);
+
+  // Live thread: poll every 20s so a client reply appears without a manual
+  // refresh. New from_client messages chime + get marked read (thread is
+  // on screen, so the /today widget clears too).
+  const lastIdRef = useRef<string | null>(
+    initialMessages.length > 0 ? initialMessages[initialMessages.length - 1].id : null
+  );
+  useEffect(() => {
+    if (messages.length > 0) lastIdRef.current = messages[messages.length - 1].id;
+  }, [messages]);
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/clients/${clientLinkId}/messages`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const fresh: ClientCommunication[] = json.messages || [];
+        if (fresh.length === 0) return;
+        if (fresh[fresh.length - 1].id === lastIdRef.current) return;
+        const lastIdx = fresh.findIndex((m) => m.id === lastIdRef.current);
+        const newOnes = lastIdx >= 0 ? fresh.slice(lastIdx + 1) : fresh;
+        setMessages(fresh);
+        if (newOnes.some((m) => m.direction === "from_client")) {
+          playSound("message_received");
+          fetch(`/api/clients/${clientLinkId}/messages/read`, { method: "POST" }).catch(() => {});
+        }
+      } catch {
+        /* transient — next poll retries */
+      }
+    }, 20_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientLinkId]);
 
   useEffect(() => {
