@@ -303,10 +303,42 @@ export function classifyProfitLoss(pl: ProfitLossData): PortalPl {
 
 // ─── Plain-English margin commentary (shared by Overview + P&L) ───────────
 
+/**
+ * Margin verdict — PAINTING-CONTRACTOR thresholds, not generic-business.
+ *
+ * Target margins for residential painting contractors (PainterGrowth
+ * coaching baseline):
+ *   - Labor (direct job labor):  30–40% of revenue
+ *   - Material:                   10–20% of revenue
+ *   - Gross profit:               ~50% (top operators hit 55–60%)
+ *   - Net profit:                 10–20% (10% acceptable, 15%+ healthy)
+ *
+ * Generic-business thresholds (25% = "healthy") DRASTICALLY understate
+ * what a well-run painting business can hit and cause the UI to
+ * congratulate a painter for 27% GP when they should be at 50%.
+ *
+ * Used for BOTH gross-margin and net-margin verdicts — net thresholds
+ * are tighter but the labels still apply ("healthy" for net = hitting
+ * the 10–20% band; "healthy" for gross = ~50%). Callers should reach
+ * for the right verdict function based on which metric they're labeling.
+ */
 export function marginVerdict(pct: number): { label: string; tone: "emerald" | "teal" | "amber" | "red" } {
-  if (pct >= 25) return { label: "healthy", tone: "emerald" };
-  if (pct >= 15) return { label: "solid", tone: "teal" };
-  if (pct >= 5) return { label: "thin", tone: "amber" };
-  if (pct >= 0) return { label: "very thin", tone: "amber" };
+  // Calibrated for GROSS margin (painters target ~50%).
+  if (pct >= 50) return { label: "on target", tone: "emerald" };
+  if (pct >= 40) return { label: "close to target", tone: "teal" };
+  if (pct >= 30) return { label: "below target", tone: "amber" };
+  if (pct >= 0)  return { label: "well below target", tone: "amber" };
+  return { label: "negative", tone: "red" };
+}
+
+/**
+ * Net margin verdict — painters target 10–20%.
+ * Use this for net (not gross) margin labeling.
+ */
+export function netMarginVerdict(pct: number): { label: string; tone: "emerald" | "teal" | "amber" | "red" } {
+  if (pct >= 15) return { label: "healthy", tone: "emerald" };
+  if (pct >= 10) return { label: "on target", tone: "teal" };
+  if (pct >= 5)  return { label: "below target", tone: "amber" };
+  if (pct >= 0)  return { label: "well below target", tone: "amber" };
   return { label: "negative", tone: "red" };
 }

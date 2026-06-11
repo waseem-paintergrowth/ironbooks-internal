@@ -22,6 +22,11 @@ import {
   PORTAL_AI_SYSTEM_PROMPT,
   type PortalAiContext,
 } from "@/lib/portal-ai";
+// Note: lib/coaching-rag.ts + lib/voyage.ts + migration 62 are kept on
+// shelf for future "deep dive" retrieval — the SNAP chat intentionally
+// uses only the curated industry brief in PORTAL_AI_SYSTEM_PROMPT so
+// responses stay bounded and predictable. Re-enable RAG here if/when
+// the corpus genuinely needs to be searchable per-question.
 
 /**
  * POST /api/portal/ask-ai
@@ -164,6 +169,8 @@ export async function POST(request: Request) {
     },
   ];
 
+  const systemPrompt = PORTAL_AI_SYSTEM_PROMPT;
+
   // 6. Stream the response. Anthropic SDK gives us a token stream; we
   //    convert it to a Server-Sent Events response for the client UI.
   const stream = new ReadableStream({
@@ -182,7 +189,7 @@ export async function POST(request: Request) {
         const claudeStream = await anthropic.messages.stream({
           model: MODEL,
           max_tokens: 1500,
-          system: PORTAL_AI_SYSTEM_PROMPT,
+          system: systemPrompt,
           messages,
         });
 

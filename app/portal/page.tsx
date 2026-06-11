@@ -8,7 +8,7 @@ import { tryResolvePortalContext } from "@/lib/portal-context";
 import { fetchOverview, resolveClosedPeriodWithRevenue } from "@/lib/portal-data";
 import { createServiceSupabase } from "@/lib/supabase";
 import { fetchPublishedPackage } from "@/lib/month-end/portal-package";
-import { classifyProfitLoss, marginVerdict, type PortalPl } from "@/lib/portal-pl";
+import { classifyProfitLoss, marginVerdict, netMarginVerdict, type PortalPl } from "@/lib/portal-pl";
 import { PortalErrorState } from "./error-state";
 import { MonthEndBanner } from "./month-end-banner";
 import { AskAboutButton } from "./ask-about";
@@ -352,7 +352,7 @@ function buildHeuristicNarrative(
     };
   }
 
-  const nm = marginVerdict(c.netMarginPct);
+  const nm = netMarginVerdict(c.netMarginPct);
   const gm = marginVerdict(c.grossMarginPct);
 
   let headline: string;

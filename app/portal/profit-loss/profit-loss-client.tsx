@@ -7,7 +7,7 @@ import {
   MessageCircleQuestion,
 } from "lucide-react";
 import type { ProfitLossData } from "@/lib/qbo-reports";
-import { classifyProfitLoss, marginVerdict, type PortalPl, type PlBucket } from "@/lib/portal-pl";
+import { classifyProfitLoss, marginVerdict, netMarginVerdict, type PortalPl, type PlBucket } from "@/lib/portal-pl";
 import { AskAboutButton } from "../ask-about";
 
 /** The five ranges the server pre-fetches. */
@@ -286,7 +286,7 @@ export function ProfitLossClient({
 
 function InsightCard({ c, range, periodLabel }: { c: PortalPl; range: { label: string }; periodLabel: string }) {
   const gm = marginVerdict(c.grossMarginPct);
-  const nm = marginVerdict(c.netMarginPct);
+  const nm = netMarginVerdict(c.netMarginPct);
   return (
     <div className="relative overflow-hidden rounded-2xl border-2 border-teal/30 bg-gradient-to-br from-teal/10 via-white to-white p-5">
       <div className="flex items-start gap-3">
