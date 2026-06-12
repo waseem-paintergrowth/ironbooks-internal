@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import {
   Home, Wallet, Receipt, MessageSquare,
-  GraduationCap, Settings, FileCheck2, Mail,
+  GraduationCap, Settings, FileCheck2, Mail, BookOpen,
 } from "lucide-react";
 import { MessagesNavLink } from "./messages-nav-link";
 import { FinancialStatementsNav } from "./financial-statements-nav";
@@ -122,6 +122,7 @@ export default async function PortalLayout({ children }: { children: React.React
             {/* Live: polls unread count, red pill + chime on new messages */}
             <MessagesNavLink initialCount={unreadMessages} />
             <NavLink href="/portal/ask-ai" icon={MessageSquare} label="Ask the AI" badge="NEW" />
+            <NavLink href="/portal/knowledge-base" icon={BookOpen} label="Knowledge Base" />
             <NavLink href="/portal/learn" icon={GraduationCap} label="Learn" />
           </nav>
 
