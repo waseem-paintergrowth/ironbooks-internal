@@ -110,7 +110,8 @@ export interface EligibleClient {
 function fixLink(fix: Check["fix"], clientId: string): { href: string; label: string } | null {
   switch (fix) {
     case "reclass":
-      return { href: "/reclass/new", label: "Open Reclassify" };
+      // ?client= preselects this client in the reclass form — no picker hunt
+      return { href: `/reclass/new?client=${clientId}`, label: "Open Reclassify" };
     case "uf_audit":
       return { href: `/balance-sheet/${clientId}/uf-audit`, label: "Open UF Audit" };
     case "ar":
