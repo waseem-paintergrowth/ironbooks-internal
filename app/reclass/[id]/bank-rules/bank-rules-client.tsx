@@ -336,6 +336,15 @@ export function BankRulesFromReclassClient({
         </Link>
         <div>
           <Link
+            href={`/balance-sheet/${clientLinkId}`}
+            className="inline-flex items-center gap-2 bg-white hover:bg-gray-50 border border-gray-200 text-navy text-sm font-semibold px-5 py-2.5 rounded-lg"
+          >
+            Skip Stripe Recon — move to Balance Sheet
+            <ArrowRight size={14} />
+          </Link>
+        </div>
+        <div>
+          <Link
             href="/dashboard"
             className="text-sm text-ink-slate underline hover:text-navy"
           >

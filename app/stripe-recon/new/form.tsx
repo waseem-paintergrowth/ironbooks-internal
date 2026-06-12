@@ -34,11 +34,20 @@ interface DateRangePreset {
   end: string;
 }
 
-export function NewStripeReconForm({ clientLinks }: { clientLinks: ClientLink[] }) {
+export function NewStripeReconForm({
+  clientLinks,
+  initialClientId = null,
+}: {
+  clientLinks: ClientLink[];
+  /** Server-resolved ?client= preselect. Seeding state from a prop makes
+   *  the reclass/stepper handoff work on first paint instead of relying
+   *  on the useSearchParams effect below (kept as fallback). */
+  initialClientId?: string | null;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const [clientLinkId, setClientLinkId] = useState<string>("");
+  const [clientLinkId, setClientLinkId] = useState<string>(initialClientId || "");
   const [reclassJobId, setReclassJobId] = useState<string | null>(null);
   const [extendingFromJobId, setExtendingFromJobId] = useState<string | null>(null);
   // Set when the user came in via the "Upgrade to Stripe API" banner on
