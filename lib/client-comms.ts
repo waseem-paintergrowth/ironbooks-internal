@@ -188,6 +188,10 @@ export async function emailPortalUsersAboutMessage(
     subject: string | null;
     body: string;
     portalOrigin: string;
+    /** How much of the body to include in the email (default 400 chars).
+     *  Batched sends (e.g. ask-client transaction lists) pass a larger
+     *  budget so the whole list survives into the email. */
+    snippetChars?: number;
   }
 ): Promise<MessageEmailDelivery> {
   try {
@@ -208,7 +212,9 @@ export async function emailPortalUsersAboutMessage(
     if (emails.length === 0) return { sent: false, reason: "no_active_email" };
 
     const noun = params.kind === "notification" ? "notification" : "message";
-    const snippet = params.body.length > 400 ? `${params.body.slice(0, 400)}…` : params.body;
+    const snippetMax = params.snippetChars ?? 400;
+    const snippet =
+      params.body.length > snippetMax ? `${params.body.slice(0, snippetMax)}…` : params.body;
     const link = `${params.portalOrigin}/portal/messages`;
 
     // Plain-text fallback for clients whose mail app blocks HTML

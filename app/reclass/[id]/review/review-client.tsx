@@ -711,8 +711,11 @@ export function ReclassReview({
               <div className="p-3 bg-purple-50 border-b border-purple-100 flex items-center justify-between gap-3">
                 <span className="text-sm text-purple-800">
                   <HelpCircle size={14} className="inline mr-1" />
-                  E-transfers / Venmo / Zelle — confirm with the client what each was for, then pick
-                  the right account from the dropdown.
+                  When you approve &amp; execute this reclass, everything still on this tab is sent
+                  to the client automatically — one portal message + one email listing all{" "}
+                  {partitioned.ask.length} transaction{partitioned.ask.length === 1 ? "" : "s"}. If
+                  you already know what something was, pick its account from the dropdown to pull it
+                  out of the batch.
                 </span>
                 <button
                   onClick={() => setEmailModalOpen(true)}

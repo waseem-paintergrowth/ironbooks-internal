@@ -9,6 +9,7 @@ import {
 } from "@/lib/qbo-reclass";
 import { fetchAllAccounts } from "@/lib/qbo";
 import { postReclassComplete } from "@/lib/double";
+import { sendAskClientQuestions } from "@/lib/reclass-ask-client";
 
 /**
  * POST /api/reclass/[id]/execute
@@ -17,10 +18,13 @@ import { postReclassComplete } from "@/lib/double";
  * Returns immediately.
  */
 export async function POST(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
+  // Captured now so the background job can build portal links after the
+  // request object is gone.
+  const portalOrigin = new URL(request.url).origin;
   const supabase = await createServerSupabase();
 
   const { data: { user } } = await supabase.auth.getUser();
@@ -84,7 +88,7 @@ export async function POST(
   // Schedule background execution
   after(async () => {
     try {
-      await executeReclass(id);
+      await executeReclass(id, portalOrigin);
     } catch (err: any) {
       console.error(`Reclass execution failed for ${id}:`, err);
       const svc = createServiceSupabase();
@@ -110,7 +114,7 @@ export async function POST(
 
 // ============== BACKGROUND EXECUTION ==============
 
-async function executeReclass(jobId: string) {
+async function executeReclass(jobId: string, portalOrigin: string) {
   const service = createServiceSupabase();
   const startTime = Date.now();
 
@@ -135,6 +139,26 @@ async function executeReclass(jobId: string) {
       reason: job.reason,
     } as any,
   });
+
+  // Ask-client batch: every row the bookkeeper routed to "Ask Client"
+  // becomes ONE portal message + ONE email to the client (never one per
+  // transaction). Best-effort and idempotent — a re-execute won't resend.
+  let askClientWarning: string | null = null;
+  try {
+    const ask = await sendAskClientQuestions(service, {
+      reclassJobId: jobId,
+      portalOrigin,
+    });
+    if (ask.sent && ask.emailDelivery && !ask.emailDelivery.sent) {
+      askClientWarning =
+        `Asked the client about ${ask.count} transaction${ask.count === 1 ? "" : "s"} in their portal, ` +
+        `but the email could NOT be delivered (${ask.emailDelivery.reason.replace(/_/g, " ")}) — ` +
+        `they won't see the questions until they log in. Follow up directly.`;
+    }
+  } catch (err: any) {
+    console.error(`[reclass] ask-client send failed (non-fatal):`, err?.message);
+    askClientWarning = `Ask-client questions could not be sent automatically: ${err?.message}`;
+  }
 
   const accessToken = await getValidToken(clientLink.id, service as any);
 
@@ -183,7 +207,7 @@ async function executeReclass(jobId: string) {
         execution_completed_at: new Date().toISOString(),
         execution_duration_seconds: 0,
         transactions_moved: 0,
-        error_message: message,
+        error_message: askClientWarning ? `${askClientWarning}; ${message}` : message,
       } as any)
       .eq("id", jobId);
     return;
@@ -345,6 +369,7 @@ async function executeReclass(jobId: string) {
   // Surface the needs-target count separately so the bookkeeper sees
   // "X rows still need a target account" instead of it looking like a failure.
   const summaryErrors = [...errors];
+  if (askClientWarning) summaryErrors.unshift(askClientWarning);
   if (needsTarget > 0) {
     summaryErrors.unshift(
       `${needsTarget} transaction${needsTarget === 1 ? "" : "s"} sent back to Needs Review — target account not selected before approval.`
