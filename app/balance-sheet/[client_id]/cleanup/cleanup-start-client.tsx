@@ -17,10 +17,10 @@ export function CleanupStartClient({
   qboStatus: QboStatus;
 }) {
   const router = useRouter();
+  // Default the lock to Jan 1 of the current year — "clean up this year,
+  // don't touch prior-year books" is the standard starting posture.
   const [periodLockDate, setPeriodLockDate] = useState(
-    new Date(new Date().getFullYear(), new Date().getMonth(), 0)
-      .toISOString()
-      .slice(0, 10)
+    `${new Date().getFullYear()}-01-01`
   );
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
