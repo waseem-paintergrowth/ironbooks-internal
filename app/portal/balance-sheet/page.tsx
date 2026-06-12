@@ -1,4 +1,5 @@
 import { tryResolvePortalContext } from "@/lib/portal-context";
+import { createServiceSupabase } from "@/lib/supabase";
 import { fetchBalanceSheetSummary } from "@/lib/portal-data";
 import { PortalErrorState } from "../error-state";
 import { AskAboutButton } from "../ask-about";
@@ -21,6 +22,40 @@ export default async function BalanceSheetPage() {
   const ctxResult = await tryResolvePortalContext();
   if (!ctxResult.ok) return <PortalErrorState code={ctxResult.code} message={ctxResult.message} />;
   const { ctx } = ctxResult;
+
+  // BS toggle off = P&L-only service while the balance sheet cleanup
+  // finishes. Showing the in-progress BS would mean showing numbers we
+  // KNOW are wrong — friendly placeholder instead.
+  const service = createServiceSupabase();
+  const { data: clientRow } = await service
+    .from("client_links")
+    .select("*")
+    .eq("id", ctx.clientLinkId)
+    .single();
+  if ((clientRow as any)?.bs_enabled === false) {
+    return (
+      <div className="max-w-2xl">
+        <h1 className="text-2xl font-bold text-navy">Balance Sheet</h1>
+        <div className="mt-6 bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3">
+          <div className="inline-flex w-14 h-14 rounded-full bg-teal/10 items-center justify-center">
+            <Sparkles size={24} className="text-teal" />
+          </div>
+          <h2 className="text-lg font-bold text-navy">
+            We&apos;re still working on your balance sheet
+          </h2>
+          <p className="text-sm text-ink-slate max-w-md mx-auto leading-relaxed">
+            Your Profit &amp; Loss is live and up to date, but your balance
+            sheet cleanup is still in progress — we&apos;d rather show you
+            nothing than numbers that aren&apos;t right yet. It&apos;ll appear
+            here automatically the moment it&apos;s ready.
+          </p>
+          <p className="text-xs text-ink-light">
+            Questions in the meantime? Send us a note from the Messages page.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const bs = await fetchBalanceSheetSummary(ctx.qboRealmId, ctx.accessToken);
 

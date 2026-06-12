@@ -12,6 +12,7 @@ import {
 import { PortalErrorState } from "../error-state";
 import { StatementSwitcher } from "../financial-statements/statement-switcher";
 import { Sparkles, TrendingDown, TrendingUp } from "lucide-react";
+import { createServiceSupabase } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,40 @@ export default async function CashFlowPage({
   const ctxResult = await tryResolvePortalContext();
   if (!ctxResult.ok) return <PortalErrorState code={ctxResult.code} message={ctxResult.message} />;
   const { ctx } = ctxResult;
+
+  // Cash flow is derived from balance-sheet data — while the client's BS
+  // cleanup is in progress (bs_enabled=false, P&L-only service) it would
+  // show numbers we know are wrong. Same placeholder as the BS page.
+  const service = createServiceSupabase();
+  const { data: clientRow } = await service
+    .from("client_links")
+    .select("*")
+    .eq("id", ctx.clientLinkId)
+    .single();
+  if ((clientRow as any)?.bs_enabled === false) {
+    return (
+      <div className="max-w-2xl">
+        <h1 className="text-2xl font-bold text-navy">Cash Flow</h1>
+        <div className="mt-6 bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3">
+          <div className="inline-flex w-14 h-14 rounded-full bg-teal/10 items-center justify-center">
+            <Sparkles size={24} className="text-teal" />
+          </div>
+          <h2 className="text-lg font-bold text-navy">
+            We&apos;re still working on this one
+          </h2>
+          <p className="text-sm text-ink-slate max-w-md mx-auto leading-relaxed">
+            Your cash flow statement is built from your balance sheet, and that
+            cleanup is still in progress. Your Profit &amp; Loss is live and up
+            to date — the cash flow statement will appear here automatically
+            once your balance sheet is ready.
+          </p>
+          <p className="text-xs text-ink-light">
+            Questions in the meantime? Send us a note from the Messages page.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const presets: Record<string, DateRange> = {
     lastMonth: lastMonthRange(),
