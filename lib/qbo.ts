@@ -1737,6 +1737,49 @@ export async function voidPayment(
 }
 
 /**
+ * Set QBO's book-closing date (Company Settings → Advanced → Close the
+ * books). Locks the period: edits to transactions dated on/before this
+ * date trigger a QBO warning. Called when a manager approves a monthly
+ * close — closeDate should be the period end (YYYY-MM-DD).
+ *
+ * Sparse update on the singleton Preferences object (Id "1" + SyncToken
+ * required for optimistic concurrency).
+ */
+export async function updateClosingDate(
+  realmId: string,
+  accessToken: string,
+  closeDate: string
+): Promise<{ Id: string; SyncToken: string }> {
+  const prefs = await qboRequest<any>(
+    realmId,
+    accessToken,
+    `/preferences?minorversion=70`,
+    { method: "GET" }
+  );
+  const current = prefs?.Preferences;
+  if (!current?.Id) throw new Error("Could not load QBO Preferences");
+
+  const data = await qboRequest<any>(
+    realmId,
+    accessToken,
+    `/preferences?minorversion=70`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        Id: current.Id,
+        SyncToken: current.SyncToken,
+        sparse: true,
+        AccountingInfoPrefs: {
+          BookCloseDate: closeDate,
+        },
+      }),
+    }
+  );
+  const out = data?.Preferences || {};
+  return { Id: String(out.Id || current.Id), SyncToken: String(out.SyncToken || "") };
+}
+
+/**
  * Void an Invoice in QBO (operation=void). Reverses Dr A/R / Cr Income —
  * removes any open balance from A/R and backs the revenue out. Used by the
  * UF Audit "void pair" resolution for CRM-duplicated invoice+payment pairs:

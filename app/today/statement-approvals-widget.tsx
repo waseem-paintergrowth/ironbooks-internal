@@ -44,16 +44,20 @@ export function StatementApprovalsWidget({ rows }: { rows: StatementApprovalRow[
         {rows.map((r) => (
           <li key={`${r.client_link_id}-${r.period}`}>
             <Link
-              href="/monthly-rec"
+              href={r.kind === "cleanup" ? "/cleanup" : "/production"}
               className="flex items-center gap-3 px-5 py-3 hover:bg-purple-50/40 transition-colors"
             >
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-semibold text-sm text-navy">{r.client_name}</span>
-                  <span className="text-xs text-ink-slate">{periodLabel(r.period)}</span>
+                  <span className="text-xs text-ink-slate">
+                    {r.kind === "cleanup"
+                      ? "Onboarding complete — ready for review"
+                      : `${periodLabel(r.period)} month-end — ready for review`}
+                  </span>
                   {r.kind === "cleanup" && (
                     <span className="text-[10px] font-bold bg-violet-100 text-violet-800 px-1.5 py-0.5 rounded">
-                      CLEANUP SIGN-OFF
+                      NEW CLIENT
                     </span>
                   )}
                   {r.has_concerns && (

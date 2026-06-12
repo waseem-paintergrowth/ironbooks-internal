@@ -106,7 +106,8 @@ export async function deliverPackage(
   service: Service,
   packageId: string,
   sentBy: string,
-  appBaseUrl: string
+  appBaseUrl: string,
+  opts?: { force?: boolean }
 ): Promise<SendPackageResult> {
   const claim = await claimPackageForSend(service, packageId);
   if (!claim.ok) {
@@ -138,12 +139,18 @@ export async function deliverPackage(
     periodMonth: pkg.period_month,
   });
 
-  const gates = await verifyOperationalGates(service, clientLinkId, period);
-  if (!gates.ok) {
-    const msg = `Operational gates failed at send time: ${gates.blockReasons.join(", ")}`;
-    await releaseSendClaim(service, packageId, msg, "ready_to_send");
-    const clientName = await loadClientName(service, pkg);
-    return { packageId, clientLinkId, clientName, ok: false, error: msg };
+  // `force` bypasses the operational gates: used when an admin/lead has
+  // explicitly reviewed the statements and approved the close (Monthly Rec
+  // manager approval) — their judgment overrides "no reclass job this
+  // period"-style blocks that don't apply to cleanup-graduating clients.
+  if (!opts?.force) {
+    const gates = await verifyOperationalGates(service, clientLinkId, period);
+    if (!gates.ok) {
+      const msg = `Operational gates failed at send time: ${gates.blockReasons.join(", ")}`;
+      await releaseSendClaim(service, packageId, msg, "ready_to_send");
+      const clientName = await loadClientName(service, pkg);
+      return { packageId, clientLinkId, clientName, ok: false, error: msg };
+    }
   }
 
   const clientName = await loadClientName(service, pkg);
@@ -201,7 +208,8 @@ export async function deliverPackagesBulk(
   service: Service,
   packageIds: string[],
   sentBy: string,
-  appBaseUrl: string
+  appBaseUrl: string,
+  opts?: { force?: boolean }
 ): Promise<{
   sent: number;
   failed: number;
@@ -212,7 +220,7 @@ export async function deliverPackagesBulk(
 
   const uniqueIds = [...new Set(packageIds)];
   const results = await mapPool(uniqueIds, SEND_CONCURRENCY, (id) =>
-    deliverPackage(service, id, sentBy, appBaseUrl)
+    deliverPackage(service, id, sentBy, appBaseUrl, opts)
   );
 
   const sent = results.filter((r) => r.ok && !r.skipped).length;

@@ -1,0 +1,377 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import {
+  ArrowUpRight, CheckCircle2, Circle, CircleDashed, ClipboardList,
+  Loader2, MinusCircle, PlayCircle, Plus, Sparkles, X, XCircle,
+} from "lucide-react";
+import { ClientRecCard, type ProdClient } from "../production/rec-card";
+
+/**
+ * Three-column cleanup board. Data comes straight from the existing
+ * kanban onboarding API (compute-on-read from live job state) — its six
+ * stages collapse to three columns here, and every card shows the full
+ * step checklist so a bookkeeper always knows what's next.
+ *
+ * Columns:
+ *   needs_cleanup                                  → Needs Cleanup
+ *   coa/reclass in progress, awaiting stripe, bs   → In Progress
+ *   review (statement sign-off submitted)          → Awaiting Mgr Review
+ */
+
+interface KanbanCard {
+  id: string;
+  client_name: string;
+  jurisdiction: string;
+  state_province: string | null;
+  stripe_connected: boolean;
+  stripe_pending: boolean;
+  stripe_request_sent_at: string | null;
+  stripe_not_required: boolean;
+  bs_recon_started: boolean;
+  bs_recon_in_progress: boolean;
+  cleanup_pdf_href: string | null;
+  note_count: number;
+  bookkeeper: { id: string; full_name: string; avatar_url: string | null } | null;
+  latest_coa_job: { id: string; status: string } | null;
+  latest_reclass_job: { id: string; status: string } | null;
+}
+
+type StepState = "todo" | "active" | "done" | "failed" | "skipped";
+
+interface Step {
+  label: string;
+  state: StepState;
+  href: string | null;
+}
+
+const ACTIVE = new Set(["pending", "executing", "in_review"]);
+
+function buildSteps(card: KanbanCard, inReview: boolean): Step[] {
+  const coa = card.latest_coa_job;
+  const reclass = card.latest_reclass_job;
+
+  const coaState: StepState = !coa
+    ? "todo"
+    : coa.status === "complete"
+    ? "done"
+    : coa.status === "failed"
+    ? "failed"
+    : "active";
+
+  const reclassState: StepState = !reclass
+    ? "todo"
+    : reclass.status === "complete"
+    ? "done"
+    : reclass.status === "failed"
+    ? "failed"
+    : "active";
+
+  const stripeState: StepState = card.stripe_not_required
+    ? "skipped"
+    : card.stripe_connected
+    ? "done"
+    : card.stripe_pending || card.stripe_request_sent_at
+    ? "active"
+    : "todo";
+
+  const bsState: StepState = inReview
+    ? "done"
+    : card.bs_recon_in_progress
+    ? "active"
+    : card.bs_recon_started
+    ? "done"
+    : "todo";
+
+  const signoffState: StepState = inReview ? "active" : "todo";
+
+  return [
+    {
+      label: "1 · COA Cleanup",
+      state: coaState,
+      href: coa ? `/jobs/${coa.id}/review` : "/jobs/new",
+    },
+    {
+      label: "2 · Reclass",
+      state: reclassState,
+      href: reclass ? `/reclass/${reclass.id}/review` : "/reclass/new",
+    },
+    { label: "3 · Bank Rules", state: "todo", href: "/rules/new" },
+    { label: "4 · Stripe", state: stripeState, href: null },
+    {
+      label: "5 · BS Cleanup",
+      state: bsState,
+      href: `/balance-sheet/${card.id}/cleanup`,
+    },
+    {
+      label: "6 · Statements sign-off",
+      state: signoffState,
+      href: null,
+    },
+  ];
+}
+
+function StepIcon({ state }: { state: StepState }) {
+  switch (state) {
+    case "done":
+      return <CheckCircle2 size={12} className="text-emerald-600" />;
+    case "active":
+      return <PlayCircle size={12} className="text-teal" />;
+    case "failed":
+      return <XCircle size={12} className="text-red-600" />;
+    case "skipped":
+      return <MinusCircle size={12} className="text-ink-light" />;
+    default:
+      return <Circle size={12} className="text-gray-300" />;
+  }
+}
+
+export function CleanupBoard() {
+  const [columns, setColumns] = useState<Record<string, { cards: KanbanCard[]; total: number }> | null>(null);
+  const [signoffs, setSignoffs] = useState<ProdClient[]>([]);
+  const [isSenior, setIsSenior] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedSignoff, setSelectedSignoff] = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [kanbanRes, recRes] = await Promise.all([
+        fetch("/api/kanban/onboarding?limit=50"),
+        fetch("/api/monthly-rec"),
+      ]);
+      const kanban = await kanbanRes.json();
+      if (!kanbanRes.ok) throw new Error(kanban.error || `HTTP ${kanbanRes.status}`);
+      setColumns(kanban.columns || null);
+      if (recRes.ok) {
+        const rec = await recRes.json();
+        setSignoffs(rec.cleanup_signoffs || []);
+        setIsSenior(!!rec.is_senior);
+      }
+    } catch (e: any) {
+      setError(e?.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  const collapsed = useMemo(() => {
+    const get = (k: string) => columns?.[k]?.cards || [];
+    return {
+      needs_cleanup: get("needs_cleanup"),
+      in_progress: [
+        ...get("coa_in_progress"),
+        ...get("reclass_in_progress"),
+        ...get("awaiting_stripe"),
+        ...get("bs_cleanup"),
+      ],
+      review: get("review"),
+    };
+  }, [columns]);
+
+  const signoffByClient = useMemo(
+    () => new Map(signoffs.map((s) => [s.id, s])),
+    [signoffs]
+  );
+
+  const selectedRun = selectedSignoff ? signoffByClient.get(selectedSignoff) : null;
+
+  const COLS: { id: keyof typeof collapsed; title: string; tone: string; hint: string }[] = [
+    { id: "needs_cleanup", title: "Needs Cleanup", tone: "border-gray-200", hint: "New — start with COA cleanup" },
+    { id: "in_progress", title: "In Progress", tone: "border-teal/40", hint: "Working the checklist" },
+    { id: "review", title: "Awaiting Mgr Review", tone: "border-purple-300", hint: "Statements submitted — manager approves & sends" },
+  ];
+
+  return (
+    <div className="space-y-5">
+      {error && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">{error}</div>
+      )}
+
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <p className="text-xs text-ink-slate">
+          Clients move left → right. Manager approval on the sign-off sends
+          statements to the client and graduates them to <strong>Production</strong>.
+        </p>
+        <Link
+          href="/jobs/new"
+          className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-xs font-bold px-3 py-2 rounded-lg"
+        >
+          <Plus size={13} />
+          New Cleanup
+        </Link>
+      </div>
+
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center">
+          <Loader2 className="animate-spin text-teal mx-auto" size={28} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {COLS.map((col) => {
+            const cards = collapsed[col.id];
+            return (
+              <div key={col.id} className={`bg-white rounded-2xl border-2 ${col.tone} overflow-hidden`}>
+                <div className="px-3 py-2.5 border-b border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <ClipboardList size={14} className="text-ink-slate" />
+                    <span className="text-sm font-bold text-navy">{col.title}</span>
+                    <span className="text-xs text-ink-light ml-auto">{cards.length}</span>
+                  </div>
+                  <div className="text-[10px] text-ink-light mt-0.5">{col.hint}</div>
+                </div>
+                <div className="p-2 space-y-2 min-h-[100px]">
+                  {cards.length === 0 && (
+                    <div className="text-center text-[11px] text-ink-light py-5">
+                      {col.id === "needs_cleanup" ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Sparkles size={11} /> Nothing waiting
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </div>
+                  )}
+                  {cards.map((card) => (
+                    <CleanupCard
+                      key={card.id}
+                      card={card}
+                      inReview={col.id === "review"}
+                      hasSignoff={signoffByClient.has(card.id)}
+                      onOpenSignoff={() =>
+                        setSelectedSignoff(selectedSignoff === card.id ? null : card.id)
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Inline statement sign-off flow (runs the same review the manager sees) */}
+      {selectedRun && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-navy">
+              {selectedRun.client_name} — cleanup statements sign-off
+            </h3>
+            <button
+              onClick={() => setSelectedSignoff(null)}
+              className="text-ink-light hover:text-navy"
+              aria-label="Close"
+            >
+              <X size={15} />
+            </button>
+          </div>
+          <ClientRecCard
+            client={selectedRun}
+            period={selectedRun.run?.period || ""}
+            isSenior={isSenior}
+            onChanged={load}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CleanupCard({
+  card,
+  inReview,
+  hasSignoff,
+  onOpenSignoff,
+}: {
+  card: KanbanCard;
+  inReview: boolean;
+  hasSignoff: boolean;
+  onOpenSignoff: () => void;
+}) {
+  const steps = buildSteps(card, inReview);
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <Link
+            href={`/clients/${card.id}`}
+            className="text-sm font-semibold text-navy hover:text-teal truncate block"
+          >
+            {card.client_name}
+          </Link>
+          <div className="text-[10px] text-ink-light">
+            {card.bookkeeper?.full_name || "Unassigned"}
+            {card.jurisdiction ? ` · ${card.jurisdiction}` : ""}
+          </div>
+        </div>
+        {card.cleanup_pdf_href && (
+          <a
+            href={card.cleanup_pdf_href}
+            className="text-[10px] font-semibold text-teal hover:underline flex-shrink-0"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            PDF
+          </a>
+        )}
+      </div>
+
+      {/* Step checklist */}
+      <ul className="mt-2 space-y-1">
+        {steps.map((s) => (
+          <li key={s.label} className="flex items-center gap-1.5 text-[11px]">
+            <StepIcon state={s.state} />
+            {s.href ? (
+              <Link
+                href={s.href}
+                className={`hover:underline ${
+                  s.state === "active"
+                    ? "font-semibold text-navy"
+                    : s.state === "failed"
+                    ? "font-semibold text-red-700"
+                    : "text-ink-slate"
+                }`}
+              >
+                {s.label}
+                {s.state === "failed" ? " — failed, retry" : ""}
+              </Link>
+            ) : (
+              <span
+                className={
+                  s.state === "active" ? "font-semibold text-navy" : "text-ink-slate"
+                }
+              >
+                {s.label}
+                {s.state === "skipped" ? " (n/a)" : ""}
+              </span>
+            )}
+            <span className="ml-auto" />
+            {s.label.startsWith("6") && (hasSignoff || inReview) && (
+              <button
+                onClick={onOpenSignoff}
+                className="inline-flex items-center gap-0.5 text-[10px] font-bold text-purple-700 hover:underline"
+              >
+                Open <ArrowUpRight size={9} />
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {inReview && (
+        <div className="mt-2 pt-2 border-t border-gray-100">
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-purple-100 text-purple-800 px-1.5 py-0.5 rounded">
+            <CircleDashed size={9} />
+            Manager review pending
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}

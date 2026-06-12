@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerSupabase, createServiceSupabase } from "@/lib/supabase";
-import { getValidToken, qboErrorResponse } from "@/lib/qbo";
+import { getValidToken, qboErrorResponse, updateClosingDate } from "@/lib/qbo";
 import {
   aiSpotCheckStatements,
   fetchStatementsPreview,
@@ -8,6 +8,10 @@ import {
   runMonthlyRecChecks,
 } from "@/lib/monthly-rec";
 import { emailPortalUsersAboutMessage } from "@/lib/client-comms";
+import { buildPackagesBulk } from "@/lib/month-end/package-builder";
+import { generateSummariesBatch } from "@/lib/month-end/generate-summaries";
+import { bulkApproveSummaries } from "@/lib/month-end/bulk-approve";
+import { deliverPackagesBulk } from "@/lib/month-end/send";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
@@ -63,6 +67,9 @@ export async function POST(
     period?: string;
     concerns?: string;
     attested?: boolean;
+    board_status?: string;
+    waiting_reasons?: string[];
+    status_note?: string;
   };
   try {
     body = await request.json();
@@ -70,7 +77,7 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
   const action = body.action;
-  if (!["run", "statements", "spot_check", "submit", "send", "reopen"].includes(action || "")) {
+  if (!["run", "statements", "spot_check", "submit", "send", "reopen", "board"].includes(action || "")) {
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
   }
 
@@ -147,6 +154,50 @@ export async function POST(
     } catch (err: any) {
       return qboErrorResponse(err);
     }
+  }
+
+  if (action === "board") {
+    // Production board move: not_started / in_progress / stuck /
+    // waiting_client (+ reason checkboxes + note). "Ready for manager
+    // review" is NOT a board status — that's the submit action.
+    const VALID_BOARD = ["not_started", "in_progress", "stuck", "waiting_client"];
+    const VALID_REASONS = ["waiting_reply", "waiting_statements", "disconnected_feed"];
+    const boardStatus = String(body.board_status || "");
+    if (!VALID_BOARD.includes(boardStatus)) {
+      return NextResponse.json({ error: "Invalid board_status" }, { status: 400 });
+    }
+    const reasons = (Array.isArray(body.waiting_reasons) ? body.waiting_reasons : [])
+      .filter((r) => VALID_REASONS.includes(String(r)));
+    const note = (body.status_note || "").trim().slice(0, 300) || null;
+
+    const { data: existing } = await (service as any)
+      .from("monthly_rec_runs")
+      .select("id, status")
+      .eq("client_link_id", clientLinkId)
+      .eq("period", period)
+      .maybeSingle();
+    if (existing?.status === "complete") {
+      return NextResponse.json({ error: "This month is already closed." }, { status: 409 });
+    }
+    const { data: run, error } = await (service as any)
+      .from("monthly_rec_runs")
+      .upsert(
+        {
+          client_link_id: clientLinkId,
+          period,
+          period_start: periodStart,
+          period_end: periodEnd,
+          board_status: boardStatus,
+          waiting_reasons: boardStatus === "waiting_client" ? reasons : [],
+          status_note: note,
+          created_by: user.id,
+        },
+        { onConflict: "client_link_id,period" }
+      )
+      .select("*")
+      .single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, run });
   }
 
   if (action === "spot_check") {
@@ -311,15 +362,55 @@ export async function POST(
       commError = e?.message || "notification insert failed";
     }
 
-    // 2. Email the client's portal users
-    const emailDelivery = await emailPortalUsersAboutMessage(service, {
-      clientLinkId,
-      clientName,
-      kind: "notification",
-      subject: `Your ${monthLabel} financials are ready`,
-      body: summaryBody,
-      portalOrigin: new URL(request.url).origin,
-    });
+    // 2. FULL CLOSE — month-end package (AI summary + archived statements
+    //    published to the portal + statements email). The manager's
+    //    approval IS the summary review, so gates are bypassed (force).
+    //    Best-effort: a package failure falls back to the plain
+    //    notification email so the client always hears about the close.
+    const origin = new URL(request.url).origin;
+    const periodRef = { periodYear: y, periodMonth: m };
+    let packageId: string | null = null;
+    let packageError: string | null = null;
+    let emailDelivery: any = null;
+    try {
+      const built = await buildPackagesBulk(service as any, [clientLinkId], periodRef, user.id);
+      if (!built[0]?.ok || !built[0].packageId) {
+        throw new Error(built[0]?.error || "package build failed");
+      }
+      packageId = built[0].packageId;
+      const gen = await generateSummariesBatch(service as any, [packageId]);
+      if (gen.failed > 0) throw new Error(gen.errors.join("; ") || "summary failed");
+      await bulkApproveSummaries(service as any, [packageId], user.id);
+      const delivered = await deliverPackagesBulk(service as any, [packageId], user.id, origin, {
+        force: true,
+      });
+      if (delivered.failed > 0) {
+        throw new Error(delivered.results[0]?.error || "delivery failed");
+      }
+      emailDelivery = { sent: true, recipients: 1, via: "month_end_package" };
+    } catch (e: any) {
+      packageError = String(e?.message || e).slice(0, 500);
+      // Fallback: plain notification email so the close still reaches them
+      emailDelivery = await emailPortalUsersAboutMessage(service, {
+        clientLinkId,
+        clientName,
+        kind: "notification",
+        subject: `Your ${monthLabel} financials are ready`,
+        body: summaryBody,
+        portalOrigin: origin,
+      });
+    }
+
+    // 2b. Close the books in QuickBooks — set the company closing date to
+    //     the period end. Best-effort: failure is recorded and surfaced,
+    //     never blocks the close.
+    let qboCloseError: string | null = null;
+    try {
+      const accessToken = await getValidToken(clientLinkId, service as any);
+      await updateClosingDate((client as any).qbo_realm_id, accessToken, periodEnd);
+    } catch (e: any) {
+      qboCloseError = String(e?.message || e).slice(0, 500);
+    }
 
     // 3. Close the period. Preserve the JR's attestation when this is a
     //    senior approving a submitted run; the senior's approval is the
@@ -336,6 +427,8 @@ export async function POST(
         completed_at: now,
         sent_to_client_at: now,
         email_delivery: emailDelivery,
+        month_end_package_id: packageId,
+        qbo_close_error: qboCloseError,
       })
       .eq("id", existing.id)
       .select("*")
@@ -343,7 +436,8 @@ export async function POST(
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     // Cleanup sign-off: approving + sending the statements IS the cleanup
-    // completion — stamp the client record if it isn't already.
+    // completion — stamp the client record and GRADUATE them to
+    // Production (daily recon on, joins the /production board).
     if (existing.kind === "cleanup") {
       await service
         .from("client_links")
@@ -353,6 +447,10 @@ export async function POST(
         } as any)
         .eq("id", clientLinkId)
         .is("cleanup_completed_at", null);
+      await service
+        .from("client_links")
+        .update({ daily_recon_enabled: true, daily_recon_paused: false } as any)
+        .eq("id", clientLinkId);
     }
 
     return NextResponse.json({
@@ -360,6 +458,9 @@ export async function POST(
       run,
       email_delivery: emailDelivery,
       comm_error: commError,
+      month_end_package_id: packageId,
+      package_error: packageError,
+      qbo_close_error: qboCloseError,
     });
   }
 

@@ -1,17 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+/**
+ * Shared per-client monthly close card + statement review flow.
+ * Used by /production (board) and /cleanup (sign-off column).
+ * Extracted verbatim from app/monthly-rec/monthly-rec-client.tsx.
+ */
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  AlertTriangle, ArrowUpRight, CalendarCheck, CheckCircle2, ChevronDown,
-  ChevronLeft, ChevronRight, FileText, Loader2, PlayCircle, RotateCcw,
-  Send, Sparkles, XCircle,
+  AlertTriangle, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight,
+  FileText, Loader2, PlayCircle, RotateCcw, Send, Sparkles, XCircle,
 } from "lucide-react";
 import { playSound } from "@/lib/sounds";
 
-type CheckStatus = "pass" | "warn" | "fail";
+export type CheckStatus = "pass" | "warn" | "fail";
 
-interface Check {
+export interface Check {
   key: string;
   label: string;
   status: CheckStatus;
@@ -26,13 +31,13 @@ interface StatementLine {
   depth: number;
 }
 
-interface CashFlowSection {
+export interface CashFlowSection {
   title: string;
   total: number;
   items: { label: string; amount: number }[];
 }
 
-interface Statements {
+export interface Statements {
   pl: {
     totalIncome: number;
     totalExpenses: number;
@@ -55,14 +60,14 @@ interface Statements {
   } | null;
 }
 
-interface SpotCheck {
+export interface SpotCheck {
   verdict: "looks_good" | "needs_review";
   summary: string;
   findings: { severity: "info" | "warn" | "flag"; area: string; note: string }[];
   error?: string;
 }
 
-interface Run {
+export interface Run {
   status: "open" | "pending_review" | "complete";
   has_concerns: boolean;
   concerns: string | null;
@@ -77,9 +82,13 @@ interface Run {
   ai_spot_check?: SpotCheck | null;
   submitted_at?: string | null;
   submitted_by?: string | null;
+  // Production board state (migration 65)
+  board_status?: "not_started" | "in_progress" | "stuck" | "waiting_client";
+  waiting_reasons?: string[];
+  status_note?: string | null;
 }
 
-interface ProdClient {
+export interface ProdClient {
   id: string;
   client_name: string;
   jurisdiction: string;
@@ -89,7 +98,7 @@ interface ProdClient {
   run: Run | null;
 }
 
-interface EligibleClient {
+export interface EligibleClient {
   id: string;
   client_name: string;
   jurisdiction: string;
@@ -115,13 +124,13 @@ function fixLink(fix: Check["fix"], clientId: string): { href: string; label: st
   }
 }
 
-function shiftPeriod(period: string, delta: number): string {
+export function shiftPeriod(period: string, delta: number): string {
   const [y, m] = period.split("-").map(Number);
   const d = new Date(Date.UTC(y, m - 1 + delta, 1));
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-function periodLabel(period: string): string {
+export function periodLabel(period: string): string {
   const [y, m] = period.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString(undefined, {
     month: "long",
@@ -130,157 +139,9 @@ function periodLabel(period: string): string {
   });
 }
 
-export function MonthlyRecClient() {
-  const [period, setPeriod] = useState<string>("");
-  const [production, setProduction] = useState<ProdClient[]>([]);
-  const [cleanupSignoffs, setCleanupSignoffs] = useState<ProdClient[]>([]);
-  const [eligible, setEligible] = useState<EligibleClient[]>([]);
-  const [isSenior, setIsSenior] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  async function load(p?: string) {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch(`/api/monthly-rec${p ? `?period=${p}` : ""}`);
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      setPeriod(body.period);
-      setProduction(body.production || []);
-      setCleanupSignoffs(body.cleanup_signoffs || []);
-      setEligible(body.eligible || []);
-      setIsSenior(!!body.is_senior);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => {
-    load();
-  }, []);
-
-  const doneCount = production.filter((c) => c.run?.status === "complete").length;
-
-  return (
-    <div className="space-y-5">
-      {error && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800">{error}</div>
-      )}
-
-      {/* Period switcher + progress */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
-        <div className="p-2 rounded-lg bg-teal-light">
-          <CalendarCheck size={18} className="text-teal" />
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => load(shiftPeriod(period, -1))}
-            disabled={!period || loading}
-            className="p-1.5 rounded hover:bg-gray-100 text-ink-slate disabled:opacity-40"
-            aria-label="Previous month"
-          >
-            <ChevronLeft size={15} />
-          </button>
-          <span className="font-bold text-navy min-w-[140px] text-center">
-            {period ? periodLabel(period) : "…"}
-          </span>
-          <button
-            onClick={() => load(shiftPeriod(period, 1))}
-            disabled={!period || loading}
-            className="p-1.5 rounded hover:bg-gray-100 text-ink-slate disabled:opacity-40"
-            aria-label="Next month"
-          >
-            <ChevronRight size={15} />
-          </button>
-        </div>
-        <div className="flex-1" />
-        {production.length > 0 && (
-          <span className="text-sm text-ink-slate">
-            <strong className="text-navy">{doneCount}</strong> of{" "}
-            <strong className="text-navy">{production.length}</strong> complete
-          </span>
-        )}
-      </div>
-
-      {loading ? (
-        <div className="bg-white rounded-2xl border border-gray-100 p-10 text-center">
-          <Loader2 className="animate-spin text-teal mx-auto" size={28} />
-        </div>
-      ) : (
-        <>
-          {/* Cleanup sign-offs — the 'cleanup complete' gate. Any period. */}
-          {cleanupSignoffs.length > 0 && (
-            <div className="space-y-3">
-              <h3 className="text-sm font-bold text-navy flex items-center gap-2">
-                <Sparkles size={14} className="text-violet-600" />
-                Cleanup sign-offs awaiting statements review ({cleanupSignoffs.length})
-              </h3>
-              {cleanupSignoffs.map((c) => (
-                <ClientRecCard
-                  key={`signoff-${c.id}`}
-                  client={c}
-                  period={c.run?.period || period}
-                  isSenior={isSenior}
-                  onChanged={() => load(period)}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Production roster */}
-          {production.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-gray-100 p-8 text-center">
-              <Sparkles size={28} className="mx-auto text-teal mb-2" />
-              <h3 className="font-bold text-navy">No clients in production yet</h3>
-              <p className="text-sm text-ink-slate mt-1 max-w-md mx-auto">
-                Once a client&apos;s balance sheet is clean, promote them to
-                production from their client profile — they&apos;ll show up here
-                for the fast monthly routine.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {production.map((c) => (
-                <ClientRecCard
-                  key={c.id}
-                  client={c}
-                  period={period}
-                  isSenior={isSenior}
-                  onChanged={() => load(period)}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Ready to promote */}
-          {eligible.length > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
-              <h3 className="text-sm font-bold text-navy mb-1">
-                Ready for production ({eligible.length})
-              </h3>
-              <p className="text-xs text-ink-slate mb-3">
-                Cleanup complete, not yet promoted. {isSenior
-                  ? "Promote them and they join the monthly routine."
-                  : "Ask an admin or lead to promote them from the client profile."}
-              </p>
-              <ul className="divide-y divide-slate-200/70">
-                {eligible.map((c) => (
-                  <EligibleRow key={c.id} client={c} isSenior={isSenior} onPromoted={() => load(period)} />
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 // ─── PER-CLIENT CARD ─────────────────────────────────────────────────────
 
-function ClientRecCard({
+export function ClientRecCard({
   client,
   period,
   isSenior,
@@ -935,7 +796,7 @@ function OverallBadge({ overall }: { overall?: CheckStatus }) {
 
 // ─── ELIGIBLE (READY TO PROMOTE) ────────────────────────────────────────
 
-function EligibleRow({
+export function EligibleRow({
   client,
   isSenior,
   onPromoted,

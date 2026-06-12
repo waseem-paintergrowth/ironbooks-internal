@@ -14,32 +14,23 @@ import type { Database } from "@/lib/database.types";
 import { StripeConnectModal } from "./StripeConnectModal";
 import { isMuted, setMuted, onMutedChange, playSound } from "@/lib/sounds";
 
-/** Daily work surface — what most bookkeepers need every day. */
+/** Daily work surface — the whole job in five stops. */
 const dailyNav = [
   { href: "/today", label: "Today", icon: Sun },
-  { href: "/kanban", label: "Workflow", icon: KanbanSquare },
-  { href: "/monthly-rec", label: "Monthly Rec", icon: ListChecks },
+  { href: "/cleanup", label: "Cleanup", icon: ClipboardCheck },
+  { href: "/production", label: "Production", icon: ListChecks },
   { href: "/clients", label: "Clients", icon: Users },
-  { href: "/balance-sheet/uf-audit", label: "UF Audit", icon: Wallet },
   { href: "/history", label: "History", icon: Clock },
 ];
 
-/** Ops & oversight — admin + lead only. */
-const operationsNav: Array<{
-  href: string;
-  label: string;
-  icon: any;
-  badge?: boolean;
-}> = [
-  { href: "/month-end", label: "Month-End", icon: CalendarCheck },
-  { href: "/balance-sheet/cleanup", label: "BS Cleanup", icon: ClipboardCheck },
-  { href: "/flagged", label: "Flagged", icon: Flag, badge: true },
+/** Everything else — standalone tools, tucked under Tools, senior+ only. */
+const toolsNav = [
+  { href: "/balance-sheet/uf-audit", label: "UF Audit", icon: Wallet },
+  { href: "/balance-sheet/cleanup", label: "BS Cleanup Wizard", icon: KanbanSquare },
+  { href: "/flagged", label: "Flagged", icon: Flag },
   { href: "/fleet", label: "Fleet Health", icon: Gauge },
   { href: "/fleet/qbo-health", label: "QBO Connections", icon: Shield },
-];
-
-/** Reference + standalone tools — tucked under Tools, senior+ only. */
-const toolsNav = [
+  { href: "/month-end", label: "Month-End (legacy)", icon: CalendarCheck },
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/templates", label: "Master COA", icon: BookOpen },
   { href: "/advisor", label: "Advisor", icon: HeartPulse },
@@ -188,27 +179,28 @@ export function Sidebar() {
 
         {isSenior && (
           <>
-            <NavSection label="Operations" className="mt-4" />
-            {operationsNav.map((item) => (
-              <NavItem
-                key={item.href}
-                item={item}
-                pathname={pathname}
-                badgeCount={item.badge ? flaggedCount : undefined}
-              />
-            ))}
-
             <button
               onClick={() => setToolsOpen((v) => !v)}
               className="w-full flex items-center gap-2 px-3 py-2 mt-3 text-[10px] font-bold uppercase tracking-wider text-white/35 hover:text-white/60 transition-colors"
             >
               {toolsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
               Tools
+              {flaggedCount > 0 && (
+                <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/90 text-white tabular-nums">
+                  {flaggedCount}
+                </span>
+              )}
             </button>
             {toolsOpen && (
               <div className="space-y-0.5">
                 {toolsNav.map((item) => (
-                  <NavItem key={item.href} item={item} pathname={pathname} dim />
+                  <NavItem
+                    key={item.href}
+                    item={item}
+                    pathname={pathname}
+                    dim
+                    badgeCount={item.href === "/flagged" ? flaggedCount : undefined}
+                  />
                 ))}
                 <button
                   onClick={() => setStripeModalOpen(true)}
