@@ -133,7 +133,7 @@ export function OnboardingBoard({ bookkeepers, bookkeeperFilter, canEdit }: Prop
           kanban container so that column lands at the left of the
           visible area. Useful on narrow screens where 4–6 columns don't
           all fit. */}
-      <div className="sticky top-0 z-10 -mx-1 px-1 py-2 mb-3 bg-[#FAFBFC]/95 backdrop-blur border-b border-gray-100">
+      <div className="sticky top-0 z-10 -mx-1 px-1 py-2 mb-3 bg-[#D4DCE8]/95 backdrop-blur border-b border-gray-100">
         <div className="flex items-center gap-2 overflow-x-auto">
           <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-light shrink-0 mr-1">
             Jump to:

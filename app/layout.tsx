@@ -21,7 +21,7 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="font-sans antialiased bg-[#FAFBFC] text-navy">
+      <body className="font-sans antialiased bg-[var(--app-canvas)] text-navy">
         {children}
       </body>
     </html>

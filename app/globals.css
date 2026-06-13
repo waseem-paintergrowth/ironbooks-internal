@@ -9,6 +9,11 @@
   --brand-teal-lighter: #F4F9F8;
   --brand-navy: #0F1F2E;
   --brand-slate: #475569;
+  /* App canvas — the page background behind white cards/containers.
+     Single source of truth for both the internal app and the client
+     portal; deliberately a clear step deeper than white so panels read
+     as distinct floating surfaces. Tune here to adjust contrast app-wide. */
+  --app-canvas: #D4DCE8;
 }
 
 * {
