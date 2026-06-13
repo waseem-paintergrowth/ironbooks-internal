@@ -247,10 +247,13 @@ export default async function TodayPage({
     const { data: cleanupClients } = await cq.order("due_date", { ascending: true, nullsFirst: false });
     const raw = (cleanupClients as any[]) || [];
     const bkIds = [...new Set(raw.map((c) => c.assigned_bookkeeper_id).filter(Boolean))];
+    // Internal team only — clients (role 'client') never appear in the
+    // "view as" picker; they have no access to /today at all.
     const { data: bks } = await service
       .from("users")
-      .select("id, full_name")
-      .eq("is_active", true);
+      .select("id, full_name, role")
+      .eq("is_active", true)
+      .in("role", ["admin", "lead", "bookkeeper", "viewer"]);
     const bkById = new Map(((bks as any[]) || []).map((b) => [b.id, b.full_name]));
     allBookkeepers = ((bks as any[]) || [])
       .filter((b) => b.full_name)
@@ -502,6 +505,9 @@ export default async function TodayPage({
   return (
     <AppShell>
       <TopBar title="Today" subtitle={`Daily reconciliation · ${today}`} />
+      {/* Light-grey canvas so the white cards read as distinct containers
+          instead of blending into a near-white page. */}
+      <div className="bg-[#EDEFF2] min-h-[calc(100vh-4rem)]">
       <div className="px-8 py-6 max-w-5xl space-y-6">
         {/* Dead QBO connections — seniors only (they run the re-auth flow).
             Renders nothing when the fleet is healthy. */}
@@ -656,6 +662,7 @@ export default async function TodayPage({
         <p className="text-xs text-ink-light text-center max-w-md mx-auto leading-relaxed">
           Auto items are already in QuickBooks; review items need your sign-off first.
         </p>
+      </div>
       </div>
     </AppShell>
   );

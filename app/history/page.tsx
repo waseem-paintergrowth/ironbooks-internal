@@ -84,8 +84,9 @@ export default async function HistoryPage() {
       .limit(200),
     supabase
       .from("users")
-      .select("id, full_name")
+      .select("id, full_name, role")
       .eq("is_active", true)
+      .in("role", ["admin", "lead", "bookkeeper", "viewer"])
       .order("full_name"),
     supabase
       .from("client_links")

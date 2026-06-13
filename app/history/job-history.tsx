@@ -49,7 +49,7 @@ const STATUS_CONFIG: Record<string, { color: string; bg: string; icon: any; labe
   cancelled: { color: "#94A3B8", bg: "#F1F5F9", icon: XCircle, label: "Cancelled" },
   draft: { color: "#94A3B8", bg: "#F1F5F9", icon: Clock, label: "Draft" },
   in_review: { color: "#F59E0B", bg: "#FEF3C7", icon: AlertTriangle, label: "In Review" },
-  pending_lisa: { color: "#F59E0B", bg: "#FEF3C7", icon: Flag, label: "Pending Lisa" },
+  pending_lisa: { color: "#F59E0B", bg: "#FEF3C7", icon: Flag, label: "Pending Approval" },
   approved: { color: "#2D7A75", bg: "#E8F2F0", icon: CheckCircle2, label: "Approved" },
 };
 
@@ -224,7 +224,7 @@ export function JobHistory({
             <option value="executing">Running</option>
             <option value="failed">Failed</option>
             <option value="in_review">In Review</option>
-            <option value="pending_lisa">Pending Lisa</option>
+            <option value="pending_lisa">Pending Approval</option>
             <option value="cancelled">Cancelled</option>
           </select>
 
