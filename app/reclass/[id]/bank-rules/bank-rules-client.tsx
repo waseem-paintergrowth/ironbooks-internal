@@ -293,6 +293,13 @@ export function BankRulesFromReclassClient({
               Do another period (start a new cleanup)
               <ArrowRight size={14} />
             </Link>
+            <Link
+              href={`/balance-sheet/${clientLinkId}/cleanup`}
+              className="w-full inline-flex items-center justify-center gap-2 bg-navy hover:bg-navy/90 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+            >
+              Continue to Balance Sheet
+              <ArrowRight size={14} />
+            </Link>
             <button
               type="button"
               onClick={handleMarkCleanupComplete}
