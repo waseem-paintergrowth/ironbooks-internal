@@ -15,7 +15,11 @@ type ClientLink = Database["public"]["Tables"]["client_links"]["Row"];
 interface MasterAccount {
   account_name: string;
   parent_account_name: string | null;
-  is_parent: boolean;
+  // Nullable to match the master_coa column type returned by Supabase
+  // (the merge of the onboarding/discovery branches surfaced this as a
+  // new type error otherwise). Only ever read for display, never as a
+  // strict boolean, so null is harmless.
+  is_parent: boolean | null;
   section: string | null;
   sort_order: number | null;
 }
