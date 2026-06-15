@@ -1436,7 +1436,6 @@ function ClientEmailModal({
   rows: Reclassification[];
   onClose: () => void;
 }) {
-  void jobId; // legacy prop, no longer used
   const groups = useMemo(() => buildSenderGroups(rows), [rows]);
   const periodLabel = `${dateStart} → ${dateEnd}`;
 
@@ -1454,6 +1453,11 @@ function ClientEmailModal({
   const [outro, setOutro] = useState<string>(defaultOutro);
   const [copied, setCopied] = useState<"subject" | "body" | null>(null);
   const [copyError, setCopyError] = useState<string>("");
+  // Direct-send state (Send Email button → Resend, no Double copy-paste)
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<
+    { ok: true; recipients: string[] } | { ok: false; message: string } | null
+  >(null);
 
   // Build the HTML the bookkeeper pastes into Double's rich-text editor.
   // Branded with the Ironbooks palette (teal + navy + slate). Most rich-text
@@ -1607,6 +1611,31 @@ function ClientEmailModal({
     }
   }
 
+  // Send the branded email straight to the client via Resend — no Double
+  // copy-paste. The server resolves the recipient (portal users, else the
+  // QBO business email); if none exists it returns a clear error and the
+  // bookkeeper falls back to Copy.
+  async function sendEmail() {
+    if (sending) return;
+    setSending(true);
+    setSendResult(null);
+    setCopyError("");
+    try {
+      const res = await fetch(`/api/reclass/${jobId}/email-questions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject, html, text: plainText }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Couldn't send the email");
+      setSendResult({ ok: true, recipients: json.recipients || [] });
+    } catch (err: any) {
+      setSendResult({ ok: false, message: err?.message || "Couldn't send the email" });
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[92vh] flex flex-col">
@@ -1618,7 +1647,7 @@ function ClientEmailModal({
               Email to {clientName}
             </h3>
             <p className="text-xs text-ink-slate mt-1">
-              {rows.length} transaction{rows.length === 1 ? "" : "s"}. Edit the message, then copy & paste into the Double client portal to send.
+              {rows.length} transaction{rows.length === 1 ? "" : "s"}. Edit the message, then send it directly — or copy & paste into Double.
             </p>
           </div>
           <button onClick={onClose} className="text-ink-slate hover:text-navy">
@@ -1739,6 +1768,24 @@ function ClientEmailModal({
               {copyError}
             </div>
           )}
+
+          {/* Direct-send result */}
+          {sendResult?.ok && (
+            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-800 flex items-start gap-2">
+              <CheckCircle2 size={15} className="mt-0.5 flex-shrink-0" />
+              <span>
+                Sent to{" "}
+                <strong>{sendResult.recipients.join(", ")}</strong>. The client can
+                fill in the table and reply directly to you.
+              </span>
+            </div>
+          )}
+          {sendResult && !sendResult.ok && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800 flex items-start gap-2">
+              <AlertTriangle size={15} className="mt-0.5 flex-shrink-0" />
+              <span>{sendResult.message}</span>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
@@ -1757,10 +1804,24 @@ function ClientEmailModal({
             )}
             <button
               onClick={copyBody}
-              className="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold px-5 py-2.5 rounded-lg"
+              className="inline-flex items-center gap-2 bg-white border border-purple-200 hover:bg-purple-50 text-purple-700 text-sm font-semibold px-4 py-2.5 rounded-lg"
             >
               {copied === "body" ? <CheckCircle2 size={14} /> : <Send size={14} />}
-              {copied === "body" ? "Copied! Paste into Double" : "Copy Email Body + Table"}
+              {copied === "body" ? "Copied!" : "Copy for Double"}
+            </button>
+            <button
+              onClick={sendEmail}
+              disabled={sending || (sendResult?.ok ?? false)}
+              className="inline-flex items-center gap-2 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-5 py-2.5 rounded-lg disabled:opacity-60"
+            >
+              {sending ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : sendResult?.ok ? (
+                <CheckCircle2 size={14} />
+              ) : (
+                <Mail size={14} />
+              )}
+              {sending ? "Sending…" : sendResult?.ok ? "Sent" : "Send Email"}
             </button>
           </div>
         </div>

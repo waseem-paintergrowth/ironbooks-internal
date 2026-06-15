@@ -276,3 +276,62 @@ export async function emailPortalUsersAboutMessage(
     return { sent: false, reason: "error" };
   }
 }
+
+/**
+ * Resolve the email address(es) to use when emailing a client DIRECTLY
+ * (not the portal-notification path — this is for branded emails the
+ * client answers by replying, e.g. the "questions about transactions"
+ * cleanup email).
+ *
+ * Order of preference:
+ *   1. Active portal-user emails (client_users → users) — the people who
+ *      actually field questions.
+ *   2. client_links.client_email — the business email captured from QBO
+ *      CompanyInfo at connect time. Fallback for clients who don't have a
+ *      portal login yet.
+ *
+ * Deduplicated, lowercased. Empty array = no address on file (caller
+ * should fall back to the copy-paste-into-Double workflow).
+ */
+export async function resolveClientContactEmails(
+  service: any,
+  clientLinkId: string
+): Promise<string[]> {
+  const out = new Set<string>();
+  try {
+    const { data: mappings } = await service
+      .from("client_users")
+      .select("user_id")
+      .eq("client_link_id", clientLinkId)
+      .eq("active", true);
+    const userIds = ((mappings as any[]) || []).map((m) => m.user_id).filter(Boolean);
+    if (userIds.length > 0) {
+      const { data: portalUsers } = await service
+        .from("users")
+        .select("email")
+        .in("id", userIds)
+        .eq("is_active", true);
+      for (const u of (portalUsers as any[]) || []) {
+        if (u.email) out.add(String(u.email).trim().toLowerCase());
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[client-comms] portal-user email lookup failed: ${err?.message}`);
+  }
+
+  if (out.size === 0) {
+    try {
+      const { data: cl } = await service
+        .from("client_links")
+        .select("client_email")
+        .eq("id", clientLinkId)
+        .single();
+      const e = (cl as any)?.client_email;
+      if (e) out.add(String(e).trim().toLowerCase());
+    } catch (err: any) {
+      console.warn(`[client-comms] client_links email lookup failed: ${err?.message}`);
+    }
+  }
+
+  return [...out];
+}
