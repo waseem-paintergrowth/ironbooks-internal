@@ -507,6 +507,47 @@ function ClientRow({
   const [assignMenuOpen, setAssignMenuOpen] = useState(false);
   const [pendingAssignee, setPendingAssignee] = useState<{ id: string; name: string } | null>(null);
   const [pendingDueDate, setPendingDueDate] = useState("");
+  // Fixed-position coords for the assign popover. position:absolute got
+  // clipped by the table container's overflow-hidden on the last rows
+  // (Lisa: "can't assign the last 2 clients, ran out of real estate").
+  // Computing fixed coords off the trigger's rect escapes the clip and
+  // lets us flip upward when there's no room below. Mirrors ActionsMenu.
+  const assignBtnRef = useRef<HTMLButtonElement>(null);
+  const [assignPos, setAssignPos] = useState<{
+    top: number; left: number; openUpward: boolean; maxHeight: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!assignMenuOpen) { setAssignPos(null); return; }
+    function compute() {
+      const btn = assignBtnRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const PAD = 8;
+      const MENU_W = 230;
+      const TARGET_H = 340; // two-step menu's worst-case height
+      const spaceBelow = vh - rect.bottom - PAD;
+      const spaceAbove = rect.top - PAD;
+      const openUpward = spaceBelow < TARGET_H && spaceAbove > spaceBelow;
+      const left = Math.max(PAD, Math.min(rect.left, vw - MENU_W - PAD));
+      setAssignPos({
+        top: openUpward ? rect.top - 4 : rect.bottom + 4,
+        left,
+        openUpward,
+        maxHeight: Math.max(180, (openUpward ? spaceAbove : spaceBelow)),
+      });
+    }
+    compute();
+    function onScrollResize() { setAssignMenuOpen(false); }
+    window.addEventListener("scroll", onScrollResize, true);
+    window.addEventListener("resize", onScrollResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollResize, true);
+      window.removeEventListener("resize", onScrollResize);
+    };
+  }, [assignMenuOpen]);
   const [stripeLoading, setStripeLoading] = useState(false);
   const [stripeCopied, setStripeCopied] = useState(false);
   const [stripeError, setStripeError] = useState("");
@@ -621,6 +662,7 @@ function ClientRow({
 
       <div className="relative">
         <button
+          ref={assignBtnRef}
           onClick={() => canEdit && setAssignMenuOpen(!assignMenuOpen)}
           disabled={!canEdit}
           className="flex items-center gap-2 disabled:cursor-default"
@@ -636,12 +678,20 @@ function ClientRow({
                 </span>
               </div>
               {client.due_date && (() => {
-                const daysLeft = Math.ceil((new Date(client.due_date).getTime() - Date.now()) / 86400000);
+                // due_date is a DATE ("YYYY-MM-DD"). new Date(str) parses it
+                // as UTC midnight, which renders a day EARLY in US timezones
+                // (set Jun 19 → showed Jun 18). Parse as LOCAL midnight by
+                // appending a time component so the displayed day matches
+                // what the bookkeeper picked.
+                const due = new Date(`${client.due_date.slice(0, 10)}T00:00:00`);
+                const startOfToday = new Date();
+                startOfToday.setHours(0, 0, 0, 0);
+                const daysLeft = Math.round((due.getTime() - startOfToday.getTime()) / 86400000);
                 return (
                   <div className={`text-[10px] mt-0.5 font-medium ${
                     daysLeft < 0 ? "text-red-600" : daysLeft <= 1 ? "text-amber-600" : "text-ink-slate"
                   }`}>
-                    {daysLeft < 0 ? `Overdue ${Math.abs(daysLeft)}d` : daysLeft === 0 ? "Due today" : daysLeft === 1 ? "Due tomorrow" : `Due ${new Date(client.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+                    {daysLeft < 0 ? `Overdue ${Math.abs(daysLeft)}d` : daysLeft === 0 ? "Due today" : daysLeft === 1 ? "Due tomorrow" : `Due ${due.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
                   </div>
                 );
               })()}
@@ -652,13 +702,21 @@ function ClientRow({
           {canEdit && <ChevronDown size={10} className="text-ink-light" />}
         </button>
 
-        {assignMenuOpen && (
+        {assignMenuOpen && assignPos && (
           <>
             <div
-              className="fixed inset-0 z-10"
+              className="fixed inset-0 z-[60]"
               onClick={() => { setAssignMenuOpen(false); setPendingAssignee(null); setPendingDueDate(""); }}
             />
-            <div className="absolute left-0 top-full mt-1 z-20 rounded-lg shadow-lg bg-white border border-gray-200 min-w-[210px]">
+            <div
+              className="fixed z-[61] rounded-lg shadow-lg bg-white border border-gray-200 w-[230px] overflow-hidden"
+              style={{
+                top: assignPos.top,
+                left: assignPos.left,
+                maxHeight: assignPos.maxHeight,
+                transform: assignPos.openUpward ? "translateY(-100%)" : undefined,
+              }}
+            >
               {!pendingAssignee ? (
                 // Step 1: pick bookkeeper
                 <div className="overflow-y-auto max-h-[280px]">
