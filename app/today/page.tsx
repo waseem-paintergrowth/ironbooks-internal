@@ -535,6 +535,16 @@ export default async function TodayPage({
     ? allBookkeepers.find((b) => b.id === viewAs)?.full_name || "bookkeeper"
     : null;
 
+  // Today is an action queue, not a directory — only surface clients that
+  // actually need attention (queued review items, anomalies, or a paused
+  // feed). The full client list lives on /clients.
+  const clientsNeedingReview = eligibleClients.filter(
+    (c) =>
+      c.daily_recon_paused ||
+      (pendingByClient.get(c.id) || 0) > 0 ||
+      (anomaliesByClient.get(c.id) || 0) > 0
+  );
+
   return (
     <AppShell>
       <TopBar title="Today" subtitle={`Daily reconciliation · ${today}`} />
@@ -588,25 +598,23 @@ export default async function TodayPage({
           )}
         </section>
 
-        {/* ── YOUR CLIENTS roster ── */}
-        {eligibleClients.length > 0 && (
+        {/* ── CLIENTS NEEDING REVIEW ── action queue, not a directory ── */}
+        {clientsNeedingReview.length > 0 && (
         <section id="clients" className="scroll-mt-4">
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
             <h2 className="text-sm font-bold text-navy uppercase tracking-wider">
-              Clients on daily recon ({eligibleClients.length})
+              Needs review today ({clientsNeedingReview.length})
             </h2>
-            {isSenior && (
-              <Link
-                href="/admin/daily-recon"
-                className="text-xs font-semibold text-teal hover:text-teal-dark"
-              >
-                Manage →
-              </Link>
-            )}
+            <Link
+              href="/clients"
+              className="text-xs font-semibold text-teal hover:text-teal-dark"
+            >
+              All clients →
+            </Link>
           </div>
           <ul className="divide-y divide-gray-50">
-            {eligibleClients.map((c) => {
+            {clientsNeedingReview.map((c) => {
               const pending = pendingByClient.get(c.id) || 0;
               const anomalies = anomaliesByClient.get(c.id) || 0;
               const autoToday = autoExecuted24h.get(c.id) || 0;
