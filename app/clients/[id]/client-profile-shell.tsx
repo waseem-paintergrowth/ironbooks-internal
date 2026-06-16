@@ -24,6 +24,7 @@ import {
   Play as PlayIcon,
   PowerOff,
   Mail,
+  Building2,
 } from "lucide-react";
 import type {
   OutstandingWork,
@@ -145,10 +146,11 @@ interface Props {
   onboarding?: OnboardingProfile | null;
 }
 
-type TabId = "overview" | "pl" | "bs" | "bank" | "activity";
+type TabId = "overview" | "profile" | "pl" | "bs" | "bank" | "activity";
 
 const TABS: { id: TabId; label: string; icon: any }[] = [
   { id: "overview", label: "Overview", icon: Activity },
+  { id: "profile", label: "Profile", icon: Building2 },
   { id: "pl", label: "P&L", icon: FileText },
   { id: "bs", label: "Balance Sheet", icon: Scale },
   { id: "bank", label: "Bank Balances", icon: Banknote },
@@ -233,6 +235,9 @@ export function ClientProfileShell({ clientLink, actorRole, overview, financials
           qboStatus={financials.qboStatus}
           onboarding={onboarding}
         />
+      )}
+      {activeTab === "profile" && (
+        <ProfileTab clientLink={clientLink} onboarding={onboarding} />
       )}
       {activeTab === "pl" && (
         <PLTab
@@ -655,6 +660,54 @@ function ProductionStatusCard({
   );
 }
 
+// ─── PROFILE TAB ───────────────────────────────────────────────────────
+// The editable client contact/details card + the read-only onboarding
+// answers table. Lives in its own tab so Overview stays focused on status.
+
+function ProfileTab({
+  clientLink,
+  onboarding,
+}: {
+  clientLink: ClientLink;
+  onboarding?: OnboardingProfile | null;
+}) {
+  return (
+    <div className="space-y-6">
+      <ClientDetailsCard
+        clientLinkId={clientLink.id}
+        initial={{
+          contact_first_name: clientLink.contact_first_name ?? null,
+          contact_last_name: clientLink.contact_last_name ?? null,
+          client_email: clientLink.client_email ?? null,
+          client_phone: clientLink.client_phone ?? null,
+          legal_business_name: clientLink.legal_business_name ?? null,
+          trade_type: clientLink.trade_type ?? null,
+          corporate_type: clientLink.corporate_type ?? null,
+          fiscal_year_end: clientLink.fiscal_year_end ?? null,
+          country: clientLink.country ?? null,
+          state_province: clientLink.state_province ?? null,
+          address_line1: clientLink.address_line1 ?? null,
+          address_line2: clientLink.address_line2 ?? null,
+          city: clientLink.city ?? null,
+          postal_code: clientLink.postal_code ?? null,
+          annual_revenue_range: clientLink.annual_revenue_range ?? null,
+          taxes_up_to_date: clientLink.taxes_up_to_date ?? null,
+          prior_bookkeeper: clientLink.prior_bookkeeper ?? null,
+          accounting_software: clientLink.accounting_software ?? null,
+          payroll_provider: clientLink.payroll_provider ?? null,
+          employee_count_range: clientLink.employee_count_range ?? null,
+          uses_business_cards: clientLink.uses_business_cards ?? null,
+          keeps_receipts: clientLink.keeps_receipts ?? null,
+          bank_connected_to_software: clientLink.bank_connected_to_software ?? null,
+          profile_updated_at: clientLink.profile_updated_at ?? null,
+        }}
+        onboardingAnswers={onboarding?.answers}
+      />
+      {onboarding && <OnboardingDetailsCard onboarding={onboarding} />}
+    </div>
+  );
+}
+
 // ─── OVERVIEW TAB ──────────────────────────────────────────────────────
 
 function OverviewTab({
@@ -715,44 +768,8 @@ function OverviewTab({
           broken" list. */}
       {progress && <ProgressFlowChart progress={progress} />}
 
-      {/* Onboarding details — the GHL onboarding-form answers + call status,
-          carried over when this client was created from the onboarding board,
-          so a senior can reference them here instead of toggling to GHL. */}
-      {/* Client details — structured, editable business profile (contact,
-          address, corporate type, revenue band, software, etc.). Editable
-          inline; "Fill from onboarding" pulls the GHL answers in as a draft. */}
-      <ClientDetailsCard
-        clientLinkId={clientLink.id}
-        initial={{
-          contact_first_name: clientLink.contact_first_name ?? null,
-          contact_last_name: clientLink.contact_last_name ?? null,
-          client_email: clientLink.client_email ?? null,
-          client_phone: clientLink.client_phone ?? null,
-          legal_business_name: clientLink.legal_business_name ?? null,
-          trade_type: clientLink.trade_type ?? null,
-          corporate_type: clientLink.corporate_type ?? null,
-          fiscal_year_end: clientLink.fiscal_year_end ?? null,
-          country: clientLink.country ?? null,
-          state_province: clientLink.state_province ?? null,
-          address_line1: clientLink.address_line1 ?? null,
-          address_line2: clientLink.address_line2 ?? null,
-          city: clientLink.city ?? null,
-          postal_code: clientLink.postal_code ?? null,
-          annual_revenue_range: clientLink.annual_revenue_range ?? null,
-          taxes_up_to_date: clientLink.taxes_up_to_date ?? null,
-          prior_bookkeeper: clientLink.prior_bookkeeper ?? null,
-          accounting_software: clientLink.accounting_software ?? null,
-          payroll_provider: clientLink.payroll_provider ?? null,
-          employee_count_range: clientLink.employee_count_range ?? null,
-          uses_business_cards: clientLink.uses_business_cards ?? null,
-          keeps_receipts: clientLink.keeps_receipts ?? null,
-          bank_connected_to_software: clientLink.bank_connected_to_software ?? null,
-          profile_updated_at: clientLink.profile_updated_at ?? null,
-        }}
-        onboardingAnswers={onboarding?.answers}
-      />
-
-      {onboarding && <OnboardingDetailsCard onboarding={onboarding} />}
+      {/* Client details + onboarding answers moved to their own "Profile"
+          tab to keep Overview focused on status + outstanding work. */}
 
       {/* Outstanding work — top-priority card. If empty we show a positive
           "all clear" state because seeing "0 outstanding items" hidden in
