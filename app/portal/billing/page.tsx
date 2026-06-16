@@ -11,72 +11,9 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export type ServiceTier = "insight" | "discipline" | "vision" | "scale";
-
-export interface TierConfig {
-  key: ServiceTier;
-  name: string;
-  tagline: string;
-  monthlyFee: number | null;
-  firstMonthFee: number | null;
-  revenueCap: string;
-  onboardingCall: string;
-  color: string;
-}
-
-export const TIERS: TierConfig[] = [
-  {
-    key: "insight",
-    name: "Tier 1 – Insight",
-    tagline: "Getting your books clean and in order.",
-    monthlyFee: 247,
-    firstMonthFee: 500,
-    revenueCap: "Up to $25K/mo",
-    onboardingCall: "1:1 (30 min)",
-    color: "teal",
-  },
-  {
-    key: "discipline",
-    name: "Tier 2 – Discipline",
-    tagline: "Monthly reporting, coaching, and accountability.",
-    monthlyFee: 497,
-    firstMonthFee: 750,
-    revenueCap: "Up to $85K/mo",
-    onboardingCall: "1:1 (30 min)",
-    color: "blue",
-  },
-  {
-    key: "vision",
-    name: "Tier 3 – Vision",
-    tagline: "Full financial partnership for growing businesses.",
-    monthlyFee: 797,
-    firstMonthFee: 1500,
-    revenueCap: "Up to $250K/mo",
-    onboardingCall: "1:1 (60 min)",
-    color: "violet",
-  },
-  {
-    key: "scale",
-    name: "Tier 4 – Scale",
-    tagline: "Enterprise bookkeeping for high-revenue operations.",
-    monthlyFee: null,
-    firstMonthFee: null,
-    revenueCap: "Above $3M/yr",
-    onboardingCall: "Custom",
-    color: "navy",
-  },
-];
-
-export const INCLUDED_FEATURES = [
-  "Accrual or cash-basis bookkeeping",
-  "Bank and credit card reconciliations",
-  "Monthly Profit & Loss and Balance Sheet",
-  "AI-generated monthly summaries, human-reviewed",
-  "Unlimited Ironbooks app & AI tool access",
-  "Weekly group coaching calls (optional)",
-  "Email support and monthly action video",
-  "1:1 onboarding call with your bookkeeping coach",
-];
+// Tier constants/types now live in ./tiers (client-safe) so billing-client.tsx
+// can import them without dragging this server page into the client bundle.
+// Import directly from "./tiers" — a page module must not export extra symbols.
 
 /**
  * Portal billing page — no QBO required. Resolves identity via session →
@@ -133,7 +70,7 @@ export default async function BillingPage() {
 
   const { data: clientLink } = await service
     .from("client_links")
-    .select("id, client_name, stripe_customer_id, billing_start_date, billing_cancel_request_at, billing_cancel_request_note")
+    .select("id, client_name, jurisdiction, stripe_customer_id, billing_start_date, billing_cancel_request_at, billing_cancel_request_note")
     .eq("id", clientLinkId)
     .single();
 
@@ -145,8 +82,15 @@ export default async function BillingPage() {
   const billingStart = (clientLink as any).billing_start_date as string | null;
   const cancelRequestAt = (clientLink as any).billing_cancel_request_at as string | null;
   const cancelRequestNote = (clientLink as any).billing_cancel_request_note as string | null;
-  const coachingCallLink = process.env.STRIPE_COACHING_CALL_PAYMENT_LINK || null;
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || "https://app.ironbooks.com";
+
+  // Pick the payment link that matches the client's billing currency.
+  // CA clients pay in CAD, everyone else in USD. The links are separate
+  // Stripe products so the client sees the right currency on checkout.
+  const jurisdiction = ((clientLink as any).jurisdiction as string | null) || "US";
+  const coachingCallLink = jurisdiction === "CA"
+    ? (process.env.STRIPE_COACHING_CALL_PAYMENT_LINK_CAD || null)
+    : (process.env.STRIPE_COACHING_CALL_PAYMENT_LINK_USD || null);
 
   // Pull tier + invoices from Stripe. Fail soft — if no customer ID or Stripe
   // is unreachable, the page still renders with a "contact us" fallback.
