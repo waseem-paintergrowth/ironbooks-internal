@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   ClientRecCard, EligibleRow, periodLabel, shiftPeriod,
-  type EligibleClient, type ProdClient,
+  type EligibleClient, type ProdClient, type Bookkeeper,
 } from "./rec-card";
 
 /**
@@ -43,6 +43,7 @@ export function ProductionBoard() {
   const [period, setPeriod] = useState<string>("");
   const [production, setProduction] = useState<ProdClient[]>([]);
   const [eligible, setEligible] = useState<EligibleClient[]>([]);
+  const [bookkeepers, setBookkeepers] = useState<Bookkeeper[]>([]);
   const [isSenior, setIsSenior] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -58,6 +59,7 @@ export function ProductionBoard() {
       setPeriod(body.period);
       setProduction(body.production || []);
       setEligible(body.eligible || []);
+      setBookkeepers(body.bookkeepers || []);
       setIsSenior(!!body.is_senior);
     } catch (e: any) {
       setError(e?.message || "Failed to load");
@@ -205,6 +207,7 @@ export function ProductionBoard() {
                         client={c}
                         period={period}
                         isSenior={isSenior}
+                        bookkeepers={bookkeepers}
                         selected={selectedId === c.id}
                         onSelect={() => setSelectedId(selectedId === c.id ? null : c.id)}
                         onChanged={() => load(period)}
@@ -290,6 +293,7 @@ function BoardCard({
   client,
   period,
   isSenior,
+  bookkeepers,
   selected,
   onSelect,
   onChanged,
@@ -297,12 +301,30 @@ function BoardCard({
   client: ProdClient;
   period: string;
   isSenior: boolean;
+  bookkeepers: Bookkeeper[];
   selected: boolean;
   onSelect: () => void;
   onChanged: () => void;
 }) {
   const [togglingBs, setTogglingBs] = useState(false);
+  const [assigning, setAssigning] = useState(false);
   const bsOff = client.bs_enabled === false;
+
+  // Reassign the client to a bookkeeper (admin/lead only). Reuses the
+  // shared assign endpoint so it's audit-logged like everywhere else.
+  async function assignTo(bookkeeperId: string) {
+    setAssigning(true);
+    try {
+      const res = await fetch(`/api/clients/${client.id}/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookkeeper_id: bookkeeperId || null }),
+      });
+      if (res.ok) onChanged();
+    } finally {
+      setAssigning(false);
+    }
+  }
 
   async function toggleBs() {
     if (
@@ -450,6 +472,28 @@ function BoardCard({
         )}
         {saving && <Loader2 size={12} className="animate-spin text-ink-light flex-shrink-0" />}
       </div>
+
+      {/* Assign to bookkeeper — admin/lead only */}
+      {isSenior && (
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <span className="text-[10px] text-ink-light flex-shrink-0">Assigned</span>
+          <select
+            value={client.assigned_bookkeeper_id || ""}
+            disabled={assigning}
+            onChange={(e) => assignTo(e.target.value)}
+            title="Assign this client to a bookkeeper"
+            className="text-[11px] px-1.5 py-1 rounded border border-gray-200 bg-white text-ink-slate flex-1 min-w-0 disabled:opacity-60"
+          >
+            <option value="">Unassigned</option>
+            {bookkeepers.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.full_name}
+              </option>
+            ))}
+          </select>
+          {assigning && <Loader2 size={12} className="animate-spin text-ink-light flex-shrink-0" />}
+        </div>
+      )}
 
       {/* Waiting-on-client reason editor */}
       {editing && (

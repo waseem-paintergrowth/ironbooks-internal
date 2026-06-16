@@ -96,7 +96,13 @@ export interface ProdClient {
   paused: boolean;
   last_synced_at: string | null;
   bs_enabled?: boolean;
+  assigned_bookkeeper_id?: string | null;
   run: Run | null;
+}
+
+export interface Bookkeeper {
+  id: string;
+  full_name: string;
 }
 
 export interface EligibleClient {

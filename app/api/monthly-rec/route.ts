@@ -94,10 +94,24 @@ export async function GET(request: Request) {
     /* pre-migration env — every client shows "not started" */
   }
 
+  // Assignable bookkeepers for the board's per-client assign dropdown.
+  // Senior-only (only admin/lead can reassign — matches /api/clients/[id]/assign).
+  let bookkeepers: Array<{ id: string; full_name: string }> = [];
+  if (isSenior) {
+    const { data: bks } = await service
+      .from("users")
+      .select("id, full_name")
+      .in("role", ["admin", "lead", "bookkeeper"])
+      .eq("is_active", true)
+      .order("full_name");
+    bookkeepers = ((bks as any[]) || []).map((u) => ({ id: u.id, full_name: u.full_name }));
+  }
+
   return NextResponse.json({
     cleanup_signoffs: cleanupSignoffs,
     period,
     is_senior: isSenior,
+    bookkeepers,
     production: production.map((c) => ({
       id: c.id,
       client_name: c.client_name,
@@ -106,6 +120,7 @@ export async function GET(request: Request) {
       paused: !!c.daily_recon_paused,
       last_synced_at: c.last_synced_at,
       bs_enabled: c.bs_enabled !== false,
+      assigned_bookkeeper_id: c.assigned_bookkeeper_id ?? null,
       run: runsByClient.get(c.id) || null,
     })),
     eligible: eligible.map((c) => ({
