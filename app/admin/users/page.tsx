@@ -9,11 +9,23 @@ export default async function AdminUsersPage() {
 
   // ── EMPLOYEES — internal staff only. Portal clients also live in `users`
   //    (role='client'); exclude them so they don't bleed into Team Management.
-  const { data: employees } = await supabase
-    .from("user_activity_stats")
-    .select("*")
+  //    Read the roster from the `users` table (authoritative — it INCLUDES
+  //    deactivated staff so they can be reactivated; the user_activity_stats
+  //    view filters to active users) and enrich with productivity stats by id.
+  const { data: staffRows } = await supabase
+    .from("users")
+    .select("id, email, full_name, role, is_active, created_at, last_login_at")
     .neq("role", "client")
     .order("created_at", { ascending: true });
+  const { data: statRows } = await supabase
+    .from("user_activity_stats")
+    .select("*")
+    .neq("role", "client");
+  const statsById = new Map(((statRows || []) as any[]).map((s) => [s.id, s]));
+  const employees = ((staffRows || []) as any[]).map((u) => ({
+    ...(statsById.get(u.id) || {}),
+    ...u, // the users row is authoritative for identity + is_active
+  }));
 
   // ── CLIENTS — the companies we keep books for (client_links), enriched with
   //    whether they have an active client-portal login (for the badge, the

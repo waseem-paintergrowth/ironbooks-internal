@@ -59,22 +59,17 @@ export function UsersManagement({ initialUsers }: { initialUsers: UserStats[] })
     router.refresh();
   }
 
-  // Deactivating a bookkeeper who still owns active clients should never
-  // silently orphan their book — check first, and if they have clients, open
-  // the transfer modal (which can reassign + deactivate in one step).
+  // Deactivating a bookkeeper ALWAYS goes through the modal — never a silent
+  // toggle. With active clients it shows the reassign UI; with none it shows a
+  // "nothing to transfer → Deactivate" confirm. Either way the admin makes an
+  // explicit choice and the book is never quietly orphaned.
   async function requestDeactivate(u: UserStats) {
     try {
       const res = await fetch(`/api/admin/users/${u.id}/clients`);
       const body = await res.json().catch(() => ({ clients: [] }));
-      const clients: ClientLite[] = body.clients || [];
-      if (clients.length > 0) {
-        setTransferFor({ user: u, deactivateOnDone: true, initialClients: clients });
-      } else {
-        updateUser(u.id, { is_active: false });
-      }
+      setTransferFor({ user: u, deactivateOnDone: true, initialClients: body.clients || [] });
     } catch {
-      // If the check fails, fall back to opening the modal so the admin can
-      // decide rather than deactivating blind.
+      // Couldn't pre-fetch — open the modal anyway; it'll load clients itself.
       setTransferFor({ user: u, deactivateOnDone: true });
     }
   }
@@ -183,7 +178,14 @@ function UserRow({
           {user.full_name?.charAt(0) || "?"}
         </div>
         <div className="min-w-0">
-          <div className="font-semibold text-sm text-navy truncate">{user.full_name}</div>
+          <div className="font-semibold text-sm text-navy truncate flex items-center gap-1.5">
+            {user.full_name}
+            {!user.is_active && (
+              <span className="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-red-100 text-red-700 flex-shrink-0">
+                Inactive
+              </span>
+            )}
+          </div>
           <div className="text-xs text-ink-slate truncate">{user.email}</div>
         </div>
       </Link>
