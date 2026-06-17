@@ -8,6 +8,7 @@ import { CompletedAccounts } from "./completed-accounts";
 import { InReviewAccounts } from "./in-review-accounts";
 import { ManagerDashboard, type ManagerRow } from "./manager-dashboard";
 import { deriveLifecycleStatus } from "@/lib/client-lifecycle";
+import { previousMonthPeriod } from "@/lib/monthly-rec";
 
 export default async function ClientsPage() {
   // Watchdog: auto-fail any job that's been hung in `executing` past its
@@ -392,6 +393,34 @@ export default async function ClientsPage() {
     }
   }
 
+  // ── Month-end run state for production clients (current close period) — so
+  //    the dashboard shows real "Done" / "Waiting on client" / "Ready for
+  //    review" instead of a flat "In production". Tolerant: pre-migration-62
+  //    envs (no monthly_rec_runs) just leave everyone "In production".
+  const monthDone = new Set<string>();
+  const monthReview = new Set<string>();
+  const monthWaiting = new Set<string>();
+  const prodIds = enrichedClients.filter((c: any) => c.daily_recon_enabled).map((c: any) => c.id);
+  if (prodIds.length) {
+    try {
+      const period = previousMonthPeriod().period;
+      const { data: runs } = await (service as any)
+        .from("monthly_rec_runs")
+        .select("client_link_id, status, board_status")
+        .eq("period", period)
+        .eq("kind", "production_me")
+        .in("client_link_id", prodIds);
+      for (const r of (runs as any[]) || []) {
+        if (!r.client_link_id) continue;
+        if (r.status === "complete") monthDone.add(r.client_link_id);
+        else if (r.status === "pending_review") monthReview.add(r.client_link_id);
+        else if (r.board_status === "waiting_client") monthWaiting.add(r.client_link_id);
+      }
+    } catch (e: any) {
+      console.warn("[clients] monthly_rec_runs fetch failed:", e?.message);
+    }
+  }
+
   const managerRows: ManagerRow[] = enrichedClients
     .filter((c: any) => c.id)
     .map((c: any) => {
@@ -409,6 +438,9 @@ export default async function ClientsPage() {
         has_complete_coa: completeCoa.has(c.id),
         has_complete_reclass: completeReclass.has(c.id),
         open_ask_client: (c.unread_from_client || 0) > 0,
+        month_done: monthDone.has(c.id),
+        month_review: monthReview.has(c.id),
+        month_waiting_client: monthWaiting.has(c.id),
       });
       return {
         id: c.id,
@@ -421,6 +453,8 @@ export default async function ClientsPage() {
         bs_cleanup_skipped: !!bsSkippedById.get(c.id),
         // BS-skip is only meaningful while still in cleanup (not completed/production).
         in_cleanup_phase: !cleanupCompleted && !c.daily_recon_enabled,
+        // Production clients get a Month-end deep link to finish the close.
+        is_production: !!c.daily_recon_enabled && cleanupCompleted,
       };
     });
 

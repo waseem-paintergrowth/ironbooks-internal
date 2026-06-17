@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  LayoutGrid, ChevronDown, ChevronRight, ExternalLink, Loader2, Search, SkipForward, Undo2,
+  LayoutGrid, ChevronDown, ChevronRight, ExternalLink, Loader2, Search, SkipForward, Undo2, CalendarCheck,
 } from "lucide-react";
 import { LIFECYCLE_META, type LifecycleStatus } from "@/lib/client-lifecycle";
 
@@ -19,6 +19,8 @@ export interface ManagerRow {
   bs_cleanup_skipped: boolean;
   /** true while the client is still in cleanup (BS skip is only meaningful here) */
   in_cleanup_phase: boolean;
+  /** true once promoted to production — gets a Month-end deep link */
+  is_production: boolean;
 }
 interface Bk { id: string; full_name: string }
 
@@ -222,6 +224,19 @@ export function ManagerDashboard({
                             <SkipForward size={11} /> Skip BS
                           </button>
                         )
+                      )}
+                      {r.is_production && (
+                        <Link
+                          href="/production"
+                          className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border ${
+                            r.status === "done"
+                              ? "border-gray-200 text-ink-slate hover:bg-gray-50"
+                              : "border-teal/30 text-teal hover:bg-teal-lighter"
+                          }`}
+                          title={r.status === "done" ? "Month closed — open the production board" : "Open the month-end close: review, attest, send statements"}
+                        >
+                          <CalendarCheck size={11} /> {r.status === "done" ? "Month-end" : "Finish month-end"}
+                        </Link>
                       )}
                     </td>
                   </tr>

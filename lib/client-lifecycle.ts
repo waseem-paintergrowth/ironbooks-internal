@@ -33,7 +33,9 @@ export interface LifecycleInput {
   has_complete_coa?: boolean | null;
   has_complete_reclass?: boolean | null;
   open_ask_client?: boolean | null;
-  month_done?: boolean | null;
+  month_done?: boolean | null;            // current monthly_rec_run complete (sent)
+  month_review?: boolean | null;          // current run pending manager review
+  month_waiting_client?: boolean | null;  // current run board_status = waiting_client
 }
 
 export const LIFECYCLE_META: Record<LifecycleStatus, { label: string; tone: string; order: number; group: "Pipeline" | "Review" | "Live" }> = {
@@ -56,9 +58,12 @@ export const LIFECYCLE_META: Record<LifecycleStatus, { label: string; tone: stri
  * actionable states; otherwise the furthest-along pipeline phase wins.
  */
 export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
-  // ── Live states ──
+  // ── Live states (production) — reflect the month-end board for the period ──
   if (c.daily_recon_enabled && c.cleanup_completed_at) {
-    return c.month_done ? "done" : "in_production";
+    if (c.month_done) return "done";
+    if (c.month_review) return "ready_for_review";
+    if (c.month_waiting_client) return "waiting_on_client";
+    return "in_production";
   }
   if (c.cleanup_completed_at) return "completed";
 
