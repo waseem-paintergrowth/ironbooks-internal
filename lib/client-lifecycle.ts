@@ -14,7 +14,8 @@ export type LifecycleStatus =
   | "coa_cleanup"       // COA cleanup in flight
   | "reclassify"        // reclassification in flight (or COA done, reclass not started)
   | "bs_cleanup"        // reclass done, balance-sheet cleanup outstanding
-  | "ready_for_review"  // cleanup submitted, awaiting manager approval
+  | "ready_to_close"    // pipeline done (BS skipped/finished), not yet submitted for review
+  | "ready_for_review"  // cleanup submitted, awaiting manager approval (cleanup_review_state='in_review')
   | "waiting_on_client" // blocked waiting on the client
   | "completed"         // cleanup signed off, not yet promoted to production
   | "in_production"     // signed off + daily recon on
@@ -41,11 +42,12 @@ export const LIFECYCLE_META: Record<LifecycleStatus, { label: string; tone: stri
   coa_cleanup:       { label: "COA cleanup",       tone: "bg-blue-50 text-blue-700",        order: 2,  group: "Pipeline" },
   reclassify:        { label: "Reclassify",        tone: "bg-indigo-50 text-indigo-700",    order: 3,  group: "Pipeline" },
   bs_cleanup:        { label: "BS cleanup",        tone: "bg-cyan-50 text-cyan-700",        order: 4,  group: "Pipeline" },
-  waiting_on_client: { label: "Waiting on client", tone: "bg-amber-50 text-amber-700",      order: 5,  group: "Review" },
-  ready_for_review:  { label: "Ready for review",  tone: "bg-violet-50 text-violet-700",    order: 6,  group: "Review" },
-  completed:         { label: "Completed",         tone: "bg-emerald-50 text-emerald-700",  order: 7,  group: "Live" },
-  in_production:     { label: "In production",     tone: "bg-teal/10 text-teal",            order: 8,  group: "Live" },
-  done:              { label: "Done",              tone: "bg-emerald-100 text-emerald-800", order: 9,  group: "Live" },
+  ready_to_close:    { label: "Ready to close",    tone: "bg-fuchsia-50 text-fuchsia-700",  order: 5,  group: "Review" },
+  waiting_on_client: { label: "Waiting on client", tone: "bg-amber-50 text-amber-700",      order: 6,  group: "Review" },
+  ready_for_review:  { label: "Ready for review",  tone: "bg-violet-50 text-violet-700",    order: 7,  group: "Review" },
+  completed:         { label: "Completed",         tone: "bg-emerald-50 text-emerald-700",  order: 8,  group: "Live" },
+  in_production:     { label: "In production",     tone: "bg-teal/10 text-teal",            order: 9,  group: "Live" },
+  done:              { label: "Done",              tone: "bg-emerald-100 text-emerald-800", order: 10, group: "Live" },
 };
 
 /**
@@ -67,7 +69,10 @@ export function deriveLifecycleStatus(c: LifecycleInput): LifecycleStatus {
   // ── Pipeline (cleanup phases), furthest-along first ──
   if (c.has_active_reclass) return "reclassify";
   if (c.has_complete_reclass) {
-    return c.bs_cleanup_skipped_at ? "ready_for_review" : "bs_cleanup";
+    // Reclass done → owes a BS cleanup, unless a manager skipped it — in which
+    // case the cleanup pipeline is finished and it's awaiting sign-off
+    // (NOT the same as 'ready_for_review', which means actually submitted).
+    return c.bs_cleanup_skipped_at ? "ready_to_close" : "bs_cleanup";
   }
   if (c.has_active_coa) return "coa_cleanup";
   if (c.has_complete_coa) return "reclassify"; // COA done, reclass not started
