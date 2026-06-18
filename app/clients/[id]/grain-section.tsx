@@ -135,6 +135,26 @@ export function GrainSection({ clientLinkId }: { clientLinkId: string }) {
   const [configured, setConfigured] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [overview, setOverview] = useState<string | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+
+  // Cross-call AI overview — generated server-side, cached per client.
+  // Loads in parallel with the recordings list; renders above it.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/clients/${clientLinkId}/grain/overview`);
+        const data = await res.json();
+        if (!cancelled && res.ok) setOverview(data.overview || null);
+      } catch {
+        /* soft-fail: just hide the overview */
+      } finally {
+        if (!cancelled) setOverviewLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [clientLinkId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,6 +213,20 @@ export function GrainSection({ clientLinkId }: { clientLinkId: string }) {
           </span>
         )}
       </div>
+
+      {/* Cross-call AI overview — who this client is + the arc across calls. */}
+      {overviewLoading ? (
+        <div className="flex items-center gap-2 text-xs text-ink-light mb-4">
+          <Loader2 size={13} className="animate-spin text-teal" /> Summarizing all calls…
+        </div>
+      ) : overview ? (
+        <div className="mb-4 rounded-xl bg-teal-lighter/30 border border-teal/15 px-4 py-3">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-teal-dark mb-1.5">
+            Across all calls
+          </div>
+          {renderMarkdown(overview)}
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-ink-slate py-6 justify-center">
