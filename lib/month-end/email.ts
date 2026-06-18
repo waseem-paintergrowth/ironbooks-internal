@@ -41,6 +41,36 @@ export async function sendMonthEndEmail(
     `— The Ironbooks team`,
   ].join("\n");
 
+  // Branded HTML — inline styles only (email clients strip <style>). Mirrors
+  // the navy/teal card used by the portal-notification emails so every client
+  // email looks consistent. The plain-text above stays as the fallback.
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const summaryHtml = esc(params.aiSummaryExcerpt.trim()).replace(/\n/g, "<br/>");
+  const html = `
+<div style="background:#F4F5F7;padding:32px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #E5E7EB;">
+    <div style="background:#0F1F2E;padding:22px 28px;">
+      <div style="color:#ffffff;font-size:18px;font-weight:700;">Ironbooks</div>
+      <div style="color:#8CD3CC;font-size:12px;margin-top:2px;">SNAP — your books, live</div>
+    </div>
+    <div style="padding:28px;">
+      <h2 style="margin:0 0 8px;color:#0F1F2E;font-size:18px;">Your ${esc(params.period.label)} statements are ready ✅</h2>
+      <p style="margin:0 0 14px;color:#33414E;font-size:14px;line-height:1.55;">Hi ${esc(params.recipientFirstName)}, your books for ${esc(params.period.label)} are closed and reconciled. Here's a quick summary:</p>
+      <div style="background:#F8FAFA;border:1px solid #E5E7EB;border-left:3px solid #1A9B8F;border-radius:8px;padding:14px 16px;margin:0 0 22px;color:#33414E;font-size:14px;line-height:1.6;">
+        ${summaryHtml}
+      </div>
+      <a href="${params.portalUrl}" style="display:inline-block;background:#1A9B8F;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:11px 22px;border-radius:8px;">View your full statements →</a>
+      <p style="color:#8A94A0;font-size:12px;margin:24px 0 0;line-height:1.5;">
+        Questions? Just reply to this email, or use <strong>Ask AI</strong> in your portal.
+      </p>
+    </div>
+  </div>
+  <div style="max-width:560px;margin:12px auto 0;text-align:center;color:#9AA3AD;font-size:11px;">
+    Ironbooks · your painting-business bookkeeping team
+  </div>
+</div>`;
+
   try {
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -51,8 +81,10 @@ export async function sendMonthEndEmail(
       body: JSON.stringify({
         from: fromEmail,
         to: [params.recipientEmail],
+        reply_to: process.env.SUPPORT_INBOX_EMAIL || "admin@ironbooks.com",
         subject,
         text,
+        html,
       }),
     });
 
