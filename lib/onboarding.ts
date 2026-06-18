@@ -211,6 +211,25 @@ function titleCase(v: string): string {
   return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
 }
 
+const CA_PROVINCES = new Set([
+  "alberta", "ab", "british columbia", "bc", "manitoba", "mb", "new brunswick", "nb",
+  "newfoundland and labrador", "newfoundland", "labrador", "nl", "northwest territories", "nt",
+  "nova scotia", "ns", "nunavut", "nu", "ontario", "on", "prince edward island", "pei", "pe",
+  "quebec", "québec", "qc", "saskatchewan", "sk", "yukon", "yt",
+]);
+
+/**
+ * Derive the SNAP jurisdiction (US/CA tax system) from the onboarding form's
+ * province/state field. A recognized Canadian province/territory → "CA";
+ * anything else present (i.e. a US state) → "US"; blank → null (leave unset).
+ */
+export function deriveJurisdiction(province: string | null | undefined): "US" | "CA" | null {
+  if (!province) return null;
+  const s = String(province).trim().toLowerCase();
+  if (!s) return null;
+  return CA_PROVINCES.has(s) ? "CA" : "US";
+}
+
 /** form key → client_links column (+ optional value transform). */
 const FORM_TO_PROFILE: { key: string; col: string; transform?: (v: string) => string }[] = [
   { key: "firstName", col: "contact_first_name" },
