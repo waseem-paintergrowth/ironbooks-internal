@@ -96,7 +96,7 @@ Common mappings you must apply:
   "Tools", "Tool Supplies"                        → "Small Tools"
   "Rent", "Office Rent", "Studio Rent"            → "Office Rent"
   "Phone", "Cell Phone", "Internet"               → "Software Subscriptions" (if software/tech) or "Office Supplies"
-  "General Liability", "GL Insurance"             → "General Liability Insurance"
+  "General Liability", "GL Insurance", "CGL"      → "CGL Insurance"
   "Health Insurance", "Medical"                   → "Health Insurance – Owner"
   "Workers Comp", "WCB"                           → "Workers Compensation – Field" or "Workers Compensation – Admin"
   "Accounting", "Bookkeeping", "CPA"              → "Accounting & Bookkeeping"
