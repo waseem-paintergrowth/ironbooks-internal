@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { PLByMonthView } from "./pl-by-month-view";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -1270,6 +1271,7 @@ function PLTab({
   // isn't a wall of "$0" rows. Bookkeepers verifying COA completeness flip
   // the toggle on; everyone else gets a clean activity-only view.
   const [showZeros, setShowZeros] = useState(false);
+  const [byMonth, setByMonth] = useState(false);
 
   if (!financials.hasQbo) return <NoQboState clientLinkId={clientLinkId} />;
   if (!financials.overview) {
@@ -1396,21 +1398,42 @@ function PLTab({
           </label>
         </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <KPICard label="Total income" value={pl.totalIncome} delta={incomeDelta} />
-        <KPICard label="Total expenses" value={pl.totalExpenses} delta={expensesDelta} invertDeltaColor />
-        <KPICard label="Net income" value={pl.netIncome} delta={niDelta} />
+      <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs font-semibold">
+        <button
+          onClick={() => setByMonth(false)}
+          className={`px-3 py-1.5 ${!byMonth ? "bg-teal text-white" : "bg-white text-ink-slate hover:bg-gray-50"}`}
+        >
+          Single period
+        </button>
+        <button
+          onClick={() => setByMonth(true)}
+          className={`px-3 py-1.5 border-l border-gray-200 ${byMonth ? "bg-teal text-white" : "bg-white text-ink-slate hover:bg-gray-50"}`}
+        >
+          By month (last 3)
+        </button>
       </div>
-      <PLSection title="Income" rows={incomeRows} total={pl.totalIncome} onDrill={onDrill} />
-      {cogsRows.length > 0 && (
-        <PLSection
-          title="Cost of Goods Sold"
-          rows={cogsRows}
-          total={cogsRows.reduce((s, r) => s + r.amount, 0)}
-          onDrill={onDrill}
-        />
+
+      {byMonth ? (
+        <PLByMonthView clientLinkId={clientLinkId} />
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <KPICard label="Total income" value={pl.totalIncome} delta={incomeDelta} />
+            <KPICard label="Total expenses" value={pl.totalExpenses} delta={expensesDelta} invertDeltaColor />
+            <KPICard label="Net income" value={pl.netIncome} delta={niDelta} />
+          </div>
+          <PLSection title="Income" rows={incomeRows} total={pl.totalIncome} onDrill={onDrill} />
+          {cogsRows.length > 0 && (
+            <PLSection
+              title="Cost of Goods Sold"
+              rows={cogsRows}
+              total={cogsRows.reduce((s, r) => s + r.amount, 0)}
+              onDrill={onDrill}
+            />
+          )}
+          <PLSection title="Expenses" rows={expenseRows} total={pl.totalExpenses} onDrill={onDrill} />
+        </>
       )}
-      <PLSection title="Expenses" rows={expenseRows} total={pl.totalExpenses} onDrill={onDrill} />
     </div>
   );
 }
