@@ -5,6 +5,7 @@ import { createServiceSupabase } from "@/lib/supabase";
 import { fetchProfitAndLoss } from "@/lib/qbo-reports";
 import { fetchAllAccounts } from "@/lib/qbo";
 import { fetchOpenInvoices } from "@/lib/qbo-balance-sheet";
+import { fetchAiTransactions } from "@/lib/portal-ai-transactions";
 import {
   fetchOpenBills,
   fetchBalanceSheetSummary,
@@ -90,6 +91,8 @@ export async function POST(request: Request) {
   const history: { role: "user" | "assistant"; content: string }[] = Array.isArray(body.history)
     ? body.history.slice(-MAX_HISTORY_TURNS * 2)
     : [];
+  const requestedConversationId: string | null =
+    typeof body.conversation_id === "string" && body.conversation_id ? body.conversation_id : null;
 
   // 3. Rate limit check — SKIPPED when an admin is impersonating, so
   //    testing doesn't burn the client's daily quota.
@@ -120,7 +123,7 @@ export async function POST(request: Request) {
     const tm = thisMonthRange();
     const lm = lastMonthRange();
     const yr = ytdRange();
-    const [currentPL, lastPL, ytdPL, accounts, invoices, bills, bs] = await Promise.all([
+    const [currentPL, lastPL, ytdPL, accounts, invoices, bills, bs, txns] = await Promise.all([
       fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, tm.start, tm.end),
       fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, lm.start, lm.end),
       fetchProfitAndLoss(ctx.qboRealmId, ctx.accessToken, yr.start, yr.end),
@@ -128,6 +131,9 @@ export async function POST(request: Request) {
       fetchOpenInvoices(ctx.qboRealmId, ctx.accessToken),
       fetchOpenBills(ctx.qboRealmId, ctx.accessToken),
       fetchBalanceSheetSummary(ctx.qboRealmId, ctx.accessToken),
+      // Transaction-level data (YTD) — failure-tolerant (returns empty on error)
+      // so it never blocks the chat. Powers line-level + per-payee questions.
+      fetchAiTransactions(ctx.qboRealmId, ctx.accessToken, yr.start, yr.end),
     ]);
     const banks = summarizeBanks(accounts);
     aiContext = {
@@ -148,12 +154,51 @@ export async function POST(request: Request) {
       },
       openAR: summarizeAR(invoices),
       openAP: summarizeAP(bills),
+      transactionsYtd: {
+        period: { start: yr.start, end: yr.end },
+        totalCount: txns.totalCount,
+        capped: txns.capped,
+        payeeSpend: txns.payeeSpend,
+        recent: txns.recent,
+      },
     };
   } catch (err: any) {
     return NextResponse.json(
       { error: `Couldn't load your financial data — please try again. (${err?.message || "unknown"})` },
       { status: 500 }
     );
+  }
+
+  // 4b. Resolve or create the conversation this turn belongs to (best-effort,
+  //     never blocks the answer). Skipped while an admin is impersonating so
+  //     test chats don't pollute the client's saved history.
+  let conversationId: string | null = null;
+  if (!ctx.impersonating) {
+    try {
+      if (requestedConversationId) {
+        const { data: conv } = await (service as any)
+          .from("ai_conversations")
+          .select("id")
+          .eq("id", requestedConversationId)
+          .eq("user_id", ctx.userId)
+          .maybeSingle();
+        if (conv) conversationId = (conv as any).id;
+      }
+      if (!conversationId) {
+        const { data: created } = await (service as any)
+          .from("ai_conversations")
+          .insert({
+            client_link_id: ctx.clientLinkId,
+            user_id: ctx.userId,
+            title: question.slice(0, 80),
+          })
+          .select("id")
+          .single();
+        conversationId = (created as any)?.id || null;
+      }
+    } catch (e: any) {
+      console.warn("[portal-ai] conversation resolve failed:", e?.message);
+    }
   }
 
   // 5. Build the Anthropic message array. Prior turns first, then the
@@ -178,12 +223,17 @@ export async function POST(request: Request) {
       const encoder = new TextEncoder();
       let inputTokens = 0;
       let outputTokens = 0;
+      let fullAnswer = "";
 
       const send = (event: string, data: any) => {
         controller.enqueue(
           encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
         );
       };
+
+      // Tell the client which conversation this turn belongs to so it can keep
+      // sending the same id (and refresh its history list).
+      if (conversationId) send("meta", { conversation_id: conversationId });
 
       try {
         const claudeStream = await anthropic.messages.stream({
@@ -195,6 +245,7 @@ export async function POST(request: Request) {
 
         for await (const event of claudeStream) {
           if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+            fullAnswer += event.delta.text;
             send("delta", { text: event.delta.text });
           } else if (event.type === "message_start") {
             inputTokens = event.message.usage?.input_tokens || 0;
@@ -248,6 +299,24 @@ export async function POST(request: Request) {
           }
         } catch (telemetryErr: any) {
           console.warn("[portal-ai] usage tally failed:", telemetryErr?.message);
+        }
+
+        // Persist this turn (user question + assistant answer) so the client
+        // can review it on a later visit. Best-effort; conversationId is null
+        // when impersonating, so admin test chats are never saved.
+        if (conversationId && fullAnswer.trim()) {
+          try {
+            await (service as any).from("ai_messages").insert([
+              { conversation_id: conversationId, role: "user", content: question },
+              { conversation_id: conversationId, role: "assistant", content: fullAnswer },
+            ]);
+            await (service as any)
+              .from("ai_conversations")
+              .update({ updated_at: new Date().toISOString() })
+              .eq("id", conversationId);
+          } catch (saveErr: any) {
+            console.warn("[portal-ai] conversation save failed:", saveErr?.message);
+          }
         }
       }
     },

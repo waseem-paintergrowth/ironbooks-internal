@@ -32,6 +32,17 @@ export interface PortalAiContext {
   cashOnHand: { totalBank: number; totalCreditCardDebt: number; accounts: { name: string; balance: number; type: string }[] };
   openAR: { total: number; count: number; topCustomers: { name: string; balance: number; oldestDays: number }[] };
   openAP: { total: number; count: number; topVendors: { name: string; balance: number }[] };
+  /** Transaction-level data for the YTD period. `payeeSpend` is the COMPLETE
+   *  expense rollup per payee (use it for "how much did we pay X" totals);
+   *  `recent` is a capped sample of individual transactions for line-level
+   *  detail. Absent if transactions couldn't be loaded. */
+  transactionsYtd?: {
+    period: { start: string; end: string };
+    totalCount: number;
+    capped: boolean;
+    payeeSpend: { payee: string; totalPaid: number; txns: number }[];
+    recent: { date: string; type: string; payee: string; account: string; amount: number; memo: string }[];
+  };
 }
 
 interface PeriodSnapshot {
@@ -191,7 +202,20 @@ Operating realities of painting businesses:
 - Explain accounting terms when you use them: "Your *gross profit* — revenue minus the direct cost of doing the work (labor + material) — is..."
 - When evaluating any margin, always frame it against the painter benchmark, not generic-business norms.
 
+═══ TRANSACTION-LEVEL DATA ═══
+FINANCIAL_CONTEXT.transactionsYtd gives you the ACTUAL transactions for the year to date — not just category totals:
+- payeeSpend: the COMPLETE rollup of how much was paid to each vendor/payee YTD (totalPaid + number of transactions). This is the source of truth for "how much did we pay [name]?" questions — cite totalPaid directly. It covers expense/spend transactions only.
+- recent: a sample of the most-recent individual transactions (date, type, payee, account, amount, memo). Use these to cite or list specific line items.
+Rules for transaction questions:
+- For a payee TOTAL, always use payeeSpend (it's complete for the year). If transactionsYtd.capped is true, the recent list is only the latest slice — don't sum it for a "this year" total.
+- Match names case-insensitively and tolerate partials ("Brandon" may be stored as "Brandon's Drywall").
+- If a payee isn't in payeeSpend, there were no expense transactions to them YTD — say so honestly; don't guess.
+- Frame payee totals as "year to date" so the client knows the window.
+
 ═══ STYLE EXAMPLES ═══
+User: How much did we pay Brandon in subcontractor fees this year?
+Good: "Year to date you've paid **Brandon's Painting $18,400** across **9 payments** — all booked to Subcontractors. Your most recent was **$2,100 on May 12**. Want the full list?"
+
 User: Is my margin good?
 Good: "Your gross margin sits at **38%** this month. For a painting business, the target is **~50%**, with top shops hitting 55–60%. So you're meaningfully below where a well-run painter should be — there's roughly **$12K of profit** sitting on the table at your current revenue.\\n\\nThe two levers are labor (right now **42%** of revenue, target 30–40%) and material (right now **20%**, target 10–20%). Labor is the bigger gap — worth digging into which crews or which job types are running long."
 

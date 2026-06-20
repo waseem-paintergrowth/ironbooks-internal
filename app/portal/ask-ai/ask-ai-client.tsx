@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, AlertCircle, Loader2, ArrowUpRight, Wand2 } from "lucide-react";
+import { Sparkles, Send, AlertCircle, Loader2, ArrowUpRight, Wand2, Plus, History } from "lucide-react";
 import { MarkdownText } from "./markdown-text";
 
 /**
@@ -24,6 +24,12 @@ export function AskAiClient({ starters }: { starters: string[] }) {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<
+    { id: string; title: string | null; updated_at: string }[]
+  >([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [loadingConv, setLoadingConv] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll the chat to the bottom on every new chunk
@@ -32,6 +38,51 @@ export function AskAiClient({ starters }: { starters: string[] }) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Load saved conversations on mount so returning clients see their history.
+  useEffect(() => {
+    void loadConversations();
+  }, []);
+
+  async function loadConversations() {
+    try {
+      const res = await fetch("/api/portal/ask-ai/conversations");
+      if (res.ok) {
+        const body = await res.json();
+        setConversations(body.conversations || []);
+      }
+    } catch {
+      /* non-fatal — history just won't show */
+    }
+  }
+
+  function newChat() {
+    setMessages([]);
+    setConversationId(null);
+    setError(null);
+    setShowHistory(false);
+  }
+
+  async function loadConversation(id: string) {
+    if (streaming) return;
+    setShowHistory(false);
+    setLoadingConv(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/portal/ask-ai/conversations?id=${id}`);
+      if (res.ok) {
+        const body = await res.json();
+        setMessages(
+          (body.messages || []).map((m: any) => ({ role: m.role, content: m.content }))
+        );
+        setConversationId(id);
+      }
+    } catch {
+      setError("Couldn't load that conversation.");
+    } finally {
+      setLoadingConv(false);
+    }
+  }
 
   async function send(text?: string) {
     const question = (text ?? input).trim();
@@ -57,6 +108,7 @@ export function AskAiClient({ starters }: { starters: string[] }) {
         body: JSON.stringify({
           question,
           history: messages, // everything before this turn
+          conversation_id: conversationId, // null on a fresh chat; server mints one
         }),
       });
 
@@ -97,7 +149,9 @@ export function AskAiClient({ starters }: { starters: string[] }) {
           } catch {
             continue;
           }
-          if (eventType === "delta" && payload.text) {
+          if (eventType === "meta" && payload.conversation_id) {
+            setConversationId(payload.conversation_id);
+          } else if (eventType === "delta" && payload.text) {
             setMessages((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
@@ -123,6 +177,9 @@ export function AskAiClient({ starters }: { starters: string[] }) {
       });
     } finally {
       setStreaming(false);
+      // Refresh the saved-conversation list so this turn (new convo or an
+      // updated title/timestamp) shows up in History.
+      void loadConversations();
     }
   }
 
@@ -147,6 +204,61 @@ export function AskAiClient({ starters }: { starters: string[] }) {
           </div>
         </div>
       </div>
+
+      {/* History toolbar — New chat + saved conversations */}
+      {(conversations.length > 0 || messages.length > 0) && (
+        <div className="flex-shrink-0 flex items-center justify-between gap-2">
+          <button
+            onClick={newChat}
+            disabled={streaming}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-teal-dark hover:text-teal px-3 py-1.5 rounded-lg border border-slate-200 hover:border-teal/40 bg-white disabled:opacity-50"
+          >
+            <Plus size={14} /> New chat
+          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowHistory((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-slate hover:text-navy px-3 py-1.5 rounded-lg border border-slate-200 hover:border-teal/40 bg-white"
+            >
+              {loadingConv ? <Loader2 size={14} className="animate-spin" /> : <History size={14} />}
+              History
+              {conversations.length > 0 && (
+                <span className="text-xs text-ink-light">({conversations.length})</span>
+              )}
+            </button>
+            {showHistory && (
+              <div className="absolute right-0 mt-1 w-80 max-h-96 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg z-20 p-1">
+                {conversations.length === 0 ? (
+                  <div className="px-3 py-4 text-sm text-ink-slate text-center">
+                    No past conversations yet.
+                  </div>
+                ) : (
+                  conversations.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => loadConversation(c.id)}
+                      className={`w-full text-left px-3 py-2 rounded-lg hover:bg-slate-50 ${
+                        c.id === conversationId ? "bg-teal/5" : ""
+                      }`}
+                    >
+                      <div className="text-sm text-navy truncate font-medium">
+                        {c.title || "Conversation"}
+                      </div>
+                      <div className="text-[11px] text-ink-light">
+                        {new Date(c.updated_at).toLocaleDateString(undefined, {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Chat / empty state */}
       <div
