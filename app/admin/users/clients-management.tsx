@@ -131,6 +131,32 @@ export function ClientsManagement({ clients }: { clients: ClientRow[] }) {
   }
 
   async function saveField(id: string, field: "client_email" | "client_phone", value: string) {
+    // Email goes through a dedicated endpoint that also repoints the client's
+    // portal LOGIN email (not just the business contact field). Confirm first
+    // when they have a portal login, since it changes how they sign in.
+    if (field === "client_email") {
+      const row = rows.find((c) => c.id === id);
+      if (
+        row?.has_portal &&
+        !confirm(
+          `Change ${row.client_name}'s email to "${value}"?\n\n` +
+            `This updates their contact email AND their portal LOGIN email — ` +
+            `they'll sign in with the new address from now on.`
+        )
+      ) {
+        return; // cancelled — the field reverts to the current value
+      }
+      const res = await fetch(`/api/admin/clients/${id}/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value }),
+      });
+      const b = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(b.error || "Couldn't update email");
+      setRows((prev) => prev.map((c) => (c.id === id ? { ...c, client_email: value || null } : c)));
+      if (b.note) alert(b.note);
+      return;
+    }
     const res = await fetch(`/api/clients/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

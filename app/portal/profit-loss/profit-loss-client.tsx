@@ -748,6 +748,7 @@ function DrillDownDrawer({
   const [totalAmount, setTotalAmount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [flagTxn, setFlagTxn] = useState<Transaction | null>(null);
+  const [nameFilter, setNameFilter] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -781,6 +782,15 @@ function DrillDownDrawer({
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  // Filter the loaded transactions by payee/vendor name. Lets a client click
+  // into e.g. "Subcontractors" and type a name to see the total paid to that
+  // specific person. Matches case-insensitively on substring.
+  const nameQuery = nameFilter.trim().toLowerCase();
+  const filtered = nameQuery
+    ? transactions.filter((t) => (t.name || "").toLowerCase().includes(nameQuery))
+    : transactions;
+  const filteredTotal = filtered.reduce((s, t) => s + (t.amount || 0), 0);
+
   return (
     <div className="fixed inset-0 z-50 flex" onClick={onClose}>
       <div className="flex-1 bg-navy/40 backdrop-blur-sm" />
@@ -813,6 +823,37 @@ function DrillDownDrawer({
           </button>
         </div>
 
+        {/* Payee / vendor filter — "total paid to a specific person" */}
+        {!loading && !error && transactions.length > 0 && (
+          <div className="px-5 py-2.5 border-b border-slate-100 bg-white flex items-center gap-3 flex-wrap">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-light" />
+              <input
+                value={nameFilter}
+                onChange={(e) => setNameFilter(e.target.value)}
+                placeholder="Filter by payee / vendor name…"
+                className="w-full pl-8 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg outline-none focus:border-teal text-navy"
+              />
+              {nameFilter && (
+                <button
+                  onClick={() => setNameFilter("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-light hover:text-navy"
+                  aria-label="Clear filter"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+            {nameQuery && (
+              <div className="text-xs text-navy whitespace-nowrap">
+                <strong>{filtered.length}</strong> match{filtered.length === 1 ? "" : "es"} ·{" "}
+                <strong className="text-teal-dark">{fmtMoney(filteredTotal)}</strong>
+                <span className="text-ink-light"> total to “{nameFilter.trim()}”</span>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto">
           {loading ? (
             <div className="p-8 text-center text-ink-slate text-sm">
@@ -828,6 +869,10 @@ function DrillDownDrawer({
               No transactions found for this period. The total may include adjustments
               or carry-overs not shown as discrete transactions.
             </div>
+          ) : filtered.length === 0 ? (
+            <div className="p-8 text-center text-sm text-ink-slate">
+              No transactions match “{nameFilter.trim()}” in this category.
+            </div>
           ) : (
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-[10px] uppercase tracking-wider text-ink-slate sticky top-0">
@@ -840,7 +885,7 @@ function DrillDownDrawer({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {transactions.map((t, i) => (
+                {filtered.map((t, i) => (
                   <tr key={`${t.txn_id || i}`} className="hover:bg-slate-50">
                     <td className="px-4 py-2 text-xs text-ink-slate whitespace-nowrap">{t.date}</td>
                     <td className="px-4 py-2 text-xs">
