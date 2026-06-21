@@ -14,6 +14,7 @@ import { getOrGenerateDashboardNarrative } from "@/lib/dashboard-narrative";
 import { PortalErrorState } from "./error-state";
 import { MonthEndBanner } from "./month-end-banner";
 import { AskAboutButton } from "./ask-about";
+import { MarkdownText } from "./ask-ai/markdown-text";
 
 /**
  * Portal Overview — the facelifted "command center".
@@ -107,6 +108,13 @@ export default async function PortalOverview() {
     }
   }
 
+  // House style: no em/en dashes anywhere in client-facing narrative. Swap them
+  // for a plain hyphen (covers cached narratives + the published-package path).
+  const noDash = (s: string) => s.replace(/[—–]/g, "-");
+  narrativeHeadline = noDash(narrativeHeadline);
+  narrativeSummary = noDash(narrativeSummary);
+  if (narrativeCoaching) narrativeCoaching = noDash(narrativeCoaching);
+
   const periodLabel = `${monthLabel}`;
   const firstName = (ctx.userFullName || "").trim().split(/\s+/)[0] || "";
 
@@ -170,7 +178,9 @@ export default async function PortalOverview() {
               This month in plain English
             </div>
             <h2 className="text-lg font-bold text-navy mt-1">{narrativeHeadline}</h2>
-            <p className="text-sm text-navy/80 leading-relaxed mt-1 whitespace-pre-line">{narrativeSummary}</p>
+            <div className="text-sm text-navy/80 leading-relaxed mt-1">
+              <MarkdownText>{narrativeSummary}</MarkdownText>
+            </div>
             {narrativeCoaching && (
               <div className="mt-4 pt-4 border-t border-teal/20">
                 <div className="flex items-center gap-1.5 mb-1.5">
@@ -178,9 +188,9 @@ export default async function PortalOverview() {
                     What I'd focus on next
                   </span>
                 </div>
-                <p className="text-sm text-navy/85 leading-relaxed whitespace-pre-line">
-                  {narrativeCoaching}
-                </p>
+                <div className="text-sm text-navy/85 leading-relaxed">
+                  <MarkdownText>{narrativeCoaching}</MarkdownText>
+                </div>
               </div>
             )}
             <div className="mt-3 flex items-center gap-3 flex-wrap">

@@ -174,16 +174,18 @@ ${JSON.stringify(context, null, 2)}
 Respond with ONLY a JSON object in this exact shape, no prose, no markdown fences:
 {
   "headline": "one-line headline, plain English, no jargon, ≤90 chars",
-  "summary": "2–4 sentences summarizing the closed month across P&L, A/R, A/P, and cash. Specific numbers from the context. NOT a coaching lecture — just the picture of what happened.",
-  "coaching": "3–5 sentences. Identify the SINGLE biggest pain point in their finances right now (could be margin, overhead creep, A/R pile-up, cash crunch, or a specific over-target line). Use the painter benchmarks in your system prompt. Tone is gentle and confident — they're the operator, you're the trusted advisor. Format: name what you see → name why it matters → one concrete next step they can take this week. Cite specific dollar amounts from the context. End with the action, not a hedge."
+  "summary": "2-4 sentences summarizing the closed month across P&L, A/R, A/P, and cash. Specific numbers from the context. NOT a coaching lecture, just the picture of what happened.",
+  "coaching": "3-5 sentences. Identify the SINGLE biggest pain point in their finances right now (could be margin, overhead creep, A/R pile-up, cash crunch, or a specific over-target line). Use the painter benchmarks in your system prompt. Tone is gentle and confident; they're the operator, you're the trusted advisor. Format: name what you see, then why it matters, then one concrete next step they can take this week. Cite specific dollar amounts from the context. End with the action, not a hedge."
 }
 
 Hard rules:
 - Numbers MUST come from the context. Never invent figures.
 - Compare to the painter benchmarks in your system prompt, not generic small-business norms.
 - Do not name specific people, vendors, or brands.
-- No legal/tax advice — redirect to CPA if it comes up.
-- If the books look healthy, the coaching section is about the NEXT level (e.g. "GP is on target at 52% — the next lever is overhead, currently 36% vs 30% target.") — not generic praise.`;
+- No legal/tax advice; redirect to CPA if it comes up.
+- NEVER use em dashes or en dashes (— or –). Use commas, periods, or plain hyphens.
+- Bold the key dollar figures with **double asterisks**. Do NOT use markdown tables; short paragraphs and bullet/numbered lists only.
+- If the books look healthy, the coaching section is about the NEXT level (e.g. "GP is on target at 52%, so the next lever is overhead, currently 36% vs 30% target."), not generic praise.`;
 
   const resp = await anthropic.messages.create({
     model: MODEL,
