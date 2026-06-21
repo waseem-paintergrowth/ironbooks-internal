@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { CreditCard, Loader2, Download, ExternalLink, Calendar } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { CreditCard, Loader2, Download, ExternalLink, Calendar, Link2, Search } from "lucide-react";
 
 interface Billing {
   tier: string | null;
@@ -40,21 +40,32 @@ export function BillingTab({ clientLinkId }: { clientLinkId: string }) {
     { configured: true, billing: null, invoices: [] }
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/clients/${clientLinkId}/billing`);
-        const data = await res.json();
-        if (!cancelled) setState(data);
-      } catch (e: any) {
-        if (!cancelled) setState({ configured: true, billing: null, invoices: [], error: e.message });
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/clients/${clientLinkId}/billing`);
+      const data = await res.json();
+      setState(data);
+    } catch (e: any) {
+      setState({ configured: true, billing: null, invoices: [], error: e.message });
+    } finally {
+      setLoading(false);
+    }
   }, [clientLinkId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function unlink() {
+    if (!window.confirm("Unlink this Stripe customer? Billing will show empty until it's re-linked.")) return;
+    try {
+      await fetch(`/api/clients/${clientLinkId}/billing`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unlink" }),
+      });
+      load();
+    } catch { /* surfaced on next load */ }
+  }
 
   if (loading) {
     return <div className="flex items-center gap-2 text-sm text-ink-slate py-10 justify-center"><Loader2 size={16} className="animate-spin text-teal" /> Loading billing…</div>;
@@ -63,7 +74,15 @@ export function BillingTab({ clientLinkId }: { clientLinkId: string }) {
     return <p className="text-sm text-ink-slate italic py-6">Stripe isn't connected (no STRIPE_SECRET_KEY). Billing can't be shown.</p>;
   }
   if (state.linked === false) {
-    return <p className="text-sm text-ink-slate italic py-6">No Stripe customer linked to this client yet (matched by email). Set their billing email or link a Stripe customer.</p>;
+    return (
+      <div className="max-w-xl py-2">
+        <p className="text-sm text-ink-slate mb-3">
+          No Stripe customer is linked to this client yet, so billing can't load.
+          Search by name/email or paste their <code className="text-xs">cus_…</code> id to link it.
+        </p>
+        <LinkStripeCustomer clientLinkId={clientLinkId} onLinked={load} />
+      </div>
+    );
   }
   if (state.error) {
     return <p className="text-sm text-red-600 py-6">{state.error}</p>;
@@ -99,6 +118,9 @@ export function BillingTab({ clientLinkId }: { clientLinkId: string }) {
           {b?.currentPeriodEnd && b.subscriptionStatus === "active" && (
             <div className="text-xs text-ink-slate mt-2">Next billing date: <strong className="text-navy">{fmtDate(b.currentPeriodEnd)}</strong></div>
           )}
+          <button onClick={unlink} className="text-[11px] text-ink-light hover:text-red-600 mt-3">
+            Wrong customer? Unlink
+          </button>
         </div>
       </div>
 
@@ -138,6 +160,98 @@ export function BillingTab({ clientLinkId }: { clientLinkId: string }) {
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+interface Candidate { id: string; name: string | null; email: string | null }
+
+/**
+ * Manual Stripe-customer linker shown when email auto-match misses. Search by
+ * name/email (Stripe customer search) or paste a `cus_…` id; on link the
+ * parent re-fetches and the subscription + invoices appear.
+ */
+function LinkStripeCustomer({ clientLinkId, onLinked }: { clientLinkId: string; onLinked: () => void }) {
+  const [q, setQ] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [searched, setSearched] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const isCus = /^cus_[A-Za-z0-9]+$/.test(q.trim());
+
+  async function post(body: any) {
+    const res = await fetch(`/api/clients/${clientLinkId}/billing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Request failed");
+    return data;
+  }
+
+  async function search() {
+    if (!q.trim()) return;
+    setSearching(true); setError(null);
+    try {
+      const data = await post({ action: "search", query: q.trim() });
+      setCandidates(data.candidates || []);
+      setSearched(true);
+    } catch (e: any) { setError(e.message); } finally { setSearching(false); }
+  }
+
+  async function link(cusId: string) {
+    setBusyId(cusId); setError(null);
+    try {
+      await post({ action: "set", stripeCustomerId: cusId });
+      onLinked();
+    } catch (e: any) { setError(e.message); setBusyId(null); }
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") (isCus ? link(q.trim()) : search()); }}
+          placeholder="Search name or email, or paste cus_…"
+          className="flex-1 text-sm px-3 py-2 rounded-lg border border-slate-200 focus:border-teal focus:outline-none"
+        />
+        {isCus ? (
+          <button onClick={() => link(q.trim())} disabled={!!busyId}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-lg bg-teal text-white hover:bg-teal-dark disabled:opacity-50">
+            <Link2 size={14} /> Link
+          </button>
+        ) : (
+          <button onClick={search} disabled={searching || !q.trim()}
+            className="inline-flex items-center gap-1.5 text-sm font-semibold px-4 py-2 rounded-lg bg-teal text-white hover:bg-teal-dark disabled:opacity-50">
+            {searching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />} Search
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {candidates.length > 0 && (
+        <ul className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
+          {candidates.map((c) => (
+            <li key={c.id} className="flex items-center justify-between gap-2 px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold text-navy truncate">{c.name || "(no name)"}</div>
+                <div className="text-[11px] text-ink-light truncate font-mono">{c.email || c.id}</div>
+              </div>
+              <button onClick={() => link(c.id)} disabled={busyId === c.id}
+                className="flex-shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border border-teal text-teal hover:bg-teal/5 disabled:opacity-50">
+                {busyId === c.id ? "Linking…" : "Link"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {searched && candidates.length === 0 && !searching && (
+        <p className="text-xs text-ink-light italic">No Stripe customers matched “{q.trim()}”. Try the company name, billing email, or paste the cus_… id.</p>
+      )}
     </div>
   );
 }

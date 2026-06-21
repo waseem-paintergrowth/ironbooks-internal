@@ -4,6 +4,9 @@ import {
   getCustomerBillingInfo,
   getCustomerInvoices,
   findStripeCustomerIdByEmail,
+  getStripeCustomer,
+  searchStripeCustomers,
+  listCustomersByEmail,
 } from "@/lib/stripe-billing";
 
 export const dynamic = "force-dynamic";
@@ -69,4 +72,91 @@ export async function GET(
     console.error("[client billing] Stripe fetch failed:", e.message);
     return NextResponse.json({ configured: true, linked: true, error: "Could not reach Stripe", billing: null, invoices: [] }, { status: 502 });
   }
+}
+
+/**
+ * POST /api/clients/[id]/billing — internal (admin/lead/bookkeeper).
+ *
+ * Manually link a client to a Stripe customer when email auto-match misses.
+ *   { action: "search", query }            → returns candidate customers
+ *   { action: "set", stripeCustomerId }    → validates + saves the link
+ *   { action: "unlink" }                   → clears the link
+ */
+export async function POST(
+  request: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const { id } = await context.params;
+  const supabase = await createServerSupabase();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const service = createServiceSupabase();
+  const { data: actor } = await service.from("users").select("role").eq("id", user.id).single();
+  const role = (actor as any)?.role;
+  if (!role || role === "client") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return NextResponse.json({ error: "Stripe not configured" }, { status: 400 });
+  }
+
+  const body = await request.json().catch(() => ({} as any));
+  const action = body.action;
+
+  if (action === "search") {
+    const q = (body.query || "").trim();
+    if (!q) return NextResponse.json({ candidates: [] });
+    // Email-ish query → exact list; otherwise substring search on name + email.
+    const isEmail = /@/.test(q);
+    const results = isEmail
+      ? [...(await listCustomersByEmail(q)), ...(await searchStripeCustomers(`email~"${q.replace(/"/g, "")}"`, 10))]
+      : [
+          ...(await searchStripeCustomers(`name~"${q.replace(/"/g, "")}"`, 10)),
+          ...(await searchStripeCustomers(`email~"${q.replace(/"/g, "")}"`, 10)),
+        ];
+    // De-dup by id, keep first occurrence.
+    const seen = new Set<string>();
+    const candidates = results.filter((c) => c && c.id && !seen.has(c.id) && seen.add(c.id)).slice(0, 15);
+    return NextResponse.json({ candidates });
+  }
+
+  if (action === "unlink") {
+    const { error } = await service.from("client_links").update({ stripe_customer_id: null } as any).eq("id", id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    await service.from("audit_log").insert({
+      event_type: "billing_stripe_unlinked",
+      user_id: user.id,
+      request_payload: { client_link_id: id } as any,
+    });
+    return NextResponse.json({ ok: true, linked: false });
+  }
+
+  if (action === "set") {
+    const cusId = (body.stripeCustomerId || "").trim();
+    if (!/^cus_[A-Za-z0-9]+$/.test(cusId)) {
+      return NextResponse.json({ error: "Enter a valid Stripe customer id (cus_…)" }, { status: 400 });
+    }
+    let customer;
+    try {
+      customer = await getStripeCustomer(cusId);
+    } catch (e: any) {
+      return NextResponse.json({ error: `Stripe check failed: ${e?.message || "error"}` }, { status: 502 });
+    }
+    if (!customer) {
+      return NextResponse.json({ error: "That Stripe customer doesn't exist (or was deleted)." }, { status: 404 });
+    }
+    const { error } = await service
+      .from("client_links")
+      .update({ stripe_customer_id: cusId } as any)
+      .eq("id", id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    await service.from("audit_log").insert({
+      event_type: "billing_stripe_linked",
+      user_id: user.id,
+      request_payload: { client_link_id: id, stripe_customer_id: cusId, customer_name: customer.name } as any,
+    });
+    return NextResponse.json({ ok: true, linked: true, customer });
+  }
+
+  return NextResponse.json({ error: "Unknown action" }, { status: 400 });
 }

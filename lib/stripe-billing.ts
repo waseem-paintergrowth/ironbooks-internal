@@ -77,6 +77,29 @@ export async function findStripeCustomerIdByEmail(email: string): Promise<string
   return customers[0]?.id ?? null;
 }
 
+/**
+ * Exact (case-insensitive) email lookup that returns FULL lite customers
+ * (not just the top id) so callers can show/rank candidates. Uses the
+ * immediate `/customers?email=` list endpoint (no search-index lag).
+ */
+export async function listCustomersByEmail(email: string): Promise<StripeCustomerLite[]> {
+  const trimmed = (email || "").trim();
+  if (!trimmed) return [];
+  try {
+    const data = await stripeGet<any>(
+      `/customers?email=${encodeURIComponent(trimmed)}&limit=100`
+    );
+    return ((data?.data ?? []) as any[]).map((c) => ({
+      id: c.id,
+      name: c.name ?? null,
+      email: c.email ?? null,
+      created: c.created ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Derive tier from the monthly amount in dollars. */
 export function tierFromAmountDollars(dollars: number): ServiceTier {
   if (dollars <= 300) return "insight";
@@ -195,4 +218,54 @@ export async function createCustomerPortalSession(
     return_url: returnUrl,
   });
   return session.url as string;
+}
+
+export interface StripeCustomerLite {
+  id: string;
+  name: string | null;
+  email: string | null;
+  created: number | null;
+}
+
+/**
+ * Fetch a single Stripe customer by id. Returns null if it doesn't exist or
+ * has been deleted — so callers can validate a pasted `cus_...` before saving
+ * it as a client's link.
+ */
+export async function getStripeCustomer(id: string): Promise<StripeCustomerLite | null> {
+  const trimmed = (id || "").trim();
+  if (!/^cus_[A-Za-z0-9]+$/.test(trimmed)) return null;
+  try {
+    const c = await stripeGet<any>(`/customers/${encodeURIComponent(trimmed)}`);
+    if (!c || c.deleted) return null;
+    return { id: c.id, name: c.name ?? null, email: c.email ?? null, created: c.created ?? null };
+  } catch (e: any) {
+    if (/Stripe 404/.test(e?.message || "")) return null;
+    throw e;
+  }
+}
+
+/**
+ * Search Stripe customers with the Stripe Search query language (e.g.
+ * `name~"acme"` or `email~"@acme.com"`). `~` is a case-insensitive substring
+ * match on name/email. Returns up to `limit` lite customers. Fail-soft: a
+ * malformed/unsupported query resolves to [] rather than throwing, so a single
+ * bad client never breaks a batch backfill.
+ */
+export async function searchStripeCustomers(query: string, limit = 20): Promise<StripeCustomerLite[]> {
+  const q = (query || "").trim();
+  if (!q) return [];
+  try {
+    const data = await stripeGet<any>(
+      `/customers/search?query=${encodeURIComponent(q)}&limit=${Math.min(limit, 100)}`
+    );
+    return ((data?.data ?? []) as any[]).map((c) => ({
+      id: c.id,
+      name: c.name ?? null,
+      email: c.email ?? null,
+      created: c.created ?? null,
+    }));
+  } catch {
+    return [];
+  }
 }
