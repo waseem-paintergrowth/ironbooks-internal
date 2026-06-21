@@ -6,7 +6,7 @@ import {
   Home, Sparkles, Flag, Users, LogOut, BookOpen, Clock,
   Zap, Shield, Shuffle, CreditCard, ChevronDown, ChevronRight, Receipt, KanbanSquare, Sun,
   FileSpreadsheet, Wallet, Volume2, VolumeX, HeartPulse, Gauge, CalendarCheck,
-  ClipboardCheck, ListChecks, UserPlus, Video,
+  ClipboardCheck, ListChecks, UserPlus, Video, GraduationCap,
 } from "lucide-react";
 import { createBrowserClient } from "@supabase/ssr";
 import { useEffect, useState } from "react";
@@ -47,6 +47,10 @@ const adminItems = [
   { href: "/admin/call-matching", label: "Call Matching", icon: Video },
   { href: "/admin/audit", label: "Audit Log", icon: BookOpen },
 ];
+
+/** SNAP how-to handbook — pinned to the very bottom for the WHOLE internal
+ *  team (admin, lead, bookkeeper). For admins it sits just below Audit Log. */
+const handbookNav = { href: "/handbook", label: "Handbook", icon: GraduationCap };
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -224,6 +228,12 @@ export function Sidebar() {
             ))}
           </>
         )}
+
+        {/* Handbook — whole team, pinned to the very bottom of the nav (just
+            below Audit Log for admins; bottom of the list for everyone else). */}
+        <div className="mt-4 pt-3 border-t border-white/10">
+          <NavItem item={handbookNav} pathname={pathname} />
+        </div>
       </nav>
 
       <div className="px-2.5 py-3 border-t border-white/10">
