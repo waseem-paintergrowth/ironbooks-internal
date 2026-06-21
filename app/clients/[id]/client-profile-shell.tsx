@@ -40,6 +40,7 @@ import type { OverviewData, BalanceSheetSummary } from "@/lib/portal-data";
 import { ClientDetailsCard } from "./client-details-card";
 import { GrainSection } from "./grain-section";
 import { CallTodosPanel } from "./call-todos-panel";
+import { CloseAndSendCard } from "./close-and-send-card";
 import { MessagesPanel } from "./messages-panel";
 import { BillingTab } from "./billing-tab";
 
@@ -797,6 +798,13 @@ function OverviewTab({
           cleanupCompletedAt={clientLink.cleanup_completed_at || null}
           reachedBsStage={reachedBsStage}
         />
+      )}
+
+      {/* Close period & send statements — the clear, one-action push of the
+          month's books to the client's portal + email. Production clients only
+          (a daily-recon client whose month is being closed). */}
+      {qboStatus === "connected" && clientLink.daily_recon_enabled && (
+        <CloseAndSendCard clientLinkId={clientLink.id} clientName={clientLink.client_name} />
       )}
 
       {/* Progress flow chart — bird's-eye view of where this client is in
