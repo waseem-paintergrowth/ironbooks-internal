@@ -83,6 +83,7 @@ export function ManagerDashboard({
   const [bsOnly, setBsOnly] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fixMsg, setFixMsg] = useState<{ id: string; text: string } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggleRow = (id: string) =>
     setExpanded((prev) => {
@@ -133,6 +134,32 @@ export function ManagerDashboard({
         ? { ...r, assigned_bookkeeper_id: bkId || null, assigned_bookkeeper_name: bookkeepers.find((b) => b.id === bkId)?.full_name || null }
         : r));
     } catch (e: any) { setError(e.message); } finally { setBusy(null); }
+  }
+
+  // Get-unstuck: ask the server to diagnose + recover a paused/stuck reclass
+  // job. Instant fixes (skip web-search, reset a hung run) clear the flag and
+  // refresh; cases that need the job page (resume chunks, retry) navigate there.
+  async function selfFix(clientId: string, jobId: string) {
+    setBusy(clientId); setError(null); setFixMsg(null);
+    try {
+      const res = await fetch(`/api/reclass/${jobId}/self-fix`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.navigate && data.href) {
+        router.push(data.href);
+        return;
+      }
+      setFixMsg({ id: clientId, text: data.message || "Done." });
+      if (data.fixed) {
+        // Flag is resolved — drop it locally and refresh the derived status.
+        setRows((prev) => prev.map((r) => r.id === clientId ? { ...r, paused_job_id: null } : r));
+        router.refresh();
+      }
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
   }
 
   // Defer / un-defer BS cleanup reuses the existing production BS toggle
@@ -278,13 +305,17 @@ export function ManagerDashboard({
                         </span>
                       )}
                       {r.paused_job_id && (
-                        <Link
-                          href={`/reclass/${r.paused_job_id}/review`}
-                          className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 hover:bg-purple-200"
-                          title="A reclass job is paused waiting for a Continue click — click to resume"
+                        <button
+                          onClick={() => selfFix(r.id, r.paused_job_id!)}
+                          disabled={busy === r.id}
+                          className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-50"
+                          title="This client has a stuck reclass job — click to auto-resume it"
                         >
-                          <PlayCircle size={9} /> Needs Continue
-                        </Link>
+                          {busy === r.id ? <Loader2 size={9} className="animate-spin" /> : <PlayCircle size={9} />} Get unstuck
+                        </button>
+                      )}
+                      {fixMsg && fixMsg.id === r.id && (
+                        <span className="ml-1.5 text-[10px] text-ink-slate italic">{fixMsg.text}</span>
                       )}
                     </td>
                     <td className="py-2.5 pr-3 whitespace-nowrap">
