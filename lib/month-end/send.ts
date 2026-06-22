@@ -10,6 +10,7 @@ import {
 import { verifyOperationalGates } from "./operational-gates";
 import { SEND_CONCURRENCY } from "./constants";
 import { mapPool } from "./concurrency";
+import { notifyWorkComplete } from "../work-complete";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Service = { from: (table: string) => any };
@@ -100,6 +101,17 @@ async function finalizeSuccessfulSend(
       partial_email_errors: partialErrors.length ? partialErrors : null,
     },
   } as any);
+
+  // Ping the leads that this client's month-end is closed + delivered
+  // (SNAP-native replacement for the old Double task-post).
+  const monthLabel = new Date(period.periodYear, period.periodMonth - 1, 1)
+    .toLocaleString("en-US", { month: "long", year: "numeric" });
+  await notifyWorkComplete(service, {
+    kind: "Month-end close",
+    clientLinkId: pkg.client_link_id,
+    summary: `${monthLabel} closed and the statement package was delivered to the client.`,
+    actorName: null,
+  });
 }
 
 export async function deliverPackage(

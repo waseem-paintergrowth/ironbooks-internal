@@ -7,7 +7,7 @@
 
 import { createServiceSupabase } from "./supabase";
 import * as qbo from "./qbo";
-import * as double from "./double";
+import { notifyWorkComplete } from "./work-complete";
 import * as validate from "./qbo-validation";
 import { generateManualRepairPlan, type FailureContext } from "./claude-repair";
 import {
@@ -1432,22 +1432,21 @@ export async function executeJob(jobId: string): Promise<{
       await logProgress(ctx, "stage_complete", `Inactivations complete`, { stage: "inactivate" });
     }
 
-    // STAGE 5: Sync to Double
-    await logProgress(ctx, "stage_start", "Syncing status to Double HQ", { stage: "double_sync" });
+    // STAGE 5: Notify the team the cleanup is done (SNAP-native; replaces the
+    // old DoubleHQ task-board post — audit_log row + email to the leads).
+    await logProgress(ctx, "stage_start", "Notifying the team", { stage: "notify" });
     try {
       const bookkeeperName = await getBookkeeperName(ctx);
-      await double.postCleanupComplete(ctx.doubleClientId, {
-        accountsRenamed: stats.renamed + stats.merged,
-        accountsCreated: stats.created,
-        accountsDeleted: stats.inactivated + stats.merged,
-        transactionsReclassified: stats.reclassified,
-        bookkeeperName,
-        durationSeconds: Math.floor((Date.now() - startTime) / 1000),
+      const reclassPart = stats.reclassified ? `, ${stats.reclassified} txns reclassified` : "";
+      await notifyWorkComplete(ctx.supabase, {
+        kind: "COA cleanup",
+        clientLinkId: ctx.clientLinkId,
+        summary: `${stats.renamed + stats.merged} renamed, ${stats.created} created, ${stats.inactivated + stats.merged} inactivated${reclassPart}`,
+        actorName: bookkeeperName,
       });
-      await logProgress(ctx, "stage_complete", "Synced to Double", { stage: "double_sync" });
+      await logProgress(ctx, "stage_complete", "Team notified", { stage: "notify" });
     } catch (e: any) {
-      errors.push(`Double sync failed: ${e.message}`);
-      await logProgress(ctx, "warning", `Double sync failed (non-fatal): ${e.message}`);
+      await logProgress(ctx, "warning", `Completion notice failed (non-fatal): ${e.message}`);
     }
 
     stats.duration_seconds = Math.floor((Date.now() - startTime) / 1000);
