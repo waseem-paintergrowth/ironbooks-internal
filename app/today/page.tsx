@@ -7,6 +7,7 @@ import { ArrowRight, Sparkles, Pause } from "lucide-react";
 import { ClientFlagsWidget } from "./client-flags-widget";
 import { ReclassRequestsWidget, type PendingReclassRequest } from "./reclass-requests-widget";
 import { ClientInboxWidget, type InboundCommRow } from "./client-inbox-widget";
+import { ManagerReviewWidget } from "./manager-review-widget";
 import { StatementApprovalsWidget, type StatementApprovalRow } from "./statement-approvals-widget";
 import { StatementEscalationsWidget, type StatementEscalationRow } from "./statement-escalations-widget";
 import { CleanupDeadlinesWidget, type CleanupDeadlineRow } from "./cleanup-deadlines-widget";
@@ -69,6 +70,37 @@ export default async function TodayPage({
   }
   const { data: clients } = await clientsQuery.order("client_name");
   const eligibleClients = (clients || []) as any[];
+
+  // ─── Manager review queue (seniors only) ───
+  // Files a bookkeeper submitted for manager review (cleanup_review_state =
+  // 'in_review'). These land on Mike's Today page so he can review the
+  // statements and send to the client. Oldest-submitted first.
+  let managerReviewRows: { id: string; client_name: string; submitted_at: string | null; submitted_by: string | null }[] = [];
+  if (isSenior) {
+    try {
+      let revQuery = service
+        .from("client_links")
+        .select("id, client_name, cleanup_review_submitted_at, cleanup_review_submitted_by, assigned_bookkeeper_id")
+        .eq("is_active", true)
+        .eq("cleanup_review_state" as any, "in_review");
+      if (viewAs) revQuery = revQuery.eq("assigned_bookkeeper_id", viewAs);
+      const rev = ((await revQuery).data as any[]) || [];
+      const subIds = [...new Set(rev.map((r) => r.cleanup_review_submitted_by).filter(Boolean))];
+      const nameById = new Map<string, string>();
+      if (subIds.length) {
+        const { data: us } = await service.from("users").select("id, full_name").in("id", subIds);
+        for (const u of ((us as any[]) || [])) nameById.set(u.id, u.full_name);
+      }
+      managerReviewRows = rev
+        .map((r) => ({
+          id: r.id,
+          client_name: r.client_name,
+          submitted_at: r.cleanup_review_submitted_at ?? null,
+          submitted_by: r.cleanup_review_submitted_by ? (nameById.get(r.cleanup_review_submitted_by) || null) : null,
+        }))
+        .sort((a, b) => (a.submitted_at || "").localeCompare(b.submitted_at || ""));
+    } catch { managerReviewRows = []; }
+  }
 
   // ─── Portal transaction flags from clients ───
   // These are independent of daily-recon enrollment — surface them even
@@ -571,6 +603,13 @@ export default async function TodayPage({
           autoExecuted={totalAutoExecuted}
           dueSoon={counts.dueToday + counts.dueSoon}
         />
+
+        {/* Manager review queue — seniors only; files submitted for review. */}
+        {isSenior && managerReviewRows.length > 0 && (
+          <section className="space-y-2">
+            <ManagerReviewWidget rows={managerReviewRows} />
+          </section>
+        )}
 
         {/* ── YOUR WORK ── the logged-in person's actionable queue ── */}
         <section id="work" className="space-y-4 scroll-mt-4">
