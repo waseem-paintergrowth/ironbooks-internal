@@ -117,6 +117,7 @@ export async function GET(
   return NextResponse.json({
     status: job.status,
     workflow: job.workflow,
+    execution_resumable: (job as any).execution_resumable === true,
     execution_started_at: job.execution_started_at,
     execution_completed_at: job.execution_completed_at,
     duration_seconds: job.execution_duration_seconds,

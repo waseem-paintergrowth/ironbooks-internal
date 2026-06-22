@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -59,6 +59,8 @@ export function ExecuteLive({
 
   const isLeadOrAdmin = userRole === "admin" || userRole === "lead";
   const isComplete = job.status === "complete" || job.status === "failed";
+  // Guards against two overlapping polls both POSTing a continuation.
+  const continuingRef = useRef(false);
 
   useEffect(() => {
     if (isComplete) return;
@@ -95,6 +97,16 @@ export function ExecuteLive({
         if (data.status === "complete" || data.status === "failed") {
           router.refresh();
           return;
+        }
+
+        // A large job pauses between time-budgeted batches (status stays
+        // "executing", execution_resumable=true). Kick the next pass — the
+        // route atomically claims it, so overlapping triggers are no-ops.
+        if (data.status === "executing" && data.execution_resumable && !continuingRef.current) {
+          continuingRef.current = true;
+          fetch(`/api/reclass/${job.id}/execute`, { method: "POST" })
+            .catch(() => {})
+            .finally(() => { continuingRef.current = false; });
         }
 
         setTimeout(poll, 1500);
