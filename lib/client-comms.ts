@@ -205,7 +205,7 @@ export async function sendPortalInviteEmail(params: {
       )}</strong>.`
     : `Your Ironbooks bookkeeping team has set up a secure online portal for <strong>${esc(
         params.clientName
-      )}</strong> — your books, live. Set up your access and take a look whenever you like.`;
+      )}</strong> — Advancing Financial Literacy In The Trades. Set up your access and take a look whenever you like.`;
   const cta = params.isResend ? "Sign in to your portal" : "Set up your access";
 
   const text = [
@@ -213,7 +213,7 @@ export async function sendPortalInviteEmail(params: {
     ``,
     params.isResend
       ? `Here's a fresh link to sign in to your Ironbooks portal for ${params.clientName}.`
-      : `Your Ironbooks bookkeeping team has set up a secure online portal for ${params.clientName} — your books, live.`,
+      : `Your Ironbooks bookkeeping team has set up a secure online portal for ${params.clientName} — Advancing Financial Literacy In The Trades.`,
     ``,
     `${cta}: ${params.actionLink}`,
     ``,
