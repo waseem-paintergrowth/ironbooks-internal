@@ -18,7 +18,7 @@ const TEAL = "#2D7A75";
 const NAVY = "#0F1F2E";
 const SLATE = "#475569";
 const LIGHT = "#94A3B8";
-const LOGO = "https://app.ironbooks.com/logo.png";
+const LOGO = "https://internal.ironbooks.com/logo.png";
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");

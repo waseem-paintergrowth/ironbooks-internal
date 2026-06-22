@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { wrapBrandedEmail } from "@/lib/bulk-email";
 import { renderUserSignature, type SignatureUser } from "@/lib/user-signature";
 import {
@@ -43,6 +43,18 @@ export function BulkEmailClient({ senderEmail, senderName, senderSignature }: { 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [subject, setSubject] = useState("");
   const [bodyText, setBodyText] = useState("");
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  // Insert a merge field at the cursor (or append) and keep focus.
+  function insertToken(token: string) {
+    const el = bodyRef.current;
+    if (!el) { setBodyText((b) => b + token); return; }
+    const start = el.selectionStart ?? bodyText.length;
+    const end = el.selectionEnd ?? bodyText.length;
+    const next = bodyText.slice(0, start) + token + bodyText.slice(end);
+    setBodyText(next);
+    requestAnimationFrame(() => { el.focus(); const p = start + token.length; el.setSelectionRange(p, p); });
+  }
   const [replyMode, setReplyMode] = useState<"bookkeeper" | "support">("bookkeeper");
   const [alsoPortal, setAlsoPortal] = useState(true);
   const [includeSignature, setIncludeSignature] = useState(true);
@@ -214,7 +226,13 @@ export function BulkEmailClient({ senderEmail, senderName, senderSignature }: { 
             {templates.length > 0 && <select onChange={(e) => e.target.value && loadTemplate(e.target.value)} className="ml-auto text-[11px] rounded-md border border-gray-200 px-2 py-1" defaultValue=""><option value="">Load template…</option>{templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}</select>}
           </div>
           <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />
-          <textarea value={bodyText} onChange={(e) => setBodyText(e.target.value)} rows={9} placeholder={"Write your message…\n\nBlank line = new paragraph. **bold** for emphasis.\nMerge fields: {{first_name}}, {{business_name}}"} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm resize-y font-mono" />
+          <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+            <span className="text-ink-light font-semibold">Insert:</span>
+            <button type="button" onClick={() => insertToken("{{first_name}}")} className="font-semibold text-teal-dark bg-teal-lighter border border-teal/20 rounded-full px-2 py-0.5 hover:bg-teal-light">First name</button>
+            <button type="button" onClick={() => insertToken("{{business_name}}")} className="font-semibold text-teal-dark bg-teal-lighter border border-teal/20 rounded-full px-2 py-0.5 hover:bg-teal-light">Business name</button>
+            <span className="text-ink-light">— auto-fills each client's details</span>
+          </div>
+          <textarea ref={bodyRef} value={bodyText} onChange={(e) => setBodyText(e.target.value)} rows={9} placeholder={"Write your message…\n\nBlank line = new paragraph. **bold** for emphasis.\nUse the Insert buttons for {{first_name}} / {{business_name}}."} className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm resize-y font-mono" />
           <div className="flex items-center gap-3 flex-wrap text-xs text-ink-slate">
             <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={alsoPortal} onChange={(e) => setAlsoPortal(e.target.checked)} className="rounded border-gray-300 text-teal" /> Also post to portal inbox</label>
             <label className="inline-flex items-center gap-1.5"><input type="checkbox" checked={includeSignature} onChange={(e) => setIncludeSignature(e.target.checked)} className="rounded border-gray-300 text-teal" /> Include my signature</label>

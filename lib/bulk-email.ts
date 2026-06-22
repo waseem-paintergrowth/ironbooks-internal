@@ -47,8 +47,8 @@ export function applyMergeFields(
     .replace(/\{\{\s*(client_?name|business_?name|company_?name)\s*\}\}/gi, biz);
 }
 
-const LOGO = "https://app.ironbooks.com/logo.png";
-const ADDRESS = "Ironbooks · Bookkeeping for painting contractors";
+const LOGO = "https://internal.ironbooks.com/logo.png";
+const ADDRESS = "Advancing Financial Literacy In The Trades";
 
 /**
  * Wrap the composer's body HTML in the Ironbooks branded, email-safe shell
