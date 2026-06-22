@@ -16,6 +16,31 @@ const ERROR_COPY: Record<string, string> = {
   oauth_failed: "Sign-in failed. Try requesting a new magic link.",
 };
 
+/** Friendly message for when there's no portal account for the email yet.
+ *  The portal is invite-only (Supabase signups are disabled), so requesting a
+ *  link for an un-provisioned email returns "Signups not allowed for this
+ *  instance" — which we translate into rollout-appropriate guidance. */
+const NO_ACCOUNT_COPY =
+  "We don't have a portal account for that email yet. Double-check you're using the exact email your Ironbooks invite was sent to — still stuck? Email admin@ironbooks.com and we'll get you set up right away.";
+
+/** Translate a raw Supabase auth error into something a client can act on. */
+function friendlyAuthError(message: string): string {
+  const m = (message || "").toLowerCase();
+  if (
+    m.includes("signups not allowed") ||
+    m.includes("signup is disabled") ||
+    m.includes("signups are disabled") ||
+    m.includes("user not found") ||
+    m.includes("not found")
+  ) {
+    return NO_ACCOUNT_COPY;
+  }
+  if (m.includes("rate") || m.includes("too many") || m.includes("429")) {
+    return "Too many sign-in attempts. Please wait a minute, then request a new link.";
+  }
+  return message || "Sign-in failed. Please try again.";
+}
+
 // Next.js 15 requires useSearchParams() to be inside a <Suspense> boundary
 // during prerender, otherwise the page fails to build with a CSR-bailout
 // error. Wrap the form in a Suspense + extract the searchParams-reading
@@ -73,7 +98,10 @@ function LoginInner() {
     });
 
     if (error) {
-      setError(error.message);
+      // Invite-only portal: an un-provisioned client email returns
+      // "Signups not allowed for this instance" — map that (and other raw
+      // Supabase errors) to guidance the client can act on.
+      setError(friendlyAuthError(error.message));
       setLoading(false);
     } else {
       setSent(true);
