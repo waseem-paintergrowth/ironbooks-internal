@@ -41,6 +41,7 @@ import { ClientDetailsCard } from "./client-details-card";
 import { GrainSection } from "./grain-section";
 import { CallTodosPanel } from "./call-todos-panel";
 import { CloseAndSendCard } from "./close-and-send-card";
+import { StatementsCard } from "./statements-card";
 import { MessagesPanel } from "./messages-panel";
 import { BillingTab } from "./billing-tab";
 
@@ -806,6 +807,10 @@ function OverviewTab({
       {qboStatus === "connected" && clientLink.daily_recon_enabled && (
         <CloseAndSendCard clientLinkId={clientLink.id} clientName={clientLink.client_name} />
       )}
+
+      {/* Statements — bookkeeper-uploaded (and client-uploaded) bank/CC/loan
+          statements, AI-identified + matched to QBO + filed by month. */}
+      <StatementsCard clientLinkId={clientLink.id} />
 
       {/* Progress flow chart — bird's-eye view of where this client is in
           their SNAP lifecycle. Renders above Outstanding Work so the

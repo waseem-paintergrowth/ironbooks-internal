@@ -84,7 +84,7 @@ export interface StatementReconResult {
 
 /** Candidate accounts the matcher chooses from — bank, CC, and loan-like
  *  liability accounts, with their live QBO balance + last4. */
-function reconCandidates(accounts: QBOAccount[]) {
+export function reconCandidates(accounts: QBOAccount[]) {
   return accounts
     .filter((a) => a.Active !== false)
     .filter((a) => {

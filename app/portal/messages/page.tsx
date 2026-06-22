@@ -2,6 +2,7 @@ import { tryResolvePortalContext } from "@/lib/portal-context";
 import { createServiceSupabase } from "@/lib/supabase";
 import { PortalErrorState } from "../error-state";
 import { MessagesClient } from "./messages-client";
+import { StatementUploadPanel } from "./statement-upload-panel";
 import type { ClientCommunication } from "@/lib/client-comms";
 
 export const dynamic = "force-dynamic";
@@ -73,6 +74,8 @@ export default async function PortalMessagesPage() {
           </div>
         </div>
       </div>
+
+      <StatementUploadPanel />
 
       <MessagesClient initialMessages={messages} />
     </div>
