@@ -225,7 +225,7 @@ export async function sendPortalInviteEmail(params: {
   <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #E5E7EB;">
     <div style="background:#0F1F2E;padding:22px 28px;">
       <div style="color:#ffffff;font-size:18px;font-weight:700;">Ironbooks</div>
-      <div style="color:#8CD3CC;font-size:12px;margin-top:2px;">SNAP — your books, live</div>
+      <div style="color:#8CD3CC;font-size:12px;margin-top:2px;">Advancing Financial Literacy In The Trades</div>
     </div>
     <div style="padding:28px;">
       <h2 style="margin:0 0 14px;color:#0F1F2E;font-size:18px;">${heading}</h2>
@@ -330,7 +330,7 @@ export async function emailPortalUsersAboutMessage(
   <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #E5E7EB;">
     <div style="background:#0F1F2E;padding:22px 28px;">
       <div style="color:#ffffff;font-size:18px;font-weight:700;">Ironbooks</div>
-      <div style="color:#8CD3CC;font-size:12px;margin-top:2px;">SNAP — your books, live</div>
+      <div style="color:#8CD3CC;font-size:12px;margin-top:2px;">Advancing Financial Literacy In The Trades</div>
     </div>
     <div style="padding:28px;">
       <h2 style="margin:0 0 6px;color:#0F1F2E;font-size:18px;">Ironbooks has sent you a ${noun} in SNAP!</h2>
