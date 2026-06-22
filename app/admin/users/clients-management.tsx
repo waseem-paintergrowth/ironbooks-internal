@@ -315,8 +315,8 @@ export function ClientsManagement({ clients }: { clients: ClientRow[] }) {
       : `Provision portal access for ${withEmail.length} client${withEmail.length === 1 ? "" : "s"} WITHOUT emailing them?\n\nUse this to preview / impersonate the portal before the real invite goes out.`;
     if (noEmail > 0)
       msg += `\n\n${noEmail} selected client${noEmail === 1 ? "" : "s"} have no email — they'll be skipped.`;
-    if (sendEmail && withEmail.length > 30)
-      msg += `\n\n⚠️ Supabase caps auth emails at ~30/hour. You selected ${withEmail.length}; invites past the cap may fail until it resets (raise the limit in Supabase → Auth → Rate Limits first).`;
+    if (sendEmail && withEmail.length > 100)
+      msg += `\n\n⚠️ ${withEmail.length} is a large batch. Invites send through Resend (our email provider), not Supabase — Resend's free tier allows 100 emails/day. On the free plan, split into sub-100 daily batches or upgrade Resend; smaller batches send fine.`;
     if (!confirm(msg)) return;
     if (noEmail > 0) {
       // record skipped before running (runBulk only sees the with-email set)
