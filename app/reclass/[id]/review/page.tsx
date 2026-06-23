@@ -119,34 +119,42 @@ export default async function ReclassReviewPage({
       const active = allQboAccounts.filter((a) => a.Active !== false);
       // Leaf accounts only — you post to leaves, not roll-up parents.
       const parentIds = new Set(active.map((a) => a.ParentRef?.value).filter(Boolean));
-      const sectionFor = (a: any) =>
-        a.AccountType === "Bank" || a.AccountType === "Credit Card"
-          ? "Balance Sheet — Transfers / CC Payments"
-          : a.Classification === "Revenue"
-          ? "Income"
-          : /cost of goods sold/i.test(a.AccountType)
-          ? "Cost of Goods Sold"
-          : "Expenses";
-      const pnl = active.filter(
-        (a) =>
-          (a.Classification === "Revenue" || a.Classification === "Expense") &&
-          !parentIds.has(a.Id)
-      );
-      const transfers = active.filter(
-        (a) => a.AccountType === "Bank" || a.AccountType === "Credit Card"
-      );
-      masterAccounts = [...pnl, ...transfers].map((a, i) => ({
-        account_name: a.FullyQualifiedName || a.Name,
-        parent_account_name: a.AccountType, // "· Expense" / "· Bank" hint
-        is_parent: false,
-        section: sectionFor(a),
-        sort_order:
-          (a.AccountType === "Bank" || a.AccountType === "Credit Card"
-            ? 90000
-            : a.Classification === "Revenue"
-            ? 0
-            : 1000) + i,
-      }));
+      const isBankOrCC = (a: any) => a.AccountType === "Bank" || a.AccountType === "Credit Card";
+      const sectionFor = (a: any) => {
+        if (a.Classification === "Revenue") return "Income";
+        if (/cost of goods sold/i.test(a.AccountType)) return "Cost of Goods Sold";
+        if (a.Classification === "Expense") return "Expenses";
+        if (isBankOrCC(a)) return "Balance Sheet — Transfers / CC Payments";
+        if (a.Classification === "Asset") return "Balance Sheet — Assets";
+        if (a.Classification === "Liability") return "Balance Sheet — Liabilities";
+        if (a.Classification === "Equity") return "Balance Sheet — Equity";
+        return "Other accounts";
+      };
+      const sortBase = (a: any) => {
+        if (a.Classification === "Revenue") return 0;
+        if (/cost of goods sold/i.test(a.AccountType)) return 10000;
+        if (a.Classification === "Expense") return 20000;
+        if (isBankOrCC(a)) return 30000;
+        if (a.Classification === "Asset") return 40000;
+        if (a.Classification === "Liability") return 50000;
+        if (a.Classification === "Equity") return 60000;
+        return 70000;
+      };
+      // Every live LEAF account — P&L drives categorization, and the full
+      // balance sheet (assets / liabilities / equity, plus Bank/CC transfers)
+      // so the bookkeeper can reclass into ANY real account during cleanup.
+      // (Previously this was limited to P&L + Bank/CC, which hid every other
+      // balance-sheet account from the picker.)
+      const leaves = active.filter((a) => !parentIds.has(a.Id));
+      masterAccounts = leaves
+        .map((a) => ({
+          account_name: a.FullyQualifiedName || a.Name,
+          parent_account_name: a.AccountType, // "· Expense" / "· Bank" hint
+          is_parent: false,
+          section: sectionFor(a),
+          sort_order: sortBase(a),
+        }))
+        .sort((a, b) => a.sort_order - b.sort_order || a.account_name.localeCompare(b.account_name));
       usedLiveCoa = masterAccounts.length > 0;
     }
   } catch (err: any) {
