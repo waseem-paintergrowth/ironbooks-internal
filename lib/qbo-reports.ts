@@ -224,6 +224,10 @@ export interface ProfitLossData {
   totalIncome: number;
   totalExpenses: number;
   netIncome: number;
+  /** Cost of goods sold (0 when the client has no COGS section). */
+  cogs: number;
+  /** Revenue − COGS. Falls back to the report's own Gross Profit row. */
+  grossProfit: number;
   /** Net value of all meal/entertainment accounts found */
   mealsExpense: number;
   /** All meal/entertainment account names and amounts */
@@ -284,6 +288,21 @@ export async function fetchProfitAndLoss(
     flat.get("net income") ?? flat.get("net loss") ?? flat.get("net earnings") ?? null;
   const netIncome = reportedNet != null && Math.abs(reportedNet) > 0.005 ? reportedNet : computedNet;
 
+  // Cost of goods sold + gross profit, so summaries can show a reconciling
+  // Revenue − COGS = Gross profit − Expenses = Net breakdown (painting clients
+  // often carry a big COGS section; omitting it makes income − expenses look
+  // like it doesn't equal net).
+  const cogs = Math.abs(
+    flat.get("total cost of goods sold") ??
+      flat.get("cost of goods sold") ??
+      flat.get("total cogs") ??
+      flat.get("cogs") ??
+      0
+  );
+  const grossProfitRow = flat.get("gross profit") ?? flat.get("total gross profit") ?? null;
+  const grossProfit =
+    grossProfitRow != null ? Math.abs(grossProfitRow) : Math.abs(totalIncome) - cogs;
+
   // Match meal/entertainment accounts by common name variants
   const mealPatterns = [
     "meals and entertainment",
@@ -306,6 +325,8 @@ export async function fetchProfitAndLoss(
     totalIncome: Math.abs(totalIncome),
     totalExpenses: Math.abs(totalExpenses),
     netIncome,
+    cogs,
+    grossProfit,
     mealsExpense,
     mealsAccounts,
     lineItems: items,

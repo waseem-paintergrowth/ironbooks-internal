@@ -321,9 +321,11 @@ export async function POST(
       return NextResponse.json({ error: "This month is already closed." }, { status: 409 });
     }
     if (isMarkComplete) {
-      // Completed straight from the board (no review screen opened) → build the
-      // statements snapshot on demand so the email summary + package have data.
-      if (!existing?.statements) {
+      // Completed straight from the board (no review screen opened) → always
+      // (re)build the statements snapshot fresh, so the email summary has
+      // current, complete numbers (incl. COGS / gross profit) rather than a
+      // stale snapshot from a prior flow.
+      {
         try {
           const accessToken = await getValidToken(clientLinkId, service as any);
           const statements = await fetchStatementsPreview(
@@ -385,14 +387,35 @@ export async function POST(
     const st = existing.statements as any;
     const fmt = (n: number) =>
       `$${Math.abs(Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    // Signed format for the "other income/(expense)" reconciling line.
+    const fmtSigned = (n: number) => (n < 0 ? `-${fmt(n)}` : fmt(n));
+    const revenue = Number(st?.pl?.totalIncome || 0);
+    const cogs = Number(st?.pl?.cogs || 0);
+    const opex = Number(st?.pl?.totalExpenses || 0);
     const net = Number(st?.pl?.netIncome || 0);
+    const hasCogs = cogs > 0.005;
+    const grossProfit = Number(
+      st?.pl?.grossProfit != null ? st.pl.grossProfit : revenue - cogs
+    );
+    // Build a breakdown that always reconciles to net: Revenue − COGS = Gross
+    // profit, then − Operating expenses. Any remainder (other income/expense)
+    // becomes an explicit line so the figures the client sees add up.
+    const lines: string[] = [`${monthLabel} at a glance:`, `• Revenue: ${fmt(revenue)}`];
+    if (hasCogs) {
+      lines.push(`• Cost of goods sold: ${fmt(cogs)}`);
+      lines.push(`• Gross profit: ${fmt(grossProfit)}`);
+    }
+    lines.push(`• Operating expenses: ${fmt(opex)}`);
+    const subtotal = (hasCogs ? grossProfit : revenue) - opex;
+    const other = net - subtotal;
+    if (Math.abs(other) > 0.5) {
+      lines.push(`• Other income/(expense): ${fmtSigned(other)}`);
+    }
+    lines.push(`• Net ${net >= 0 ? "profit" : "loss"}: ${fmt(net)}`);
     const summaryBody = [
       `Your ${monthLabel} books are closed and your financial statements are ready. ✅`,
       ``,
-      `${monthLabel} at a glance:`,
-      `• Income: ${fmt(st?.pl?.totalIncome || 0)}`,
-      `• Expenses: ${fmt(st?.pl?.totalExpenses || 0)}`,
-      `• Net ${net >= 0 ? "profit" : "loss"}: ${fmt(net)}`,
+      ...lines,
       ``,
       `See the full Profit & Loss and Balance Sheet in your portal.`,
     ].join("\n");

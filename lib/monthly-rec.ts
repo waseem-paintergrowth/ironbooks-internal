@@ -203,6 +203,8 @@ export interface StatementsPreview {
     totalIncome: number;
     totalExpenses: number;
     netIncome: number;
+    cogs: number;
+    grossProfit: number;
     lineItems: { label: string; amount: number; group: string }[];
   };
   /** null when the client's Balance Sheet toggle is off (P&L-only). */
@@ -267,6 +269,8 @@ export async function fetchStatementsPreview(
       totalIncome: pl.totalIncome,
       totalExpenses: pl.totalExpenses,
       netIncome: pl.netIncome,
+      cogs: pl.cogs,
+      grossProfit: pl.grossProfit,
       lineItems: pl.lineItems.map((i) => ({
         label: i.label,
         amount: i.amount,
