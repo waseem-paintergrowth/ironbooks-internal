@@ -366,6 +366,115 @@ export async function fetchOpenBills(
   return results;
 }
 
+// ─── CUSTOMER NET-BALANCE NETTING (write-off awareness) ─────────────────
+//
+// "Who owes you" lists every Invoice whose own QBO Balance is > 0. But a
+// bad-debt write-off or an unapplied credit memo zeroes a customer's
+// receivable at the *customer* level without ever touching the individual
+// invoice's Balance field — so a written-off invoice would otherwise
+// phantom-show as overdue in the portal forever (e.g. an invoice + an equal
+// offsetting credit that nets the customer to $0.00). We pull each customer's
+// true net balance — QBO's Customer.Balance nets in BOTH credit memos and A/R
+// journal entries — and apply any available credit against their open
+// invoices so the portal shows what's actually still owed.
+
+export async function fetchCustomerNetBalances(
+  realmId: string,
+  accessToken: string
+): Promise<Map<string, number>> {
+  const balances = new Map<string, number>();
+  let page = 0;
+  const pageSize = 1000;
+
+  while (true) {
+    const startPosition = page * pageSize + 1;
+    // No `Active = true` filter — a customer is often deactivated after a
+    // write-off, and we still need their net balance to suppress the invoice.
+    const qbql = `SELECT Id, Balance FROM Customer STARTPOSITION ${startPosition} MAXRESULTS ${pageSize}`;
+    let data: any;
+    try {
+      data = await qboQuery(realmId, accessToken, qbql);
+    } catch (err: any) {
+      console.warn("[portal-data] Customer balance query failed:", err.message);
+      break;
+    }
+    const rows: any[] = data?.QueryResponse?.Customer || [];
+    for (const c of rows) {
+      if (c?.Id != null) balances.set(String(c.Id), Number(c.Balance || 0));
+    }
+    if (rows.length < pageSize) break;
+    page++;
+  }
+  return balances;
+}
+
+/**
+ * Net open invoices against each customer's true QBO balance.
+ *
+ * For every customer, available credit = max(0, sum(open invoices) − net
+ * balance). That credit is applied oldest-due-first (matching QBO's default
+ * auto-apply), trimming each invoice's shown balance; invoices fully covered
+ * are dropped, and a customer netting to ≤ $0 disappears from the list
+ * entirely (the write-off case).
+ *
+ * Fail-open by design: if a customer's net balance is unknown — the balances
+ * map is empty because the fetch failed, or the id simply isn't present — that
+ * customer's invoices pass through unchanged. We never hide a real receivable
+ * on missing data.
+ */
+export function applyCustomerCredits(
+  invoices: OpenInvoice[],
+  netBalances: Map<string, number>
+): OpenInvoice[] {
+  const EPS = 0.005;
+  // Invoices with no customer id can't be netted — always keep them.
+  const out: OpenInvoice[] = invoices.filter((inv) => !inv.customer_id);
+
+  const byCustomer = new Map<string, OpenInvoice[]>();
+  for (const inv of invoices) {
+    if (!inv.customer_id) continue;
+    const list = byCustomer.get(inv.customer_id) || [];
+    list.push(inv);
+    byCustomer.set(inv.customer_id, list);
+  }
+
+  for (const [customerId, invs] of byCustomer) {
+    const sumOpen = invs.reduce((s, i) => s + i.balance, 0);
+    // Unknown net balance → assume no credit (fail-open).
+    const net = netBalances.has(customerId)
+      ? netBalances.get(customerId)!
+      : sumOpen;
+
+    if (net <= EPS) continue; // fully written off / credited → drop all
+
+    let credit = Math.max(0, sumOpen - net);
+    if (credit <= EPS) {
+      out.push(...invs); // no meaningful credit on file; keep as-is
+      continue;
+    }
+
+    // Apply available credit oldest-due-first.
+    const ordered = [...invs].sort(
+      (a, b) =>
+        new Date(a.due_date || a.txn_date).getTime() -
+        new Date(b.due_date || b.txn_date).getTime()
+    );
+    for (const inv of ordered) {
+      if (credit <= EPS) {
+        out.push(inv);
+        continue;
+      }
+      const applied = Math.min(credit, inv.balance);
+      credit -= applied;
+      const remaining = inv.balance - applied;
+      if (remaining > EPS) out.push({ ...inv, balance: remaining });
+      // else fully covered by credit → drop
+    }
+  }
+
+  return out;
+}
+
 // ─── AGING BUCKETS ──────────────────────────────────────────────────────
 
 export type AgingBucket = "current" | "1-30" | "31-60" | "61-90" | "90+";
@@ -500,7 +609,7 @@ export async function fetchOverview(
     mealsExpense: 0, mealsAccounts: [], lineItems: [],
   };
 
-  const [primaryPL, comparisonPL, accounts, invoices, bills] = await Promise.all([
+  const [primaryPL, comparisonPL, accounts, rawInvoices, bills, netBalances] = await Promise.all([
     primaryPLOverride != null
       ? Promise.resolve(primaryPLOverride)
       : safe(() => fetchProfitAndLoss(realmId, accessToken, primaryMonth.start, primaryMonth.end), emptyPL),
@@ -508,7 +617,13 @@ export async function fetchOverview(
     safe(() => fetchAllAccounts(realmId, accessToken), [] as QBOAccount[]),
     safe(() => fetchOpenInvoices(realmId, accessToken), [] as OpenInvoice[]),
     safe(() => fetchOpenBills(realmId, accessToken), [] as OpenBill[]),
+    safe(() => fetchCustomerNetBalances(realmId, accessToken), new Map<string, number>()),
   ]);
+
+  // Net out write-offs / unapplied credits at the customer level so the
+  // Overview A/R tile matches "Who owes you" (and reality). See
+  // applyCustomerCredits.
+  const invoices = applyCustomerCredits(rawInvoices, netBalances);
 
   const banks = summarizeBanks(accounts);
   const arAging = ageInvoices(invoices);

@@ -7,6 +7,8 @@ import {
   fetchRecentPayments,
   computeDSO,
   summarizeCustomersForAR,
+  fetchCustomerNetBalances,
+  applyCustomerCredits,
 } from "@/lib/portal-data";
 import { PortalErrorState } from "../error-state";
 import { WhosPayingClient } from "./whos-paying-client";
@@ -27,7 +29,7 @@ export default async function WhosPayingPage() {
   const { ctx } = ctxResult;
 
   const service = createServiceSupabase();
-  const [allInvoices, customers, payments, dismissalRows] = await Promise.all([
+  const [allInvoices, customers, payments, dismissalRows, netBalances] = await Promise.all([
     fetchOpenInvoices(ctx.qboRealmId, ctx.accessToken).catch(() => []),
     fetchAllCustomers(ctx.qboRealmId, ctx.accessToken).catch(() => []),
     fetchRecentPayments(ctx.qboRealmId, ctx.accessToken, 180).catch(() => []),
@@ -37,6 +39,9 @@ export default async function WhosPayingPage() {
       .eq("client_link_id", ctx.clientLinkId)
       .then((r: any) => (r.data as any[]) || [])
       .catch(() => []),
+    fetchCustomerNetBalances(ctx.qboRealmId, ctx.accessToken).catch(
+      () => new Map<string, number>()
+    ),
   ]);
 
   // Client-dismissed invoices ("not actually owed") are filtered out of every
@@ -44,7 +49,13 @@ export default async function WhosPayingPage() {
   // The bookkeeper got a /today message when each was dismissed and clears
   // them in QBO for real; until then this view stays clean.
   const dismissedIds = new Set(dismissalRows.map((d: any) => String(d.qbo_invoice_id)));
-  const invoices = allInvoices.filter((inv) => !dismissedIds.has(String(inv.qbo_invoice_id)));
+  const undismissed = allInvoices.filter((inv) => !dismissedIds.has(String(inv.qbo_invoice_id)));
+
+  // Net each invoice against the customer's true QBO balance so invoices that
+  // were written off / fully credited at the customer level (their own Balance
+  // field never gets zeroed) stop phantom-showing as overdue. See
+  // applyCustomerCredits for the oldest-due-first credit allocation.
+  const invoices = applyCustomerCredits(undismissed, netBalances);
 
   const aging = ageInvoices(invoices);
   const dso = computeDSO(payments);
