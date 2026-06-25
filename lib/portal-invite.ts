@@ -235,7 +235,21 @@ export async function provisionPortalUser(
   // at click time), so the invite/resend link works for a full week instead of
   // Supabase's ≤24h. Falls back to silent provisioning if the link can't be made.
   if (sendInvite) {
-    const actionLink = await createActivationLink(service, { userId, clientLinkId, email, createdBy: invitedBy });
+    let actionLink = await createActivationLink(service, { userId, clientLinkId, email, createdBy: invitedBy });
+    if (!actionLink) {
+      // Fallback (e.g. migration 92 not applied yet) — raw Supabase link (≤24h)
+      // so the invite still goes out rather than silently sending nothing.
+      const ml = await service.auth.admin.generateLink({ type: "magiclink", email, options: { redirectTo } });
+      actionLink = ml?.data?.properties?.action_link || null;
+      if (!actionLink) {
+        const inv = await service.auth.admin.generateLink({
+          type: "invite",
+          email,
+          options: { data: { full_name: fullName, role: "client" }, redirectTo },
+        });
+        actionLink = inv?.data?.properties?.action_link || null;
+      }
+    }
     if (actionLink) {
       await sendPortalInviteEmail({ to: email, fullName, clientName, actionLink, isResend });
     }
