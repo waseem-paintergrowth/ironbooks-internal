@@ -29,6 +29,8 @@ export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number;
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [pulling, setPulling] = useState(false);
+  const [pullResult, setPullResult] = useState<any | null>(null);
   const [modal, setModal] = useState<{ row: Row; month: number } | null>(null);
   const [matchRow, setMatchRow] = useState<Row | null>(null);
   const [expectedRow, setExpectedRow] = useState<Row | null>(null);
@@ -49,6 +51,19 @@ export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number;
       router.refresh();
     } catch (e: any) { setSyncMsg(e?.message || "Network error"); }
     finally { setSyncing(false); }
+  }
+
+  async function pullCharges() {
+    setPulling(true); setPullResult(null);
+    try {
+      const res = await fetch("/api/admin/billing/pull-charges", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ year: curYear, month: curMonth }),
+      });
+      const j = await res.json();
+      if (!res.ok) { setPullResult({ error: j.error || "Pull failed" }); return; }
+      setPullResult(j); router.refresh();
+    } catch (e: any) { setPullResult({ error: e?.message || "Network error" }); }
+    finally { setPulling(false); }
   }
 
   // Cell color per the spec: grey expected, green collected, red failed/missed,
@@ -97,12 +112,32 @@ export function BillingTable({ year, rows, fxUsdToCad, totals }: { year: number;
           <a href={`/admin/billing?year=${year - 1}`} className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-sm">←</a>
           <span className="text-sm font-bold text-navy">{year}</span>
           <a href={`/admin/billing?year=${year + 1}`} className="px-2.5 py-1.5 rounded-lg border border-gray-200 text-sm">→</a>
-          <button onClick={sync} disabled={syncing} className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-3 py-2 rounded-lg disabled:opacity-60">
-            {syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync from Stripe
+          <button onClick={pullCharges} disabled={pulling} className="inline-flex items-center gap-1.5 bg-navy hover:bg-navy/90 text-white text-sm font-semibold px-3 py-2 rounded-lg disabled:opacity-60" title="Pull every Stripe charge for the current month and match to clients">
+            {pulling ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Pull this month's charges
+          </button>
+          <button onClick={sync} disabled={syncing} className="inline-flex items-center gap-1.5 bg-teal hover:bg-teal-dark text-white text-sm font-semibold px-3 py-2 rounded-lg disabled:opacity-60" title="Map clients to Stripe customers + pull the year's invoices">
+            {syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Sync mapping
           </button>
         </div>
       </div>
       {syncMsg && <div className="mb-3 text-xs text-ink-slate bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">{syncMsg}</div>}
+      {pullResult && (
+        pullResult.error
+          ? <div className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{pullResult.error}</div>
+          : <div className="mb-3 text-xs bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 space-y-1">
+              <div>
+                Pulled <strong>{pullResult.charges}</strong> charges for {MONTHS[pullResult.month - 1]} {pullResult.year} · matched <strong>{pullResult.matched.clients}</strong> clients →{" "}
+                <strong className="text-navy">${pullResult.matched.combined_cad.toLocaleString()} CAD</strong>{" "}
+                <span className="text-ink-light">(USD ${pullResult.matched.usd.toLocaleString()} + CAD ${pullResult.matched.cad.toLocaleString()}, fx {pullResult.fx?.toFixed(3)})</span>
+              </div>
+              {pullResult.unmatched?.count > 0 && (
+                <div className="text-amber-800">
+                  <strong>{pullResult.unmatched.count} unmatched</strong> = ${pullResult.unmatched.combined_cad.toLocaleString()} CAD — map their customers (click a client&apos;s email, or "no email" row) then re-pull.
+                  <div className="text-amber-700 mt-0.5">Top: {pullResult.unmatched.top.map((u: any) => `${u.who} ($${u.amount.toLocaleString()} ${u.currency})`).join(" · ")}</div>
+                </div>
+              )}
+            </div>
+      )}
 
       <div className="flex flex-wrap gap-3 mb-3 text-[11px] text-ink-slate">
         <Legend bg="#D1E7DD" t="collected (= MRR)" /><Legend bg="#0F5132" t="extra (setup/coaching)" />
