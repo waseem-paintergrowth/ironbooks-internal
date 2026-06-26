@@ -32,6 +32,18 @@ export async function POST(request: Request) {
   if (b.currency && ["usd", "cad"].includes(String(b.currency).toLowerCase())) {
     update.currency = String(b.currency).toLowerCase();
   }
+  // Expected payment day of month (1-31), e.g. 5 = paid on the 5th. Empty/null clears it.
+  if (b.billing_day !== undefined) {
+    if (b.billing_day === null || b.billing_day === "") {
+      update.billing_day = null;
+    } else {
+      const d = Number(b.billing_day);
+      if (!Number.isInteger(d) || d < 1 || d > 31) {
+        return NextResponse.json({ error: "Day must be 1–31" }, { status: 400 });
+      }
+      update.billing_day = d;
+    }
+  }
 
   const { error } = await (service as any)
     .from("billing_subscriptions")

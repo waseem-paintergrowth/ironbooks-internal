@@ -9,6 +9,7 @@ type Row = {
   clientLinkId: string;
   company: string;
   contact: string;
+  billingDay: number | null;
   email: string | null;
   billingHold: boolean;
   pastDue: boolean;
@@ -228,6 +229,7 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
             <tr className="bg-gray-50">
               <th className="sticky left-0 bg-gray-50 text-left font-semibold text-navy px-3 py-2 border-b border-gray-200 min-w-[180px]">Company</th>
               <th className="text-left font-semibold text-navy px-3 py-2 border-b border-gray-200 min-w-[140px]">Contact</th>
+              <th className="text-center font-semibold text-navy px-2 py-2 border-b border-gray-200" title="Day of the month the payment is expected (e.g. 5 = the 5th)">Day</th>
               <th className="text-right font-semibold text-navy px-3 py-2 border-b border-gray-200">MRR</th>
               {MONTHS.map((mm) => <th key={mm} className="text-center font-semibold text-ink-slate px-2 py-2 border-b border-gray-200">{mm}</th>)}
             </tr>
@@ -254,6 +256,9 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
                   </button>
                 </td>
                 <td className="px-3 py-1.5 border-b border-gray-100 text-ink-slate truncate max-w-[160px]">{r.contact}</td>
+                <td className="px-2 py-1.5 border-b border-gray-100 text-center">
+                  <DayCell row={r} onSaved={() => router.refresh()} />
+                </td>
                 <td className="px-3 py-1.5 border-b border-gray-100 text-right">
                   <button onClick={() => setExpectedRow(r)} title="Set expected monthly (subscription + payroll + …)"
                     className="text-navy font-semibold hover:text-teal-dark hover:underline">
@@ -346,6 +351,56 @@ function StripeMatchModal({ row, year, onClose, onSaved }: { row: Row; year: num
         </ul>
       </div>
     </div>
+  );
+}
+
+// Ordinal day label: 5 → "5th", 1 → "1st", 22 → "22nd".
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// Inline-editable "expected payment day of month" cell (3rd column). Click to
+// type a day (1-31); saves to billing_subscriptions.billing_day via the
+// expected endpoint. Blank clears it.
+function DayCell({ row, onSaved }: { row: Row; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(row.billingDay != null ? String(row.billingDay) : "");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const trimmed = val.trim();
+    const current = row.billingDay != null ? String(row.billingDay) : "";
+    if (trimmed === current) { setEditing(false); return; }
+    if (trimmed !== "") {
+      const d = Number(trimmed);
+      if (!Number.isInteger(d) || d < 1 || d > 31) { setVal(current); setEditing(false); return; }
+    }
+    setSaving(true);
+    try {
+      await fetch("/api/admin/billing/expected", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_link_id: row.clientLinkId, billing_day: trimmed === "" ? null : Number(trimmed) }),
+      });
+      setEditing(false); onSaved();
+    } finally { setSaving(false); }
+  }
+
+  if (editing) {
+    return (
+      <input autoFocus type="number" min={1} max={31} value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+        disabled={saving}
+        className="w-12 text-center border border-teal rounded px-1 py-0.5 text-sm" />
+    );
+  }
+  return (
+    <button onClick={() => setEditing(true)} title="Set the day of the month the payment is expected"
+      className={row.billingDay != null ? "text-navy font-medium hover:text-teal-dark hover:underline" : "text-ink-light hover:text-teal-dark"}>
+      {row.billingDay != null ? ordinal(row.billingDay) : "—"}
+    </button>
   );
 }
 
