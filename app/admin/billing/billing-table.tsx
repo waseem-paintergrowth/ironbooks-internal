@@ -233,6 +233,23 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
               <th className="text-right font-semibold text-navy px-3 py-2 border-b border-gray-200">MRR</th>
               {MONTHS.map((mm) => <th key={mm} className="text-center font-semibold text-ink-slate px-2 py-2 border-b border-gray-200">{mm}</th>)}
             </tr>
+            {/* Projected revenue per month: the recurring MRR split by currency
+                (CAD / USD) + combined total in CAD. Constant across months
+                since it's the expected recurring book. */}
+            <tr className="bg-gray-50">
+              <th colSpan={4} className="sticky left-0 bg-gray-50 text-right align-bottom text-[10px] font-semibold text-ink-slate px-3 py-1 border-b border-gray-200">
+                Projected / mo →<div className="font-normal text-ink-light">CAD · USD · total CAD</div>
+              </th>
+              {MONTHS.map((mm) => (
+                <th key={mm} className="text-center align-top px-1 py-1 border-b border-l border-gray-200 font-normal">
+                  <div className="text-[10px] leading-tight">
+                    <div className="text-ink-slate">{money(totals.expectedCadCents)} CAD</div>
+                    <div className="text-ink-slate">{money(totals.expectedUsdCents)} USD</div>
+                    <div className="font-semibold text-navy border-t border-gray-200 mt-0.5 pt-0.5">{cad(expectedCombinedCad)}</div>
+                  </div>
+                </th>
+              ))}
+            </tr>
           </thead>
           <tbody>
             {filteredRows.map((r) => (
