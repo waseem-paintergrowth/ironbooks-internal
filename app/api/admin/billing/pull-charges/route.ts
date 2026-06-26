@@ -83,7 +83,7 @@ export async function POST(request: Request) {
     if (!clientId && email) { clientId = emailToClient.get(email); if (clientId && c.customer) newCust = c.customer; }
 
     if (clientId) {
-      const a = matched.get(clientId) || { cents: 0, currency, clientLinkId: clientId };
+      const a: Agg = matched.get(clientId) || { cents: 0, currency, clientLinkId: clientId };
       a.cents += cents; a.currency = currency; if (newCust) a.newCustomer = newCust;
       matched.set(clientId, a);
       if (currency === "cad") matchedCad += cents; else matchedUsd += cents;
