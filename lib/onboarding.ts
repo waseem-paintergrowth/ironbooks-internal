@@ -369,3 +369,78 @@ export async function upsertLeadFromWebhook(
     .single();
   return error ? { ok: false, error: error.message } : { ok: true, id: data?.id };
 }
+
+/**
+ * Resolve (or create) the SNAP client profile (`client_links`) for a won sale.
+ *
+ * A closed-won opportunity is a committed bookkeeping client, so it must have a
+ * `client_links` row from the moment it's won — not wait for the onboarding
+ * form. Mirrors the create path in the ob-form webhook (status "onboarding",
+ * is_active), but is the entry point for the WON event.
+ *
+ * Match-first by email (the canonical key — `client_links` has no
+ * ghl_contact_id column), so re-firing the webhook or running the backfill is
+ * idempotent and never duplicates an existing client. The GHL contact id is
+ * stamped into `metadata` for traceability.
+ */
+export async function resolveOrCreateClientForWon(
+  service: SupabaseClient,
+  opts: {
+    email?: string | null;
+    fullName?: string | null;
+    businessName?: string | null;
+    phone?: string | null;
+    jurisdiction?: "US" | "CA" | null;
+    ghlContactId?: string | null;
+    ghlOpportunityId?: string | null;
+  }
+): Promise<{ clientLinkId: string | null; created: boolean; error?: string }> {
+  const emailLc = (opts.email || "").trim().toLowerCase();
+
+  if (emailLc) {
+    const { data: existing } = await (service as any)
+      .from("client_links")
+      .select("id")
+      .ilike("client_email", emailLc)
+      .limit(1)
+      .maybeSingle();
+    if (existing?.id) return { clientLinkId: existing.id, created: false };
+  }
+
+  const clientName = opts.businessName || opts.fullName || "New won client";
+  const insert: Record<string, any> = {
+    client_name: clientName,
+    client_email: opts.email || null,
+    client_phone: opts.phone || null,
+    status: "onboarding",
+    is_active: true,
+    // double_client_id is a legacy NOT-NULL column (pre-Double-retirement).
+    // A GHL-won client has no Double id, so synthesize a unique, clearly
+    // non-Double value keyed off the GHL contact (stable + collision-free).
+    double_client_id: opts.ghlContactId
+      ? `ghl_${opts.ghlContactId}`
+      : `won_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+  };
+  if (opts.jurisdiction) insert.jurisdiction = opts.jurisdiction;
+  if (opts.businessName) insert.legal_business_name = opts.businessName;
+  if (opts.fullName) {
+    const parts = opts.fullName.trim().split(/\s+/);
+    insert.contact_first_name = parts[0] || null;
+    if (parts.length > 1) insert.contact_last_name = parts.slice(1).join(" ");
+  }
+  if (opts.ghlContactId || opts.ghlOpportunityId) {
+    insert.metadata = {
+      ...(opts.ghlContactId ? { ghl_contact_id: opts.ghlContactId } : {}),
+      ...(opts.ghlOpportunityId ? { ghl_opportunity_id: opts.ghlOpportunityId } : {}),
+      created_from: "ghl_won",
+    };
+  }
+
+  const { data, error } = await (service as any)
+    .from("client_links")
+    .insert(insert)
+    .select("id")
+    .single();
+  if (error) return { clientLinkId: null, created: false, error: error.message };
+  return { clientLinkId: data.id, created: true };
+}
