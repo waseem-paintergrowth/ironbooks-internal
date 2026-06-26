@@ -21,16 +21,32 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const year = Number(sp.year) || new Date().getUTCFullYear();
 
   const curMonth = new Date().getUTCMonth() + 1;
-  const [{ data: clients }, { data: subs }, { data: pays }, { data: reconRows }, { data: unmatchedRows }] = await Promise.all([
+  // Core client list uses ONLY long-standing columns, so a not-yet-run billing
+  // migration can never blank the table. Migration-dependent data (dunning
+  // columns, recon, unmatched) is fetched defensively below and degrades to
+  // empty/false if those migrations haven't been applied.
+  const [{ data: clients }, { data: subs }, { data: pays }] = await Promise.all([
     service.from("client_links")
-      .select("id, client_name, legal_business_name, contact_first_name, contact_last_name, client_email, portal_billing_hold, billing_past_due_since")
+      .select("id, client_name, legal_business_name, contact_first_name, contact_last_name, client_email")
       .eq("is_active", true)
       .order("client_name"),
     (service as any).from("billing_subscriptions").select("*"),
     (service as any).from("billing_payments").select("*").eq("period_year", year),
-    (service as any).from("billing_recon_runs").select("*").eq("period_year", year).eq("period_month", curMonth).order("ran_at", { ascending: false }).limit(1),
-    (service as any).from("billing_unmatched_charges").select("*").eq("period_year", year).eq("period_month", curMonth).order("amount_cents", { ascending: false }),
   ]);
+
+  const safe = async (p: any, fallback: any) => {
+    try { const { data } = await p; return data ?? fallback; } catch { return fallback; }
+  };
+  const holdRows = await safe(
+    (service as any).from("client_links").select("id, portal_billing_hold, billing_past_due_since").eq("is_active", true), []
+  );
+  const holdByClient = new Map<string, any>((holdRows || []).map((h: any) => [h.id, h]));
+  const reconRows = await safe(
+    (service as any).from("billing_recon_runs").select("*").eq("period_year", year).eq("period_month", curMonth).order("ran_at", { ascending: false }).limit(1), []
+  );
+  const unmatchedRows = await safe(
+    (service as any).from("billing_unmatched_charges").select("*").eq("period_year", year).eq("period_month", curMonth).order("amount_cents", { ascending: false }), []
+  );
   const recon = (reconRows as any[])?.[0] || null;
   const unmatched = (unmatchedRows as any[]) || [];
 
@@ -57,8 +73,8 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       company: c.legal_business_name || c.client_name || "—",
       contact: [c.contact_first_name, c.contact_last_name].filter(Boolean).join(" ") || "—",
       email: c.client_email || null,
-      billingHold: !!c.portal_billing_hold,
-      pastDue: !!c.billing_past_due_since,
+      billingHold: !!holdByClient.get(c.id)?.portal_billing_hold,
+      pastDue: !!holdByClient.get(c.id)?.billing_past_due_since,
       mrrCents,
       currency: (sub?.currency as string) || "usd",
       subStatus: sub?.subscription_status || "none",
