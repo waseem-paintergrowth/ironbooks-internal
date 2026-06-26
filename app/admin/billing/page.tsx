@@ -52,13 +52,16 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
 
   const subByClient = new Map<string, any>(((subs as any[]) || []).map((s) => [s.client_link_id, s]));
   // Aggregate payments → per client, per month.
-  const payAgg = new Map<string, Map<number, { collected: number; failed: number; manual: number }>>();
+  type CellAgg = { collected: number; failed: number; manual: number; expected: number; currency: string | null };
+  const payAgg = new Map<string, Map<number, CellAgg>>();
   for (const p of ((pays as any[]) || [])) {
     if (!payAgg.has(p.client_link_id)) payAgg.set(p.client_link_id, new Map());
     const m = payAgg.get(p.client_link_id)!;
-    const cell = m.get(p.period_month) || { collected: 0, failed: 0, manual: 0 };
+    const cell = m.get(p.period_month) || { collected: 0, failed: 0, manual: 0, expected: 0, currency: null };
     if (p.status === "failed") cell.failed += p.amount_cents;
+    else if (p.status === "expected") cell.expected += p.amount_cents; // manually-entered upcoming payment (e-transfer etc.)
     else if (p.status === "collected") { cell.collected += p.amount_cents; if (p.source === "manual") cell.manual += p.amount_cents; }
+    if (p.currency && !cell.currency) cell.currency = p.currency; // per-payment currency overrides row currency for this cell
     m.set(p.period_month, cell);
   }
 
@@ -72,9 +75,9 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
       const d = new Date(c.billing_start_date).getUTCDate();
       if (Number.isInteger(d) && d >= 1 && d <= 31) billingDay = d;
     }
-    const months: Record<number, { collected: number; failed: number; manual: number }> = {};
+    const months: Record<number, CellAgg> = {};
     const m = payAgg.get(c.id);
-    for (let i = 1; i <= 12; i++) months[i] = m?.get(i) || { collected: 0, failed: 0, manual: 0 };
+    for (let i = 1; i <= 12; i++) months[i] = m?.get(i) || { collected: 0, failed: 0, manual: 0, expected: 0, currency: null };
     return {
       clientLinkId: c.id,
       company: c.legal_business_name || c.client_name || "—",

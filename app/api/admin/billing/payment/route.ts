@@ -34,6 +34,7 @@ export async function POST(request: Request) {
   }
   const status = ["collected", "failed", "expected"].includes(b.status) ? b.status : "collected";
   const method = typeof b.method === "string" && b.method ? b.method : "etransfer";
+  const currency = ["usd", "cad"].includes(String(b.currency).toLowerCase()) ? String(b.currency).toLowerCase() : null;
 
   const { data: row, error } = await (service as any)
     .from("billing_payments")
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
       source: "manual",
       method,
       kind: b.kind || "other",
+      currency,
       note: b.note ? String(b.note).slice(0, 500) : null,
       recorded_by: user.id,
     })

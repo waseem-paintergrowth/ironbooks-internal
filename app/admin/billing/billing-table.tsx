@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, RefreshCw, Plus, X } from "lucide-react";
 
-type Cell = { collected: number; failed: number; manual: number };
+type Cell = { collected: number; failed: number; manual: number; expected: number; currency: string | null };
 type Row = {
   clientLinkId: string;
   company: string;
@@ -104,12 +104,15 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, recon, unmatched 
     const mrr = row.mrrCents;
     const isPast = year < curYear || (year === curYear && m < curMonth);
     const collected = c.collected;
-    const cur = row.currency;
+    // Per-payment currency (manual/expected entry) wins over the row currency.
+    const cur = c.currency || row.currency;
     if (collected > 0) {
       if (mrr > 0 && collected > mrr + 50) return { bg: "#0F5132", fg: "#fff", label: fmtCur(collected, cur) };  // dark green: extra
       return { bg: "#D1E7DD", fg: "#0F5132", label: fmtCur(collected, cur) };                                    // green: collected
     }
     if (c.failed > 0) return { bg: "#F8D7DA", fg: "#842029", label: fmtCur(c.failed, cur) };                      // red: failed
+    // Manually-entered upcoming/expected payment (e-transfer etc.) — show as expected.
+    if (c.expected > 0) return { bg: "#F1F3F5", fg: "#6B7682", label: fmtCur(c.expected, cur) };                  // grey: expected (manual)
     if (isPast && mrr > 0 && ["active", "past_due"].includes(row.subStatus)) {
       return { bg: "#F8D7DA", fg: "#842029", label: "missed" };                                                  // red: missed
     }
@@ -471,6 +474,7 @@ function Legend({ bg, t }: { bg: string; t: string }) {
 
 function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: number; year: number; onClose: () => void; onSaved: () => void }) {
   const [amount, setAmount] = useState((row.mrrCents / 100 || 0).toString());
+  const [currency, setCurrency] = useState(row.currency || "usd");
   const [method, setMethod] = useState("etransfer");
   const [kind, setKind] = useState("subscription");
   const [status, setStatus] = useState("collected");
@@ -483,7 +487,7 @@ function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: 
     try {
       const res = await fetch("/api/admin/billing/payment", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_link_id: row.clientLinkId, year, month, amount: Number(amount), method, kind, status, note }),
+        body: JSON.stringify({ client_link_id: row.clientLinkId, year, month, amount: Number(amount), currency, method, kind, status, note }),
       });
       const j = await res.json();
       if (!res.ok) { setErr(j.error || "Save failed"); return; }
@@ -501,8 +505,13 @@ function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: 
         </div>
         <p className="text-xs text-ink-slate mb-3">{row.company} · {MONTHS[month - 1]} {year}</p>
         <div className="space-y-2.5">
-          <label className="block"><span className="text-xs font-semibold text-ink-slate">Amount ($)</span>
-            <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg" /></label>
+          <div className="flex gap-2">
+            <label className="flex-1"><span className="text-xs font-semibold text-ink-slate">Amount</span>
+              <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg" /></label>
+            <label><span className="text-xs font-semibold text-ink-slate">Currency</span>
+              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="mt-1 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white">
+                <option value="usd">USD</option><option value="cad">CAD</option></select></label>
+          </div>
           <label className="block"><span className="text-xs font-semibold text-ink-slate">Method</span>
             <select value={method} onChange={(e) => setMethod(e.target.value)} className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white">
               <option value="etransfer">E-transfer</option><option value="cheque">Cheque</option><option value="cash">Cash</option><option value="other">Other</option></select></label>
@@ -511,7 +520,7 @@ function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: 
               <option value="subscription">Subscription</option><option value="setup_fee">Setup fee</option><option value="coaching_call">Coaching call</option><option value="other">Other</option></select></label>
           <label className="block"><span className="text-xs font-semibold text-ink-slate">Status</span>
             <select value={status} onChange={(e) => setStatus(e.target.value)} className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white">
-              <option value="collected">Collected</option><option value="failed">Failed</option></select></label>
+              <option value="collected">Collected (paid)</option><option value="expected">Expected (upcoming)</option><option value="failed">Failed</option></select></label>
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg" />
         </div>
         {err && <div className="mt-2 text-xs text-red-700">{err}</div>}
