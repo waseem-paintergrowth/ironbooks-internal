@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   if (!clientLinkId || !year || !month || month < 1 || month > 12 || !Number.isFinite(amount)) {
     return NextResponse.json({ error: "client_link_id, year, month (1-12) and amount are required" }, { status: 400 });
   }
-  const status = ["collected", "failed", "expected"].includes(b.status) ? b.status : "collected";
+  const status = ["collected", "failed", "expected", "comped"].includes(b.status) ? b.status : "collected";
   const method = typeof b.method === "string" && b.method ? b.method : "etransfer";
   const currency = ["usd", "cad"].includes(String(b.currency).toLowerCase()) ? String(b.currency).toLowerCase() : null;
 

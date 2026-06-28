@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, RefreshCw, Plus, X } from "lucide-react";
 
-type Cell = { collected: number; failed: number; manual: number; expected: number; currency: string | null; note: string | null };
+type Cell = { collected: number; failed: number; manual: number; expected: number; comped: boolean; currency: string | null; note: string | null };
 type Row = {
   clientLinkId: string;
   company: string;
@@ -118,6 +118,8 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, monthlyProjected,
       return { bg: "#D1E7DD", fg: "#0F5132", label: fmtCur(collected, cur) };                                    // green: collected
     }
     if (c.failed > 0) return { bg: "#F8D7DA", fg: "#842029", label: fmtCur(c.failed, cur) };                      // red: failed
+    // Comped month (retention incentive) — waived on purpose, NOT a missed payment.
+    if (c.comped) return { bg: "#E0E7FF", fg: "#3730A3", label: "comped" };                                       // indigo: comped
     // Manually-entered upcoming/expected payment (e-transfer etc.) — show as expected.
     if (c.expected > 0) return { bg: "#F1F3F5", fg: "#6B7682", label: fmtCur(c.expected, cur) };                  // grey: expected (manual)
     if (beforeStart) return { bg: "#FFFFFF", fg: "#D1D5DB", label: "" };                                          // pre-start: blank, never red
@@ -230,7 +232,7 @@ export function BillingTable({ year, rows, fxUsdToCad, totals, monthlyProjected,
 
       <div className="flex flex-wrap gap-3 mb-3 text-[11px] text-ink-slate">
         <Legend bg="#D1E7DD" t="collected (= MRR)" /><Legend bg="#0F5132" t="extra (setup/coaching)" />
-        <Legend bg="#F8D7DA" t="failed / missed" /><Legend bg="#F1F3F5" t="expected" />
+        <Legend bg="#F8D7DA" t="failed / missed" /><Legend bg="#E0E7FF" t="comped" /><Legend bg="#F1F3F5" t="expected" />
         <span className="text-ink-light">· click any cell to log a manual (e-transfer) payment</span>
       </div>
 
@@ -505,8 +507,9 @@ function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: 
   // Save logs a payment (if an amount is entered) AND/OR saves the cell's
   // collection note (if changed) — so you can add a note without a payment.
   async function save() {
-    const amt = Number(amount);
-    const hasPayment = amount.trim() !== "" && Number.isFinite(amt) && amt > 0;
+    const amt = Number(amount) || 0;
+    // A comped (waived) month is a $0 marker, so it logs even with no amount.
+    const hasPayment = (amount.trim() !== "" && Number.isFinite(Number(amount)) && amt > 0) || status === "comped";
     const noteChanged = cellNote.trim() !== originalNote.trim();
     if (!hasPayment && !noteChanged) { onClose(); return; }
     setSaving(true); setErr(null);
@@ -514,7 +517,7 @@ function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: 
       if (hasPayment) {
         const res = await fetch("/api/admin/billing/payment", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ client_link_id: row.clientLinkId, year, month, amount: amt, currency, method, kind, status, note: cellNote }),
+          body: JSON.stringify({ client_link_id: row.clientLinkId, year, month, amount: status === "comped" ? 0 : amt, currency, method, kind, status, note: cellNote }),
         });
         const j = await res.json();
         if (!res.ok) { setErr(j.error || "Save failed"); setSaving(false); return; }
@@ -556,7 +559,7 @@ function ManualModal({ row, month, year, onClose, onSaved }: { row: Row; month: 
               <option value="subscription">Subscription</option><option value="setup_fee">Setup fee</option><option value="coaching_call">Coaching call</option><option value="other">Other</option></select></label>
           <label className="block"><span className="text-xs font-semibold text-ink-slate">Status</span>
             <select value={status} onChange={(e) => setStatus(e.target.value)} className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white">
-              <option value="collected">Collected (paid)</option><option value="expected">Expected (upcoming)</option><option value="failed">Failed</option></select></label>
+              <option value="collected">Collected (paid)</option><option value="expected">Expected (upcoming)</option><option value="comped">Comped (waived)</option><option value="failed">Failed</option></select></label>
           <label className="block"><span className="text-xs font-semibold text-ink-slate">Collection note <span className="font-normal text-ink-light">(shown on hover)</span></span>
             <textarea value={cellNote} onChange={(e) => setCellNote(e.target.value)} rows={2} placeholder="e.g. promised to pay by the 15th; card declined, following up…" className="mt-1 w-full px-3 py-2 text-sm border border-gray-200 rounded-lg" /></label>
         </div>
