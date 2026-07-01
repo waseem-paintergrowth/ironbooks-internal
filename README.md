@@ -1,4 +1,4 @@
-# Ironbooks App — v2
+# Ironbooks App — v2.1
 
 Next.js 15 + Supabase + Claude application for Ironbooks bookkeeping operations.
 
