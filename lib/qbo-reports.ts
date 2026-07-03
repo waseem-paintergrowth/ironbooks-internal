@@ -143,6 +143,97 @@ export async function fetchProfitAndLossDetail(
   return out;
 }
 
+// ─── Whole-P&L transaction detail (all accounts, with account context) ──────
+
+export interface PLDetailRow extends PLDetailTransaction {
+  /** The P&L account this posting line hit (section header in the report). */
+  account: string;
+  /** Top-level section: Income / Cost of Goods Sold / Expenses / Other … */
+  section: string;
+}
+
+/**
+ * ProfitAndLossDetail for the ENTIRE P&L (no account filter) — one row per
+ * posting line in the window, tagged with its account + top-level section.
+ * Used by the duplicate-transaction scan. Basis selectable (statements are
+ * cash, so dup-scans default to Cash upstream).
+ */
+export async function fetchPLDetailAll(
+  realmId: string,
+  accessToken: string,
+  startDate: string,
+  endDate: string,
+  method: "Accrual" | "Cash" = "Cash"
+): Promise<PLDetailRow[]> {
+  const data = await fetchQBOReport(realmId, accessToken, "ProfitAndLossDetail", {
+    start_date: startDate,
+    end_date: endDate,
+    accounting_method: method,
+  });
+
+  const cols: any[] = data?.Columns?.Column || [];
+  const colIndex = new Map<string, number>();
+  cols.forEach((c, i) => {
+    if (c?.ColType) colIndex.set(String(c.ColType).toLowerCase(), i);
+    if (c?.ColTitle) colIndex.set(String(c.ColTitle).toLowerCase(), i);
+  });
+  const ci = (...names: string[]): number | undefined => {
+    for (const n of names) {
+      const i = colIndex.get(n.toLowerCase());
+      if (i !== undefined) return i;
+    }
+    return undefined;
+  };
+  const idxDate = ci("tx_date", "date");
+  const idxType = ci("txn_type", "transaction type");
+  const idxNum = ci("doc_num", "num");
+  const idxName = ci("name");
+  const idxMemo = ci("memo", "memo/description");
+  const idxAmt = ci("subt_nat_amount", "amount", "subt_nat_home_amount");
+
+  const parseNum = (raw: any): number | null => {
+    if (raw == null || raw === "") return null;
+    const cleaned = String(raw).replace(/[,$ ]/g, "");
+    const parenMatch = cleaned.match(/^\((.+)\)$/);
+    const n = Number(parenMatch ? "-" + parenMatch[1] : cleaned);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const out: PLDetailRow[] = [];
+  // Walk sections keeping a header stack: stack[0] = top section (Income /
+  // Expenses / …), deepest header = the account the Data rows belong to.
+  function walk(node: any, stack: string[]) {
+    if (!node) return;
+    if (Array.isArray(node)) { for (const n of node) walk(n, stack); return; }
+    const header = (node.Header?.ColData?.[0]?.value || "").trim();
+    const nextStack = header ? [...stack, header] : stack;
+    if (node.type === "Data" && Array.isArray(node.ColData)) {
+      const cd = node.ColData;
+      const idCol = cd.find((c: any) => c?.id);
+      const get = (i: number | undefined) => (i != null ? cd[i]?.value ?? "" : "");
+      const amount = parseNum(get(idxAmt));
+      if (amount != null) {
+        out.push({
+          txn_id: idCol?.id ? String(idCol.id) : "",
+          txn_type: String(get(idxType) || ""),
+          date: String(get(idxDate) || ""),
+          doc_number: get(idxNum) ? String(get(idxNum)) : null,
+          name: get(idxName) ? String(get(idxName)) : null,
+          memo: String(get(idxMemo) || ""),
+          amount,
+          running_balance: null,
+          account: nextStack[nextStack.length - 1] || "",
+          section: nextStack[0] || "",
+        });
+      }
+    }
+    if (node.Row) walk(node.Row, nextStack);
+    if (node.Rows) walk(node.Rows, nextStack);
+  }
+  walk(data?.Rows, []);
+  return out;
+}
+
 // ─── Report row types ───────────────────────────────────────────────────────
 
 interface ReportRow {
