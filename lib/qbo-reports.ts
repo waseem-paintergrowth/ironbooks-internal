@@ -249,13 +249,16 @@ export async function fetchProfitAndLoss(
   realmId: string,
   accessToken: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  // Accounting basis. Defaults to Accrual (the long-standing behavior);
+  // pass "Cash" for cash-basis pulls (e.g. to match published statements).
+  method: "Accrual" | "Cash" = "Accrual"
 ): Promise<ProfitLossData> {
   if (isDemoRealm(realmId)) return demoProfitAndLoss(startDate);
   const report = await fetchQBOReport(realmId, accessToken, "ProfitAndLoss", {
     start_date: startDate,
     end_date: endDate,
-    accounting_method: "Accrual",
+    accounting_method: method,
   });
 
   const rawRows: ReportRow[] = report?.Rows?.Row || [];
